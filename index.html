@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Weight Projection</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#33533d" />
+<meta name="color-scheme" content="light" />
+
+<!-- iOS Home Screen install -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Weight" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#f4efe4; --card:#fbf8f1; --ink:#26302a; --inkSoft:#5d6b62;
+    --line:#e2dac9; --accent:#4f7d5e; --accentDeep:#33533d; --accentSoft:#e8efe6;
+    --serif:'Fraunces',Georgia,serif; --sans:'DM Sans',-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       padding:18px;line-height:1.4;-webkit-text-size-adjust:100%;
+       padding-top:max(18px, env(safe-area-inset-top));
+       padding-bottom:max(18px, env(safe-area-inset-bottom));
+       padding-left:max(18px, env(safe-area-inset-left));
+       padding-right:max(18px, env(safe-area-inset-right))}
+  .wrap{max-width:560px;margin:0 auto;animation:rise .5s ease}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  h1{font-family:var(--serif);font-weight:600;font-size:30px;margin:4px 0 0;line-height:1.1}
+  .sub{color:var(--inkSoft);font-size:14px;margin:6px 0 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:14px}
+
+  /* weeks-left hero */
+  .hero{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px;
+        background:var(--accentSoft);border:1px solid var(--line);border-radius:18px;padding:18px 20px}
+  .hero-main{display:flex;align-items:baseline;gap:10px}
+  .hero .num{font-family:var(--serif);font-size:44px;font-weight:700;color:var(--accentDeep);line-height:.9}
+  .hero .lbl{font-size:15px;color:var(--accentDeep);font-weight:600}
+  .hero-date{text-align:right;line-height:1.25}
+  .hero-date .cap{display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--inkSoft)}
+  .hero-date .dval{font-family:var(--serif);font-size:16px;color:var(--ink);font-weight:600}
+
+  label.field{display:block;margin-top:14px}
+  label.field:first-child{margin-top:0}
+  .flabel{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--inkSoft);font-weight:600}
+  .ibox{margin-top:6px;display:flex;align-items:center;background:#fff;border:1px solid var(--line);border-radius:12px;padding:0 14px}
+  .ibox input{flex:1;border:none;outline:none;background:transparent;font-size:21px;font-family:var(--serif);color:var(--ink);padding:12px 0;width:100%}
+  .ibox .suffix{color:var(--inkSoft);font-size:14px;font-weight:600;margin-left:8px}
+  .hint{font-size:12px;color:var(--inkSoft);margin-top:6px;display:block}
+
+  .units{display:flex;justify-content:flex-end;gap:6px;margin-bottom:14px}
+  .units button{border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:999px;
+                padding:5px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .units button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
+
+  .result{background:linear-gradient(135deg,var(--accentDeep),var(--accent));border-radius:18px;padding:20px;margin-top:14px;color:#fff}
+  .result .cap{font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.8}
+  .result .big{font-family:var(--serif);font-size:46px;font-weight:700;line-height:1}
+  .result .big small{font-size:20px;font-weight:400;opacity:.85}
+  .stats{display:flex;gap:22px;margin-top:12px;flex-wrap:wrap}
+  .stats .k{font-size:12px;opacity:.8}
+  .stats .v{font-family:var(--serif);font-size:20px}
+
+  .chartbox{padding:8px 4px}
+  svg{display:block;width:100%;height:auto}
+  .muted{color:var(--inkSoft);font-size:14px;text-align:center;padding:24px}
+
+  .tablecard{padding:0;overflow:hidden}
+  .tscroll{max-height:260px;overflow-y:auto}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  thead th{position:sticky;top:0;background:var(--accentSoft);color:var(--accentDeep);text-align:right;padding:10px 16px;font-weight:600}
+  thead th:first-child{text-align:left}
+  tbody td{padding:9px 16px;border-top:1px solid var(--line);text-align:right}
+  tbody td:first-child{text-align:left;font-weight:500}
+  tbody td.w{font-family:var(--serif)}
+  tbody td.l{color:var(--inkSoft)}
+  tbody tr.end td:first-child{color:var(--accentDeep);font-weight:700}
+
+  .share{display:flex;justify-content:center;margin-top:14px}
+  .share button{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--accent);
+    background:#fff;color:var(--accentDeep);border-radius:999px;padding:11px 18px;font-size:14px;
+    font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s,color .15s,border-color .15s}
+  .share button:hover{background:var(--accentSoft)}
+  .share button.done{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .share svg{width:16px;height:16px}
+
+  .note{color:var(--inkSoft);font-size:12px;margin-top:14px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Projection</div>
+  <h1>Weight Over Time</h1>
+  <p class="sub">Losing the set % each week, compounding on your current weight.</p>
+
+  <div class="hero">
+    <div class="hero-main">
+      <span class="num" id="weeksLeft">—</span>
+      <span class="lbl">weeks left</span>
+    </div>
+    <div class="hero-date">
+      <span class="cap">until</span>
+      <span class="dval" id="targetDate">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="units" id="units">
+      <button data-unit="kg">kg</button>
+      <button data-unit="lb">lb</button>
+    </div>
+    <label class="field">
+      <span class="flabel">Current weight</span>
+      <div class="ibox"><input id="weight" inputmode="decimal" placeholder="0.00" /><span class="suffix" data-unit-suffix>kg</span></div>
+    </label>
+    <label class="field">
+      <span class="flabel">Weekly loss</span>
+      <div class="ibox"><input id="pct" inputmode="decimal" placeholder="0.00" /><span class="suffix">%</span></div>
+    </label>
+    <label class="field">
+      <span class="flabel">End date</span>
+      <div class="ibox"><input id="endDate" type="date" /></div>
+      <span class="hint" id="endHint">Pick a date on or after today</span>
+    </label>
+  </div>
+
+  <div class="result">
+    <div class="cap">Projected weight on <span id="resDate">—</span></div>
+    <div class="big"><span id="finalW">—</span> <small data-unit-suffix>kg</small></div>
+    <div class="stats">
+      <div><div class="k">Total lost</div><div class="v"><span id="lostW">—</span> <span data-unit-suffix>kg</span></div></div>
+      <div><div class="k">% of start</div><div class="v"><span id="lostPct">—</span>%</div></div>
+    </div>
+  </div>
+
+  <div class="card chartbox" id="chartCard"></div>
+
+  <div class="card tablecard" id="tableCard"></div>
+
+  <div class="share">
+    <button id="copyBtn" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l1.41-1.41a5 5 0 0 0-7.07-7.07L10 6"/><path d="M14 11a5 5 0 0 0-7.07 0L5.5 12.4a5 5 0 0 0 7.07 7.07L14 18"/></svg>
+      <span id="copyLabel">Copy shareable link</span>
+    </button>
+  </div>
+
+  <p class="note">
+    Week 0 is your end date; higher week numbers count back toward today (week <span id="noteN">—</span>).
+    Each step compounds the loss %, and only whole weeks are shown. Your inputs live in the page URL — bookmark or share the link to keep them.
+  </p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var WEEK_MS = 7*24*60*60*1000;
+
+  // ---- state in URL query params (graceful: no-ops if sandboxed) ----------
+  function save(s){
+    try{
+      var p = new URLSearchParams();
+      p.set("weight", s.weight); p.set("pct", s.pct);
+      p.set("end", s.endDate);   p.set("unit", s.unit);
+      history.replaceState(null, "", location.pathname + "?" + p.toString() + location.hash);
+    }catch(e){}
+  }
+  function load(){
+    try{
+      var p = new URLSearchParams(location.search);
+      if(!p.toString()) return null;
+      return { weight:p.get("weight"), pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit") };
+    }catch(e){ return null; }
+  }
+
+  // ---- helpers ------------------------------------------------------------
+  function toDateStr(d){
+    return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+  }
+  function addDays(d,n){ var x=new Date(d); x.setDate(x.getDate()+n); return x; }
+  function fmt(n){ return isFinite(n) ? n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : "—"; }
+  function clampDecimals(val){
+    if(val==="") return "";
+    var cleaned = val.replace(/,/g,".").replace(/[^0-9.]/g,"");   // comma -> dot
+    var parts = cleaned.split(".");
+    if(parts.length>2) cleaned = parts[0]+"."+parts.slice(1).join("");
+    var ip = cleaned.split(".")[0], dp = cleaned.split(".")[1];
+    if(dp!==undefined) cleaned = ip+"."+dp.slice(0,2);
+    return cleaned;
+  }
+  function prettyDate(str){
+    if(!str) return "—";
+    var d = new Date(str+"T00:00:00");
+    return d.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"});
+  }
+  function buildShareUrl(s){
+    var p = new URLSearchParams();
+    p.set("weight", s.weight); p.set("pct", s.pct);
+    p.set("end", s.endDate);   p.set("unit", s.unit);
+    var base;
+    try{
+      base = (location.origin && location.origin !== "null")
+        ? location.origin + location.pathname
+        : location.href.split("?")[0].split("#")[0];
+    }catch(e){ base = ""; }
+    return base + "?" + p.toString();
+  }
+  function copyText(text, done){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){done(true);}, function(){legacyCopy(text,done);});
+    } else { legacyCopy(text, done); }
+  }
+  function legacyCopy(text, done){
+    try{
+      var ta=document.createElement("textarea");
+      ta.value=text; ta.style.position="fixed"; ta.style.top="-9999px"; ta.style.opacity="0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      var ok=document.execCommand("copy");
+      document.body.removeChild(ta); done(ok);
+    }catch(e){ done(false); }
+  }
+
+  var today = new Date(); today.setHours(0,0,0,0);
+  var todayStr = toDateStr(today);
+
+  // ---- state --------------------------------------------------------------
+  var saved = load() || {};
+  var state = {
+    weight: saved.weight != null ? saved.weight : "80",
+    pct:    saved.pct    != null ? saved.pct    : "1",
+    endDate:saved.endDate|| toDateStr(addDays(today,84)),
+    unit:   saved.unit   || "kg"
+  };
+
+  // ---- elements -----------------------------------------------------------
+  var $ = function(id){ return document.getElementById(id); };
+  var elWeight=$("weight"), elPct=$("pct"), elEnd=$("endDate");
+  elEnd.min = todayStr;
+
+  function setInputs(){
+    elWeight.value = state.weight;
+    elPct.value = state.pct;
+    elEnd.value = state.endDate;
+    document.querySelectorAll("[data-unit-suffix]").forEach(function(s){ s.textContent = state.unit; });
+    document.querySelectorAll("#units button").forEach(function(b){
+      b.classList.toggle("on", b.dataset.unit===state.unit);
+    });
+  }
+
+  // ---- compute ------------------------------------------------------------
+  function compute(){
+    var W = parseFloat(state.weight);
+    var r = parseFloat(state.pct)/100;
+    var end = state.endDate ? new Date(state.endDate+"T00:00:00") : null;
+    var T = end ? (end - today)/WEEK_MS : NaN;
+    var valid = isFinite(W) && isFinite(r) && isFinite(T) && T>=0;
+    var N = valid ? Math.floor(T) : 0;
+    var at = function(t){ return Math.max(0, W*Math.pow(1-r,t)); };
+    var rows = [];
+    if(valid){ for(var k=0;k<=N;k++) rows.push({week:k, weight:at(N-k)}); } // week0 = end date
+    var final = valid ? at(N) : NaN;
+    return {W:W, valid:valid, N:N, rows:rows, final:final, lost:valid?W-final:NaN,
+            lostPct:(valid&&W>0)?((W-final)/W*100):NaN};
+  }
+
+  // ---- SVG chart (week 0 = end on left, today on right) -------------------
+  function chartSVG(rows){
+    if(rows.length<2) return '<div class="muted">Pick a date at least a week out to see the trajectory.</div>';
+    var pr=rows.slice().reverse(); // plot today (week N) on left, end date (week 0) on right -> descending
+    var w=600,h=200,padL=46,padR=16,padT=14,padB=26;
+    var n=pr.length-1;
+    var ws=pr.map(function(p){return p.weight;});
+    var minW=Math.min.apply(null,ws), maxW=Math.max.apply(null,ws);
+    if(minW===maxW){minW-=1;maxW+=1;}
+    var pad=(maxW-minW)*0.12; minW-=pad; maxW+=pad;
+    var X=function(i){return padL+(i/n)*(w-padL-padR);};
+    var Y=function(v){return padT+(1-(v-minW)/(maxW-minW))*(h-padT-padB);};
+    var pts=pr.map(function(p,i){return X(i).toFixed(1)+","+Y(p.weight).toFixed(1);});
+    var line="M"+pts.join(" L");
+    var area="M"+pts.join(" L")+" L"+X(n).toFixed(1)+","+(h-padB)+" L"+X(0).toFixed(1)+","+(h-padB)+" Z";
+    // gridlines + y labels
+    var grid="";
+    for(var g=0;g<=2;g++){
+      var gv=minW+(maxW-minW)*(g/2), gy=Y(gv);
+      grid+='<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)"/>';
+      grid+='<text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--inkSoft)">'+gv.toFixed(1)+'</text>';
+    }
+    var xlbl='<text x="'+X(0)+'" y="'+(h-8)+'" text-anchor="start" font-size="10" fill="var(--inkSoft)">wk '+pr[0].week+' · today</text>'+
+             '<text x="'+X(n)+'" y="'+(h-8)+'" text-anchor="end" font-size="10" fill="var(--inkSoft)">wk '+pr[n].week+' · end</text>';
+    return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" role="img">'+
+      '<defs><linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">'+
+      '<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32"/>'+
+      '<stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/>'+
+      '</linearGradient></defs>'+
+      grid+
+      '<path d="'+area+'" fill="url(#grad)"/>'+
+      '<path d="'+line+'" fill="none" stroke="var(--accentDeep)" stroke-width="2.5" stroke-linejoin="round"/>'+
+      xlbl+'</svg>';
+  }
+
+  function tableHTML(rows, W, unit){
+    if(rows.length<2) return '<div class="muted">No weeks to show yet.</div>';
+    var body=rows.map(function(p){
+      var lost = p.week===rows.length-1 ? "—" : "-"+fmt(W-p.weight);
+      var cls = p.week===0 ? ' class="end"' : "";
+      return "<tr"+cls+"><td>"+p.week+"</td><td class='w'>"+fmt(p.weight)+"</td><td class='l'>"+lost+"</td></tr>";
+    }).join("");
+    return '<div class="tscroll"><table><thead><tr>'+
+      '<th>Week</th><th>Weight ('+unit+')</th><th>Lost</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+  }
+
+  // ---- render -------------------------------------------------------------
+  function render(){
+    var c=compute(), unit=state.unit;
+    $("weeksLeft").textContent = c.valid ? c.N : "—";
+    $("targetDate").textContent = c.valid ? prettyDate(state.endDate) : "—";
+    $("resDate").textContent = prettyDate(state.endDate);
+    $("finalW").textContent = fmt(c.final);
+    $("lostW").textContent = fmt(c.lost);
+    $("lostPct").textContent = fmt(c.lostPct);
+    $("endHint").textContent = c.valid ? (c.N+" weeks from today ("+todayStr+")") : "Pick a date on or after today";
+    $("noteN").textContent = c.valid ? c.N : "—";
+    $("chartCard").innerHTML = chartSVG(c.rows);
+    $("tableCard").innerHTML = tableHTML(c.rows, c.W, unit);
+  }
+
+  // ---- events -------------------------------------------------------------
+  function onDecimalInput(el, key){
+    el.addEventListener("input", function(){
+      var cleaned = clampDecimals(el.value);
+      if(cleaned !== el.value) el.value = cleaned;
+      state[key] = cleaned; save(state); render();
+    });
+  }
+  onDecimalInput(elWeight,"weight");
+  onDecimalInput(elPct,"pct");
+  elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; save(state); render(); });
+  document.getElementById("units").addEventListener("click", function(e){
+    var b = e.target.closest("button"); if(!b) return;
+    state.unit = b.dataset.unit; save(state); setInputs(); render();
+  });
+
+  var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
+  copyBtn.addEventListener("click", function(){
+    copyText(buildShareUrl(state), function(ok){
+      copyBtn.classList.add("done");
+      copyLabel.textContent = ok ? "Link copied!" : "Press Ctrl/Cmd+C to copy";
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(function(){
+        copyBtn.classList.remove("done");
+        copyLabel.textContent = "Copy shareable link";
+      }, 1700);
+    });
+  });
+
+  // ---- init ---------------------------------------------------------------
+  save(state);   // reflect current values in the URL so it's shareable
+  setInputs();
+  render();
+})();
+
+// Register service worker (no-ops if unsupported or sandboxed)
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("sw.js").catch(function(){});
+  });
+}
+</script>
+</body>
+</html>
