@@ -146,6 +146,7 @@
   /* custom confirm modal */
   .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
          padding:20px;background:rgba(30,40,34,.45);animation:fade .15s ease}
+  .modal[hidden]{display:none}   /* the hidden attr must win over display:flex */
   @keyframes fade{from{opacity:0}to{opacity:1}}
   .modal .sheet{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;
                 max-width:380px;width:100%;box-shadow:0 24px 60px rgba(30,40,34,.28);animation:rise .25s ease}
