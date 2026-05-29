@@ -96,6 +96,18 @@
   .share svg{width:16px;height:16px}
 
   .note{color:var(--inkSoft);font-size:12px;margin-top:14px;line-height:1.5}
+
+  /* actual-progress section */
+  .phead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px}
+  .phead .ptitle{font-family:var(--serif);font-size:20px;font-weight:600}
+  .phead .pspan{font-size:12px;color:var(--inkSoft)}
+  .pgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0 6px}
+  .pstat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .pstat .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--inkSoft);font-weight:600}
+  .pstat .v{font-family:var(--serif);font-size:22px;color:var(--ink);margin-top:2px}
+  .pstat .v small{font-size:13px;color:var(--inkSoft);font-weight:400}
+  .pstat .v.down{color:var(--accentDeep)}
+  .pstat .v.up{color:#a8472f}
 </style>
 </head>
 <body>
@@ -121,8 +133,9 @@
       <button data-unit="lb">lb</button>
     </div>
     <label class="field">
-      <span class="flabel">Current weight</span>
+      <span class="flabel">Today's weight</span>
       <div class="ibox"><input id="weight" inputmode="decimal" placeholder="0.00" /><span class="suffix" data-unit-suffix>kg</span></div>
+      <span class="hint" id="weightHint">Log today's weight to see your projection.</span>
     </label>
     <label class="field">
       <span class="flabel">Weekly loss</span>
@@ -144,6 +157,8 @@
     </div>
   </div>
 
+  <div class="card" id="progressCard" hidden></div>
+
   <div class="card chartbox" id="chartCard"></div>
 
   <div class="card tablecard" id="tableCard"></div>
@@ -157,7 +172,9 @@
 
   <p class="note">
     Week 0 is your end date; higher week numbers count back toward today (week <span id="noteN">—</span>).
-    Each step compounds the loss %, and only whole weeks are shown. Your inputs live in the page URL — bookmark or share the link to keep them.
+    Each step compounds the loss %, and only whole weeks are shown. Each day's weight is stored on your
+    device and you're asked again the next day. The shareable link carries your settings and full weight
+    history — bookmark or share it to keep or move your data.
   </p>
 </div>
 
@@ -165,22 +182,128 @@
 (function(){
   "use strict";
   var WEEK_MS = 7*24*60*60*1000;
+  var DAY_MS  = 24*60*60*1000;
 
-  // ---- state in URL query params (graceful: no-ops if sandboxed) ----------
-  function save(s){
+  // ---- daily weight log: IndexedDB, with a localStorage fallback ----------
+  // Stored as { date:"YYYY-MM-DD", weight:Number }. IndexedDB has no practical
+  // size limit, so the full history can grow without bumping into quotas.
+  var WeightLog = (function(){
+    var DB_NAME="weightProjection", DB_VERSION=1, STORE="weights", LS_KEY="wp:log";
+    var dbPromise=null, useIDB = (typeof indexedDB !== "undefined" && indexedDB);
+
+    function openDB(){
+      return new Promise(function(resolve,reject){
+        var req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = function(){
+          var db = req.result;
+          if(!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE,{keyPath:"date"});
+        };
+        req.onsuccess = function(){ resolve(req.result); };
+        req.onerror   = function(){ reject(req.error); };
+      });
+    }
+    function db(){
+      if(!dbPromise) dbPromise = openDB();
+      return dbPromise;
+    }
+    // localStorage fallback (date -> weight map) ----------------------------
+    function lsRead(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)||"{}")||{}; }catch(e){ return {}; } }
+    function lsWrite(m){ try{ localStorage.setItem(LS_KEY, JSON.stringify(m)); }catch(e){} }
+    function lsAll(){
+      var m=lsRead(), out=[];
+      for(var d in m){ if(Object.prototype.hasOwnProperty.call(m,d)) out.push({date:d, weight:m[d]}); }
+      return out.sort(byDate);
+    }
+    function byDate(a,b){ return a.date<b.date ? -1 : a.date>b.date ? 1 : 0; }
+
+    function fallback(fn){ useIDB=false; dbPromise=null; return fn(); }
+
+    function getAll(){
+      if(!useIDB) return Promise.resolve(lsAll());
+      return db().then(function(d){
+        return new Promise(function(res,rej){
+          var rq = d.transaction(STORE,"readonly").objectStore(STORE).getAll();
+          rq.onsuccess=function(){ res((rq.result||[]).sort(byDate)); };
+          rq.onerror  =function(){ rej(rq.error); };
+        });
+      }).catch(function(){ return fallback(function(){ return lsAll(); }); });
+    }
+    function put(date, weight){
+      if(!useIDB){ var m=lsRead(); m[date]=weight; lsWrite(m); return Promise.resolve(); }
+      return db().then(function(d){
+        return new Promise(function(res,rej){
+          var tx=d.transaction(STORE,"readwrite");
+          tx.objectStore(STORE).put({date:date, weight:weight});
+          tx.oncomplete=function(){res();}; tx.onerror=function(){rej(tx.error);};
+        });
+      }).catch(function(){ return fallback(function(){ var m=lsRead(); m[date]=weight; lsWrite(m); }); });
+    }
+    function remove(date){
+      if(!useIDB){ var m=lsRead(); delete m[date]; lsWrite(m); return Promise.resolve(); }
+      return db().then(function(d){
+        return new Promise(function(res,rej){
+          var tx=d.transaction(STORE,"readwrite");
+          tx.objectStore(STORE).delete(date);
+          tx.oncomplete=function(){res();}; tx.onerror=function(){rej(tx.error);};
+        });
+      }).catch(function(){ return fallback(function(){ var m=lsRead(); delete m[date]; lsWrite(m); }); });
+    }
+    // bulk merge (used when importing history from a shared link) -----------
+    function putMany(entries){
+      return entries.reduce(function(p,e){ return p.then(function(){ return put(e.date, e.weight); }); }, Promise.resolve());
+    }
+    return { getAll:getAll, put:put, remove:remove, putMany:putMany };
+  })();
+
+  // ---- settings (localStorage) + shareable link (URL incl. full history) --
+  var LS_SETTINGS = "wp:settings";
+
+  function loadSettings(){
+    try{ return JSON.parse(localStorage.getItem(LS_SETTINGS)||"null"); }catch(e){ return null; }
+  }
+  function saveSettings(s){
+    try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({pct:s.pct, endDate:s.endDate, unit:s.unit})); }catch(e){}
+  }
+  // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
+  function encodeLog(history){
+    return history.map(function(e){ return e.date.replace(/-/g,"")+":"+e.weight; }).join(",");
+  }
+  function decodeLog(str){
+    if(!str) return [];
+    return str.split(",").map(function(tok){
+      var i=tok.indexOf(":"); if(i<0) return null;
+      var d=tok.slice(0,i), w=parseFloat(tok.slice(i+1));
+      if(!/^\d{8}$/.test(d) || !isFinite(w)) return null;
+      return { date:d.slice(0,4)+"-"+d.slice(4,6)+"-"+d.slice(6,8), weight:w };
+    }).filter(Boolean);
+  }
+  function readURL(){
     try{
-      var p = new URLSearchParams();
-      p.set("weight", s.weight); p.set("pct", s.pct);
-      p.set("end", s.endDate);   p.set("unit", s.unit);
+      var p=new URLSearchParams(location.search);
+      if(!p.toString()) return null;
+      return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
+               weight:p.get("weight"), log:p.get("log") };
+    }catch(e){ return null; }
+  }
+  function writeURL(s, hist){
+    try{
+      var p=new URLSearchParams();
+      p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
+      if(hist && hist.length) p.set("log", encodeLog(hist));
       history.replaceState(null, "", location.pathname + "?" + p.toString() + location.hash);
     }catch(e){}
   }
-  function load(){
+  function buildShareUrl(s, hist){
+    var p=new URLSearchParams();
+    p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
+    if(hist && hist.length) p.set("log", encodeLog(hist));
+    var base;
     try{
-      var p = new URLSearchParams(location.search);
-      if(!p.toString()) return null;
-      return { weight:p.get("weight"), pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit") };
-    }catch(e){ return null; }
+      base = (location.origin && location.origin !== "null")
+        ? location.origin + location.pathname
+        : location.href.split("?")[0].split("#")[0];
+    }catch(e){ base=""; }
+    return base + "?" + p.toString();
   }
 
   // ---- helpers ------------------------------------------------------------
@@ -203,18 +326,6 @@
     var d = new Date(str+"T00:00:00");
     return d.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"});
   }
-  function buildShareUrl(s){
-    var p = new URLSearchParams();
-    p.set("weight", s.weight); p.set("pct", s.pct);
-    p.set("end", s.endDate);   p.set("unit", s.unit);
-    var base;
-    try{
-      base = (location.origin && location.origin !== "null")
-        ? location.origin + location.pathname
-        : location.href.split("?")[0].split("#")[0];
-    }catch(e){ base = ""; }
-    return base + "?" + p.toString();
-  }
   function copyText(text, done){
     if(navigator.clipboard && navigator.clipboard.writeText){
       navigator.clipboard.writeText(text).then(function(){done(true);}, function(){legacyCopy(text,done);});
@@ -234,13 +345,36 @@
   var todayStr = toDateStr(today);
 
   // ---- state --------------------------------------------------------------
-  var saved = load() || {};
+  var urlData    = readURL();          // shared link (may carry full history)
+  var lsSettings = loadSettings();     // settings previously saved on this device
+
+  function pick(key, dflt){
+    var sk = key==="end" ? "endDate" : key;
+    if(urlData && urlData[sk]!=null && urlData[sk]!=="") return urlData[sk];
+    if(lsSettings && lsSettings[sk]!=null && lsSettings[sk]!=="") return lsSettings[sk];
+    return dflt;
+  }
+
   var state = {
-    weight: saved.weight != null ? saved.weight : "80",
-    pct:    saved.pct    != null ? saved.pct    : "1",
-    endDate:saved.endDate|| toDateStr(addDays(today,84)),
-    unit:   saved.unit   || "kg"
+    weight: "",                          // today's logged weight (filled on init)
+    pct:    pick("pct",  "1"),
+    endDate:pick("end",  toDateStr(addDays(today,84))),
+    unit:   pick("unit", "kg")
   };
+
+  var logHistory = [];                  // cached daily log [{date,weight}] ascending
+  function todayEntry(){
+    for(var i=logHistory.length-1;i>=0;i--){ if(logHistory[i].date===todayStr) return logHistory[i]; }
+    return null;
+  }
+  function upsertLocal(date, weight){
+    for(var i=0;i<logHistory.length;i++){ if(logHistory[i].date===date){ logHistory[i].weight=weight; return; } }
+    logHistory.push({date:date, weight:weight});
+    logHistory.sort(function(a,b){ return a.date<b.date?-1:a.date>b.date?1:0; });
+  }
+  function removeLocal(date){
+    logHistory = logHistory.filter(function(e){ return e.date!==date; });
+  }
 
   // ---- elements -----------------------------------------------------------
   var $ = function(id){ return document.getElementById(id); };
@@ -271,6 +405,63 @@
     var final = valid ? at(N) : NaN;
     return {W:W, valid:valid, N:N, rows:rows, final:final, lost:valid?W-final:NaN,
             lostPct:(valid&&W>0)?((W-final)/W*100):NaN};
+  }
+
+  function weeksLeft(){
+    var end = state.endDate ? new Date(state.endDate+"T00:00:00") : null;
+    if(!end || isNaN(end)) return null;
+    var T = (end - today)/WEEK_MS;
+    return T>=0 ? Math.floor(T) : null;
+  }
+
+  // ---- actual progress from the daily log ---------------------------------
+  function progress(){
+    if(logHistory.length===0) return {has:false};
+    var first=logHistory[0], last=logHistory[logHistory.length-1];
+    var days=Math.round((new Date(last.date+"T00:00:00") - new Date(first.date+"T00:00:00"))/DAY_MS);
+    var change=first.weight-last.weight;          // positive = lost
+    var weeks=days/7;
+    return {has:true, first:first, last:last, days:days, count:logHistory.length,
+            change:change, perWeek:weeks>0?change/weeks:0,
+            pctChange:first.weight>0?change/first.weight*100:0};
+  }
+
+  // ---- SVG chart of the *actual* logged weights over calendar time --------
+  function historyChartSVG(entries){
+    if(entries.length<2) return "";
+    var w=600,h=180,padL=46,padR=16,padT=14,padB=26;
+    var t0=new Date(entries[0].date+"T00:00:00").getTime();
+    var t1=new Date(entries[entries.length-1].date+"T00:00:00").getTime();
+    var span=Math.max(1,t1-t0);
+    var ws=entries.map(function(e){return e.weight;});
+    var minW=Math.min.apply(null,ws), maxW=Math.max.apply(null,ws);
+    if(minW===maxW){minW-=1;maxW+=1;}
+    var pad=(maxW-minW)*0.12; minW-=pad; maxW+=pad;
+    var X=function(d){return padL+((new Date(d+"T00:00:00").getTime()-t0)/span)*(w-padL-padR);};
+    var Y=function(v){return padT+(1-(v-minW)/(maxW-minW))*(h-padT-padB);};
+    var pts=entries.map(function(e){return X(e.date).toFixed(1)+","+Y(e.weight).toFixed(1);});
+    var line="M"+pts.join(" L");
+    var area="M"+pts.join(" L")+" L"+X(entries[entries.length-1].date).toFixed(1)+","+(h-padB)+
+             " L"+X(entries[0].date).toFixed(1)+","+(h-padB)+" Z";
+    var dots=entries.map(function(e){
+      return '<circle cx="'+X(e.date).toFixed(1)+'" cy="'+Y(e.weight).toFixed(1)+'" r="2.6" fill="var(--accentDeep)"/>';
+    }).join("");
+    var grid="";
+    for(var g=0;g<=2;g++){
+      var gv=minW+(maxW-minW)*(g/2), gy=Y(gv);
+      grid+='<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)"/>';
+      grid+='<text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--inkSoft)">'+gv.toFixed(1)+'</text>';
+    }
+    var xlbl='<text x="'+X(entries[0].date).toFixed(1)+'" y="'+(h-8)+'" text-anchor="start" font-size="10" fill="var(--inkSoft)">'+prettyDate(entries[0].date)+'</text>'+
+             '<text x="'+X(entries[entries.length-1].date).toFixed(1)+'" y="'+(h-8)+'" text-anchor="end" font-size="10" fill="var(--inkSoft)">'+prettyDate(entries[entries.length-1].date)+'</text>';
+    return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" role="img">'+
+      '<defs><linearGradient id="hgrad" x1="0" y1="0" x2="0" y2="1">'+
+      '<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.30"/>'+
+      '<stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/>'+
+      '</linearGradient></defs>'+grid+
+      '<path d="'+area+'" fill="url(#hgrad)"/>'+
+      '<path d="'+line+'" fill="none" stroke="var(--accentDeep)" stroke-width="2.5" stroke-linejoin="round"/>'+
+      dots+xlbl+'</svg>';
   }
 
   // ---- SVG chart (week 0 = end on left, today on right) -------------------
@@ -320,39 +511,90 @@
   }
 
   // ---- render -------------------------------------------------------------
+  function stat(k, v, cls){
+    return '<div class="pstat"><div class="k">'+k+'</div><div class="v'+(cls?" "+cls:"")+'">'+v+'</div></div>';
+  }
+  function renderProgress(){
+    var pc=$("progressCard"), p=progress(), unit=state.unit;
+    if(!p.has){ pc.hidden=true; pc.innerHTML=""; return; }
+    pc.hidden=false;
+    var dir  = p.change>0 ? "down" : p.change<0 ? "up" : "";
+    var sign = p.change>0 ? "−" : p.change<0 ? "+" : "";
+    pc.innerHTML =
+      '<div class="phead"><span class="ptitle">Your progress</span>'+
+        '<span class="pspan">'+p.count+(p.count===1?" entry":" entries")+' · since '+prettyDate(p.first.date)+'</span></div>'+
+      '<div class="pgrid">'+
+        stat("Starting weight", fmt(p.first.weight)+' <small>'+unit+'</small>')+
+        stat("Latest weight",   fmt(p.last.weight)+' <small>'+unit+'</small>')+
+        stat("Total change",    sign+fmt(Math.abs(p.change))+' <small>'+unit+'</small>', dir)+
+        stat("Avg / week",      sign+fmt(Math.abs(p.perWeek))+' <small>'+unit+'</small>', dir)+
+      '</div>'+
+      (logHistory.length>=2
+        ? '<div class="chartbox">'+historyChartSVG(logHistory)+'</div>'
+        : '<span class="hint">Log another day to see your trend.</span>');
+  }
+
   function render(){
     var c=compute(), unit=state.unit;
-    $("weeksLeft").textContent = c.valid ? c.N : "—";
-    $("targetDate").textContent = c.valid ? prettyDate(state.endDate) : "—";
-    $("resDate").textContent = prettyDate(state.endDate);
-    $("finalW").textContent = fmt(c.final);
-    $("lostW").textContent = fmt(c.lost);
-    $("lostPct").textContent = fmt(c.lostPct);
-    $("endHint").textContent = c.valid ? (c.N+" weeks from today ("+todayStr+")") : "Pick a date on or after today";
-    $("noteN").textContent = c.valid ? c.N : "—";
-    $("chartCard").innerHTML = chartSVG(c.rows);
-    $("tableCard").innerHTML = tableHTML(c.rows, c.W, unit);
+    var wl=weeksLeft(), hasToday=!!todayEntry();
+
+    $("weeksLeft").textContent  = wl!=null ? wl : "—";
+    $("targetDate").textContent = wl!=null ? prettyDate(state.endDate) : "—";
+    $("resDate").textContent    = prettyDate(state.endDate);
+    $("finalW").textContent   = c.valid ? fmt(c.final)   : "—";
+    $("lostW").textContent    = c.valid ? fmt(c.lost)    : "—";
+    $("lostPct").textContent  = c.valid ? fmt(c.lostPct) : "—";
+    $("endHint").textContent  = wl!=null ? (wl+" weeks from today ("+todayStr+")") : "Pick a date on or after today";
+    $("noteN").textContent    = wl!=null ? wl : "—";
+
+    $("weightHint").textContent = hasToday
+      ? "Saved for today ("+prettyDate(todayStr)+") — edit any time to update."
+      : "Log today's weight ("+prettyDate(todayStr)+") to see your projection.";
+
+    if(c.valid){
+      $("chartCard").innerHTML = chartSVG(c.rows);
+      $("tableCard").innerHTML = tableHTML(c.rows, c.W, unit);
+    } else {
+      $("chartCard").innerHTML = '<div class="muted">Log today\'s weight to project your trajectory.</div>';
+      $("tableCard").innerHTML = '<div class="muted">Log today\'s weight to see the week-by-week table.</div>';
+    }
+
+    renderProgress();
+  }
+
+  // ---- persistence (settings + shareable URL) -----------------------------
+  function persist(){
+    saveSettings(state);
+    writeURL(state, logHistory);
   }
 
   // ---- events -------------------------------------------------------------
+  elWeight.addEventListener("input", function(){
+    var cleaned = clampDecimals(elWeight.value);
+    if(cleaned !== elWeight.value) elWeight.value = cleaned;
+    state.weight = cleaned;
+    var n = parseFloat(cleaned);
+    if(cleaned!=="" && isFinite(n)){ upsertLocal(todayStr, n); WeightLog.put(todayStr, n); }
+    else { removeLocal(todayStr); WeightLog.remove(todayStr); }
+    persist(); render();
+  });
   function onDecimalInput(el, key){
     el.addEventListener("input", function(){
       var cleaned = clampDecimals(el.value);
       if(cleaned !== el.value) el.value = cleaned;
-      state[key] = cleaned; save(state); render();
+      state[key] = cleaned; persist(); render();
     });
   }
-  onDecimalInput(elWeight,"weight");
   onDecimalInput(elPct,"pct");
-  elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; save(state); render(); });
+  elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; persist(); render(); });
   document.getElementById("units").addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
-    state.unit = b.dataset.unit; save(state); setInputs(); render();
+    state.unit = b.dataset.unit; persist(); setInputs(); render();
   });
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
   copyBtn.addEventListener("click", function(){
-    copyText(buildShareUrl(state), function(ok){
+    copyText(buildShareUrl(state, logHistory), function(ok){
       copyBtn.classList.add("done");
       copyLabel.textContent = ok ? "Link copied!" : "Press Ctrl/Cmd+C to copy";
       clearTimeout(copyTimer);
@@ -364,9 +606,32 @@
   });
 
   // ---- init ---------------------------------------------------------------
-  save(state);   // reflect current values in the URL so it's shareable
-  setInputs();
-  render();
+  function init(){
+    setInputs();
+    render();                          // settings + countdown visible immediately
+
+    var importP = Promise.resolve();
+    if(urlData){
+      var imported = [];
+      if(urlData.log){ imported = decodeLog(urlData.log); }
+      else if(urlData.weight!=null && urlData.weight!=="" && isFinite(parseFloat(urlData.weight))){
+        imported = [{date:todayStr, weight:parseFloat(urlData.weight)}]; // legacy link: seed today
+      }
+      if(imported.length) importP = WeightLog.putMany(imported);
+    }
+
+    importP.then(function(){ return WeightLog.getAll(); })
+      .then(function(all){
+        logHistory = all;
+        var te = todayEntry();
+        state.weight = te ? String(te.weight) : "";
+        setInputs();
+        persist();                     // normalise settings + full history into URL/localStorage
+        render();
+      })
+      .catch(function(){ persist(); render(); });
+  }
+  init();
 })();
 
 // Register service worker (no-ops if unsupported or sandboxed)
