@@ -1,6 +1,6 @@
 // Weight Projection — service worker
 // Bump CACHE_VERSION when you change any cached asset.
-const CACHE_VERSION = "wp-v2";
+const CACHE_VERSION = "wp-v3";
 const ASSETS = [
   "./",
   "./index.html",

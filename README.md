@@ -84,7 +84,10 @@ estimates.
   **food is capped at 700 kcal** so the diet never gets too aggressive.
 - **Steps** — any deficit beyond that 700 kcal is made up with walking. The app
   shows the daily step count for it, using a height-based stride and the net
-  cost of walking (~0.5 kcal per kg per km).
+  cost of walking (~0.5 kcal per kg per km). Enter your **current daily step
+  average** (optional, under "About you") and the plan shows your *total* daily
+  step target — your current average plus what's added — instead of just the
+  extra.
 
 ### Eating patterns (carb cycling)
 

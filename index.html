@@ -257,6 +257,11 @@
         <div class="ibox"><input id="height" inputmode="decimal" placeholder="0" /><span class="suffix" data-height-suffix>cm</span></div>
         <span class="hint">Sets your minimum protein &amp; fat targets.</span>
       </label>
+      <label class="field">
+        <span class="flabel">Daily steps now</span>
+        <div class="ibox"><input id="curSteps" inputmode="numeric" placeholder="0" /><span class="suffix">steps</span></div>
+        <span class="hint">Optional — your current daily average, so the plan can show your total step target.</span>
+      </label>
       <button type="button" class="donebtn" id="aboutDone">Done</button>
     </div>
   </div>
@@ -634,7 +639,7 @@
   function saveSettings(s){
     try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({
       pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height,
-      pattern:s.pattern, highDays:s.highDays
+      pattern:s.pattern, highDays:s.highDays, curSteps:s.curSteps
     })); }catch(e){}
   }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
@@ -656,13 +661,14 @@
       if(!p.toString()) return null;
       return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
                sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"), highDays:p.get("highDays"),
-               weight:p.get("weight"), log:p.get("log") };
+               curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log") };
     }catch(e){ return null; }
   }
   // Add the body-metric params, omitting any that are empty to keep links tidy.
   function addBodyParams(p, s){
-    if(s.sex)    p.set("sex", s.sex);
-    if(s.height) p.set("height", s.height);
+    if(s.sex)      p.set("sex", s.sex);
+    if(s.height)   p.set("height", s.height);
+    if(s.curSteps) p.set("steps", s.curSteps);
     if(s.pattern && s.pattern!=="even"){ p.set("pattern", s.pattern); p.set("highDays", s.highDays); }
   }
   function writeURL(s, hist){
@@ -748,7 +754,8 @@
     sex:    pick("sex", ""),             // "male" | "female" | "neutral"
     height: pick("height", ""),          // cm (kg unit) or in (lb unit), like weight
     pattern:pick("pattern", "even"),     // "even" | "highlow" | "cycle"
-    highDays:pick("highDays", "2")       // number of high-carb days per week ("1" | "2")
+    highDays:pick("highDays", "2"),      // number of high-carb days per week ("1" | "2")
+    curSteps:pick("curSteps", "")        // current daily average step count (optional)
   };
 
   var logHistory = [];                  // cached daily log [{date,weight}] ascending
@@ -768,7 +775,7 @@
   // ---- elements -----------------------------------------------------------
   var $ = function(id){ return document.getElementById(id); };
   var elWeight=$("weight"), elPct=$("pct"), elEnd=$("endDate");
-  var elHeight=$("height"), elSexSeg=$("sexSeg"), elSexHint=$("sexHint");
+  var elHeight=$("height"), elSexSeg=$("sexSeg"), elSexHint=$("sexHint"), elCurSteps=$("curSteps");
   var elAboutForm=$("aboutForm"), elAboutSummary=$("aboutSummary"),
       elAboutEdit=$("aboutEdit"), elAboutDone=$("aboutDone");
   elEnd.min = todayStr;
@@ -788,7 +795,8 @@
       var hsuffix = state.unit==="lb" ? "in" : "cm";
       elAboutSummary.innerHTML =
         '<span class="chip">'+(SEX_LABEL[state.sex]||"—")+'</span>'+
-        '<span class="chip">'+(state.height!==""?state.height+" "+hsuffix:"—")+'</span>';
+        '<span class="chip">'+(state.height!==""?state.height+" "+hsuffix:"—")+'</span>'+
+        (state.curSteps!==""?'<span class="chip">'+fmt0(parseInt(state.curSteps,10))+' steps/day</span>':"");
     }
   }
 
@@ -797,6 +805,7 @@
     elPct.value = state.pct;
     elEnd.value = state.endDate;
     elHeight.value = state.height;
+    elCurSteps.value = state.curSteps;
     document.querySelectorAll("[data-unit-suffix]").forEach(function(s){ s.textContent = state.unit; });
     document.querySelectorAll("#units button").forEach(function(b){
       b.classList.toggle("on", b.dataset.unit===state.unit);
@@ -1030,19 +1039,22 @@
     function b(n){ return '<button type="button" data-highdays="'+n+'"'+(active===n?' class="on"':'')+'>'+n+(n===1?" day":" days")+'</button>'; }
     return '<div class="subtabs"><span class="lbl">High-carb days</span>'+b(1)+b(2)+'</div>';
   }
-  function cycleTableHTML(cp){
-    var anySteps = cp.days.some(function(d){ return isFinite(d.steps) && d.steps>0; });
+  function cycleTableHTML(cp, cur){
+    var hasCur = isFinite(cur) && cur>0;
+    var anyAdded = cp.days.some(function(d){ return isFinite(d.steps) && d.steps>0; });
+    var showSteps = anyAdded || hasCur;
     var rows = cp.days.map(function(d){
       var cls = d.key==="high"?"high":d.key==="low"?"low":"";
-      var steps = (isFinite(d.steps) && d.steps>0) ? "+"+fmt0(d.steps) : "—";
+      var added = (isFinite(d.steps) && d.steps>0) ? d.steps : 0;
+      var steps = hasCur ? fmt0(cur+added) : (added>0 ? "+"+fmt0(added) : "—");
       return '<tr'+(cls?' class="'+cls+'"':'')+'>'+
         '<td class="day">'+d.label+' <span class="n">×'+d.count+'</span></td>'+
         '<td class="kc">'+fmt0(d.kcal)+'</td><td>'+fmt0(d.protein)+'</td>'+
         '<td>'+fmt0(d.fat)+'</td><td>'+fmt0(d.carbs)+'</td>'+
-        (anySteps ? '<td>'+steps+'</td>' : '')+'</tr>';
+        (showSteps ? '<td>'+steps+'</td>' : '')+'</tr>';
     }).join("");
     return '<table class="mtable"><thead><tr><th>Day</th><th>kcal</th><th>P&nbsp;(g)</th>'+
-      '<th>F&nbsp;(g)</th><th>C&nbsp;(g)</th>'+(anySteps?'<th>Steps</th>':'')+
+      '<th>F&nbsp;(g)</th><th>C&nbsp;(g)</th>'+(showSteps?'<th>Steps'+(hasCur?'/day':'')+'</th>':'')+
       '</tr></thead><tbody>'+rows+'</tbody></table>';
   }
   function trackBanner(unit){
@@ -1125,14 +1137,18 @@
     }
     function stepsSection(){
       var stepsK = roundSteps(e.steps);
+      var cur = parseInt(state.curSteps,10), hasCur = isFinite(cur) && cur>0;
       var stepNote = stepsK>0
-        ? "Added on top of your current daily average to cover the rest of the deficit."
+        ? (hasCur ? "Your "+fmt0(cur)+"/day average plus the steps needed to cover the rest of the deficit."
+                  : "Added on top of your current daily average to cover the rest of the deficit.")
         : "Your food deficit already covers your goal — extra steps are optional but recommended.";
+      var grid = hasCur
+        ? stat("Target / day", fmt0(cur+Math.max(0,stepsK))+' <small>steps total</small>')+
+          stat("To add",       (stepsK>0?'+'+fmt0(stepsK):'0')+' <small>over '+fmt0(cur)+' now</small>')
+        : stat("Steps / day",  '+'+fmt0(stepsK)+' <small>to your daily average</small>')+
+          stat("Over",         e.days+' <small>days</small>');
       return '<div class="cardtitle" style="font-size:17px;margin-top:14px">Daily steps</div>'+
-        '<div class="pgrid" style="margin-top:6px">'+
-          stat("Steps / day", '+'+fmt0(stepsK)+' <small>to your daily average</small>')+
-          stat("Over",        e.days+' <small>days</small>')+
-        '</div>'+
+        '<div class="pgrid" style="margin-top:6px">'+grid+'</div>'+
         '<span class="hint">'+stepNote+'</span>';
     }
 
@@ -1168,8 +1184,10 @@
             " kcal of carbs (to ~"+fmt0(loDay?loDay.carbs:0)+"g) and that goes onto the high day"+(hd===1?"":"s")+
             " (~"+fmt0(hiDay?hiDay.carbs:0)+"g carbs"+(hd===1?"":" each")+")";
         }
-        body += cycleTableHTML(cp)+
+        var cur = parseInt(state.curSteps,10), hasCur = isFinite(cur) && cur>0;
+        body += cycleTableHTML(cp, cur)+
           '<span class="hint">'+macroText+'. The week still averages your '+fmt0(e.intake)+' kcal goal.'+
+          (hasCur ? ' The Steps column is your total daily target (your ~'+fmt0(cur)+'/day average plus any added).' : '')+
           (steepEase ? ' (Your deficit is steep enough that low-day fat had to ease below '+LOW_FAT_PER_KG+
           ' g/kg so the high days stay the biggest.)' : '')+
           (cp.fatTrimmed ? ' The low days hit the '+e.fiber+'g carb floor, so the high day’s fat was trimmed to ~'+
@@ -1233,6 +1251,7 @@
       state.height  = "";
       state.pattern = "even";
       state.highDays= "2";
+      state.curSteps= "";
       aboutOpen     = true;   // reopen the one-time setup after a wipe
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
@@ -1259,6 +1278,11 @@
   }
   onDecimalInput(elPct,"pct");
   onDecimalInput(elHeight,"height");
+  elCurSteps.addEventListener("input", function(){
+    var cleaned = elCurSteps.value.replace(/[^0-9]/g,"").slice(0,6);   // whole steps only
+    if(cleaned !== elCurSteps.value) elCurSteps.value = cleaned;
+    state.curSteps = cleaned; persist(); render();
+  });
   elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; persist(); render(); });
   elSexSeg.addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
