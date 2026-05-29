@@ -115,14 +115,12 @@ then handle fat differently:
 - **Medium day** — fat = **35%** of calories, carbs are the remainder.
 - **Low day** — a solid **0.7 g/kg** fat.
 
-**High / Low** pins fat *low* and pours everything else into carbs, for the
-comfiest week:
+**High / Low** makes high days genuinely *high-carb* and keeps low days fatty:
 
-- **Low day** — as much fat as fits, **1 g/kg** (well above the 0.5 g/kg
-  survival floor), with carbs on the 35 g floor.
-- **High day** — fat held **low** (**0.7 g/kg** with two high days, **1 g/kg**
-  with a single high day) and **all the remaining calories go to carbs**. Two
-  high days spread those carbs more evenly; one high day concentrates them.
+- **High day** — fat drops to the **0.5 g/kg** floor and **every other calorie
+  becomes carbs**. Two high days spread those carbs more evenly; one high day
+  concentrates them into a single big refeed.
+- **Low day** — fat kept high at **0.7 g/kg** with carbs on the 35 g floor.
 
 The week still totals 7 × your goal intake. If the deficit is steep enough that
 solid low-day fat would make low days out-eat the high days, the low-day fat

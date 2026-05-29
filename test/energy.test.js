@@ -154,23 +154,24 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
   check("carbs descend high > medium > low", highOf(cy).carbs > medOf(cy).carbs && medOf(cy).carbs > lowOf(cy).carbs);
 })();
 
-// High/Low: fat is pinned LOW and everything else becomes carbs.
+// High/Low: high days are HIGH-CARB (fat to the floor); low days keep fat high.
 (function () {
   var two = plan({ pattern:"highlow", highDays:2 });
   var one = plan({ pattern:"highlow", highDays:1 });
   check("high/low (2): 2 high + 5 low days", highOf(two).count === 2 && lowOf(two).count === 5);
   check("high/low (1): 1 high + 6 low days", highOf(one).count === 1 && lowOf(one).count === 6);
-  check("high/low: low days carry as much fat as fits (1.0 g/kg = 80g for 80kg)",
-    near(lowOf(two).fat, 1.0 * KG, 1e-6) && near(lowOf(one).fat, 1.0 * KG, 1e-6));
+  check("high/low: low days keep fat high (0.7 g/kg = 56g for 80kg)",
+    near(lowOf(two).fat, 0.7 * KG, 1e-6) && near(lowOf(one).fat, 0.7 * KG, 1e-6));
   check("high/low: low-day carbs sit on the 35g floor",
     near(lowOf(two).carbs, 35, 1e-6) && near(lowOf(one).carbs, 35, 1e-6));
-  check("high/low (2 highs): high-day fat held at 0.7 g/kg (= 56g)", near(highOf(two).fat, 0.7 * KG, 1e-6));
-  check("high/low (1 high): high-day fat held at 1.0 g/kg (= 80g)", near(highOf(one).fat, 1.0 * KG, 1e-6));
+  check("high/low: high-day fat drops to the 0.5 g/kg floor (= 40g)",
+    near(highOf(two).fat, FLOOR, 1e-6) && near(highOf(one).fat, FLOOR, 1e-6));
   check("high/low: high-day carbs are everything left after protein + fat",
     near(highOf(two).carbs, (highOf(two).kcal - P * 4 - highOf(two).fat * 9) / 4, 1e-6) &&
     near(highOf(one).carbs, (highOf(one).kcal - P * 4 - highOf(one).fat * 9) / 4, 1e-6));
-  check("high/low: high days hold LESS fat than low days (2 highs)", highOf(two).fat < lowOf(two).fat);
-  check("high/low: the high day is where the carbs pile up", highOf(two).carbs > lowOf(two).carbs);
+  check("high/low: high days hold LESS fat than low days", highOf(two).fat < lowOf(two).fat);
+  check("high/low: high days are where the carbs pile up",
+    highOf(two).carbs > lowOf(two).carbs && highOf(one).carbs > lowOf(one).carbs);
   check("1 high day packs more carbs into that day than 2 high days", highOf(one).carbs > highOf(two).carbs);
   check("high/low weekly average still equals goal intake",
     near(two.avgKcal, INTAKE, 0.5) && near(one.avgKcal, INTAKE, 0.5));

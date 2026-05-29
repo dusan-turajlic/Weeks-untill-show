@@ -402,23 +402,20 @@
   var FAT_FLOOR_PER_KG = 0.5;
   function fatFloorG(weightKg){ return FAT_FLOOR_PER_KG * weightKg; }
 
-  // Low days are LOW-CARB days, so they carry a solid fat amount with carbs on
-  // the 35 g fibre floor — that fixes the low-day calories and the high/medium
-  // days split whatever's left. The week still totals 7×intake. If the deficit
-  // is so steep that solid low-day fat would make low days out-eat the high
-  // days, the low-day fat eases down toward the floor until that's fixed.
+  // Low days are LOW-CARB days, so they carry their fat (LOW_FAT_PER_KG g/kg,
+  // above the 0.5 g/kg floor) with carbs on the 35 g fibre floor — that fixes
+  // the low-day calories and the high/medium days split whatever's left. The
+  // week still totals 7×intake. If the deficit is so steep that low-day fat
+  // would make low days out-eat the high days, the low-day fat eases down
+  // toward the floor until that's fixed.
   //
   // Two day-macro philosophies:
   //   • Carb cycle — high days are 35% carbs (fat the rest), medium days 35%
-  //     fat (carbs the rest), low days a solid 0.7 g/kg fat.
-  //   • High/Low   — fat is pinned LOW and everything else becomes carbs, for
-  //     the comfiest weekday spread: low days carry as much fat as fits
-  //     (1 g/kg); high days hold fat low (0.7 g/kg with two high days, 1 g/kg
-  //     with one) and take ALL the surplus calories as carbs.
-  var CARB_CAL_SHARE = 0.35, FAT_CAL_SHARE = 0.35;
-  var LOW_FAT_CYCLE = 0.7;                 // carb-cycle low-day fat (g/kg)
-  var LOW_FAT_HIGHLOW = 1.0;               // high/low low-day fat — as high as comfy (g/kg)
-  var HIGH_FAT_TWO = 0.7, HIGH_FAT_ONE = 1.0;  // high/low high-day fat: 2 highs vs 1 high (g/kg)
+  //     fat (carbs the rest), low days 0.7 g/kg fat.
+  //   • High/Low   — high days are HIGH-CARB: their fat drops to the 0.5 g/kg
+  //     floor and every other calorie becomes carbs. Low days keep fat high
+  //     (0.7 g/kg) at the 35 g carb floor. Fewer high days = more carbs on each.
+  var CARB_CAL_SHARE = 0.35, FAT_CAL_SHARE = 0.35, LOW_FAT_PER_KG = 0.7;
 
   function dayCounts(pattern, highDays){
     var h = highDays===1 ? 1 : 2;
@@ -464,24 +461,23 @@
                       steps:(kps>0 ? roundSteps(baseStepEnergy/kps) : NaN)}] };
     }
 
-    // Solid low-day fat, eased down only if it would make low days out-eat highs.
+    // Low-day fat (kept high), eased down only if it would make low days out-eat highs.
     var highlow = o.pattern==="highlow";
     var wSum = n.high*0.95 + n.med*0.85;
-    var lowFat = Math.max(fatFloor, (highlow?LOW_FAT_HIGHLOW:LOW_FAT_CYCLE)*kg);
+    var lowFat = Math.max(fatFloor, LOW_FAT_PER_KG*kg);
     function targets(lf){
-      var lowKcal = 4*P + 9*lf + 4*carbFloor;          // solid fat + floor carbs fixes low days
+      var lowKcal = 4*P + 9*lf + 4*carbFloor;          // high fat + floor carbs fixes low days
       var R = 7*I - n.low*lowKcal;                     // calories left for high + medium
       return { lowKcal:lowKcal, highKcal:R*0.95/wSum, medKcal:R*0.85/wSum };
     }
     var t = targets(lowFat);
     while(lowFat > fatFloor && t.highKcal <= t.lowKcal + 1){ lowFat -= 1; t = targets(lowFat); }
 
-    // High/Low pins fat low and pours everything else into carbs; carb cycle
-    // keeps its 35%-carb high days and 35%-fat medium days.
-    var highFat = Math.max(fatFloor, (n.high===2 ? HIGH_FAT_TWO : HIGH_FAT_ONE)*kg);
+    // High/Low makes high days HIGH-CARB: fat to the floor, everything else
+    // carbs. Carb cycle keeps 35%-carb high days and 35%-fat medium days.
     var defs=[];
     if(n.high) defs.push(highlow
-      ? {key:"high",label:"High", count:n.high, kcal:t.highKcal, mode:"fixedFat", fatSet:highFat}
+      ? {key:"high",label:"High", count:n.high, kcal:t.highKcal, mode:"fixedFat", fatSet:fatFloor}
       : {key:"high",label:"High", count:n.high, kcal:t.highKcal, mode:"carb35",   fatSet:o.fatMin});
     if(n.med)  defs.push({key:"med", label:"Medium",count:n.med,  kcal:t.medKcal,  mode:"fat35",  fatSet:o.fatMin});
     defs.push({key:"low", label:"Low", count:n.low, kcal:t.lowKcal, mode:"fixedFat", fatSet:lowFat});
@@ -1116,13 +1112,14 @@
         var cp = cyclePlan({protein:e.protein, weightKg:bm.weightKg, intake:e.intake, maint:bm.maint,
                             pattern:state.pattern, highDays:hd, carbFloor:e.fiber, fatMin:e.fat,
                             stepDeficit:e.stepDeficit, kcalPerStep:e.kcalPerStep});
-        var lowTarget = (state.pattern==="highlow"?LOW_FAT_HIGHLOW:LOW_FAT_CYCLE);
+        var lowTarget = LOW_FAT_PER_KG;
         var hiDay = cp.days.filter(function(d){return d.key==="high";})[0];
         var macroText = state.pattern==="cycle"
-          ? "Low days carry a solid ~"+fmt0(cp.lowFat)+"g fat ("+LOW_FAT_CYCLE+" g/kg) at the "+e.fiber+
+          ? "Low days carry a solid ~"+fmt0(cp.lowFat)+"g fat ("+LOW_FAT_PER_KG+" g/kg) at the "+e.fiber+
             "g carb floor; high days are 35% carbs and medium days 35% fat, taking whatever calories are left"
-          : "Low days carry as much fat as fits (~"+fmt0(cp.lowFat)+"g, "+LOW_FAT_HIGHLOW+" g/kg) at the "+e.fiber+
-            "g carb floor; high days keep fat low (~"+fmt0(hiDay?hiDay.fat:0)+"g) and pour every other calorie into carbs";
+          : "High days are high-carb — fat drops to ~"+fmt0(hiDay?hiDay.fat:0)+"g (the 0.5 g/kg floor) so every "+
+            "other calorie is carbs; low days keep fat high (~"+fmt0(cp.lowFat)+"g, "+LOW_FAT_PER_KG+" g/kg) at the "+
+            e.fiber+"g carb floor";
         body += cycleTableHTML(cp)+
           '<span class="hint">'+macroText+'. Protein stays constant and the week still averages your '+
           fmt0(e.intake)+' kcal goal.'+
