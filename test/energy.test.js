@@ -120,10 +120,10 @@ check("fibre target is 35g", api.FIBER_MIN === 35);
 // cyclePlan({protein, weightKg, intake, maint, pattern, highDays, carbFloor,
 //            stepDeficit, kcalPerStep})
 // Worked example: 80kg, protein 160g, goal intake 1610 kcal, maintenance 2300.
-var P = 160, KG = 80, INTAKE = 1610, MAINT = 2300, FLOOR = 40; // 0.5 g/kg
+var P = 160, KG = 80, INTAKE = 1610, MAINT = 2300, FLOOR = 40, FATMIN = 66; // floor = 0.5 g/kg
 function plan(over){
   var o = { protein:P, weightKg:KG, intake:INTAKE, maint:MAINT, pattern:"cycle",
-            highDays:2, carbFloor:35, stepDeficit:0, kcalPerStep:0.03 };
+            highDays:2, carbFloor:35, fatMin:FATMIN, stepDeficit:0, kcalPerStep:0.03 };
   for(var k in over) o[k] = over[k];
   return api.cyclePlan(o);
 }
@@ -133,7 +133,7 @@ function medOf(p){ return p.days.filter(function(d){return d.key==="med";})[0]; 
 
 check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
 
-// Carb cycle: always 1 high @95% + 2 medium @85% + 4 low.
+// Carb cycle: 1 high @95% + 2 medium @85% + 4 low, with per-day-type macros.
 (function () {
   var cy = plan({ pattern:"cycle" });
   check("cycle: 1 high + 2 medium + 4 low days",
@@ -141,19 +141,21 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
   check("cycle: high = 95% maintenance, medium = 85% maintenance",
     near(highOf(cy).kcal, 0.95 * MAINT, 1e-6) && near(medOf(cy).kcal, 0.85 * MAINT, 1e-6));
   check("cycle: weekly average equals goal intake (no raised days)", near(cy.avgKcal, INTAKE, 0.5));
-  check("cycle: carbs are 35% of each day's calories (high day)",
-    near(highOf(cy).carbs * 4, 0.35 * highOf(cy).kcal, 1e-6));
-  check("cycle: fat is the remainder on the high day (well above the floor)",
-    highOf(cy).fat > FLOOR && near(highOf(cy).fat, (highOf(cy).kcal - P * 4 - highOf(cy).carbs * 4) / 9, 1e-6));
-  check("cycle: low day fat is clamped to the floor, carbs cut to fit",
-    near(lowOf(cy).fat, FLOOR, 1e-9) && lowOf(cy).carbs >= 35);
+  check("high day: carbs = 35% of calories, fat is the remainder",
+    near(highOf(cy).carbs * 4, 0.35 * highOf(cy).kcal, 1e-6) &&
+    near(highOf(cy).fat, (highOf(cy).kcal - P * 4 - highOf(cy).carbs * 4) / 9, 1e-6));
+  check("medium day: fat = 35% of calories, carbs are the remainder",
+    near(medOf(cy).fat * 9, 0.35 * medOf(cy).kcal, 1e-6) &&
+    near(medOf(cy).carbs, (medOf(cy).kcal - P * 4 - medOf(cy).fat * 9) / 4, 1e-6));
+  check("low day: original split — fat at/below the height minimum, carbs ≥ 35g",
+    lowOf(cy).fat <= FATMIN + 1e-6 && lowOf(cy).fat >= FLOOR - 1e-6 && lowOf(cy).carbs >= 35 - 1e-6);
   check("cycle: protein constant every day",
     highOf(cy).protein === P && medOf(cy).protein === P && lowOf(cy).protein === P);
   check("cycle: carbs descend high > medium > low",
     highOf(cy).carbs > medOf(cy).carbs && medOf(cy).carbs > lowOf(cy).carbs);
 })();
 
-// High/Low structure and the 1-vs-2 high-day choice.
+// High/Low structure and the 1-vs-2 high-day choice (high days are carb-focused).
 (function () {
   var two = plan({ pattern:"highlow", highDays:2 });
   var one = plan({ pattern:"highlow", highDays:1 });
@@ -161,27 +163,28 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
     highOf(two).count === 2 && lowOf(two).count === 5 && near(highOf(two).kcal, 0.85 * MAINT, 1e-6));
   check("high/low (1): 1 high + 6 low, high = 95% maintenance",
     highOf(one).count === 1 && lowOf(one).count === 6 && near(highOf(one).kcal, 0.95 * MAINT, 1e-6));
-  check("high/low: both keep the weekly average at goal intake",
-    near(two.avgKcal, INTAKE, 0.5) && near(one.avgKcal, INTAKE, 0.5));
+  check("high/low: high day carbs = 35% of its calories",
+    near(highOf(two).carbs * 4, 0.35 * highOf(two).kcal, 1e-6));
   check("1 high day packs more carbs into that day than 2 high days", highOf(one).carbs > highOf(two).carbs);
 })();
 
-// Steps: same on every day, unless a day is raised to the minimum feasible day.
+// Steps: same on every day, and any payback for raised low days goes on the HIGH day.
 (function () {
   // With protein 160 the low day fits, so no day is raised.
   var cy = plan({ stepDeficit:0 });
   check("no steps when diet alone hits the goal and no day is raised",
-    cy.days.every(function(d){ return d.steps === 0 && !d.raised; }));
+    cy.days.every(function(d){ return d.steps === 0; }) && !cy.anyRaised);
   // Base step target (stepDeficit/kcalPerStep) is identical on every day.
   var withBase = plan({ stepDeficit:300, kcalPerStep:0.03 }); // 300/0.03 = 10000 steps
   check("base steps are the same on every day", withBase.days.every(function(d){ return d.steps === 10000; }));
-  // Heavy protein makes the low day infeasible -> it is raised and gets extra steps.
+  // Heavy protein makes the low days too low -> they are raised, but the extra
+  // steps land on the HIGH day, not the low days.
   var heavy = plan({ protein:230, stepDeficit:0, kcalPerStep:0.03 });
-  check("a too-low day is raised to the minimum feasible day", lowOf(heavy).raised === true);
-  check("raised day keeps fat at the floor and carbs at 35g",
+  check("a too-low day is raised to the minimum feasible day", lowOf(heavy).raised === true && heavy.anyRaised);
+  check("raised low day keeps fat at the floor and carbs at 35g",
     near(lowOf(heavy).fat, FLOOR, 1e-9) && near(lowOf(heavy).carbs, 35, 1e-9));
-  check("only the raised day carries extra steps; the rest stay at base (0)",
-    lowOf(heavy).steps > 0 && highOf(heavy).steps === 0 && medOf(heavy).steps === 0);
+  check("extra steps land on the HIGH day, not the raised low days",
+    highOf(heavy).steps > 0 && lowOf(heavy).steps === 0 && medOf(heavy).steps === 0);
 })();
 
 // Even pattern just averages the intake.

@@ -107,17 +107,24 @@ a share of **maintenance**, and the low days absorb whatever calories are left:
 - **Carb cycle** — always 1 high day (**95%**) + 2 medium days (**85%**) + 4 low
   days (the remainder).
 
-Within each day: **protein is constant**, **carbs are 35% of that day's
-calories**, and **fat is whatever's left** — but fat never drops below the
-**0.5 g/kg/day floor** (the lowest intake the literature supports during a diet,
-for hormones and essential fatty acids). If holding that fat floor would push
-carbs under the **35 g fibre floor**, the day is lifted to the lowest workable
-calories (protein + floor fat + 35 g carbs) and the extra calories are paid back
-with **steps on that day**.
+**Protein is constant every day.** The other two macros depend on the day type:
 
-Steps are otherwise the **same every day** (whatever the goal needs beyond a
-700 kcal food deficit); only the lifted days carry extra. When cycling, the
-per-day calories, macros and steps are shown in a table.
+- **High day** — carbs = **35%** of the day's calories, fat is the remainder
+  (carb-focused).
+- **Medium day** — fat = **35%** of calories, carbs are the remainder (~20%,
+  fat-focused).
+- **Low day** — your normal/even split (fat at your height-based minimum, carbs
+  take the rest).
+
+Fat never drops below the **0.5 g/kg/day floor** (the lowest the literature
+supports during a diet, for hormones and essential fatty acids) and carbs never
+below the **35 g fibre floor**. If a low day falls too low to hold both, it's
+lifted to the minimum workable day (protein + floor fat + 35 g carbs).
+
+Steps are the **same every day** (whatever the goal needs beyond a 700 kcal food
+deficit). When a low day has to be lifted, the extra calories are paid back with
+**steps on the high day** — the day you've eaten enough to actually walk them.
+The per-day calories, macros and steps are shown in a table.
 
 These are general estimates, not medical advice. If even a capped food deficit
 can't fit your protein + fat minimums, the app says so — lower the weekly % or

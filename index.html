@@ -425,40 +425,55 @@
     return [{key:"med",label:"Every day",n:7,kcal:intake}];
   }
 
-  // Turn a day's calorie target into macros: protein is fixed, carbs are 35% of
-  // the day's calories, and fat is whatever's left. Fat won't drop below the
-  // safe floor — if it would, carbs are cut to hold the floor. If carbs would
-  // then fall under the 35 g fibre floor, the day can't be eaten that low, so it
-  // rises to the minimum feasible day (protein + floor fat + 35 g carbs) and the
-  // extra calories (`raisedBy`) are paid back with steps.
-  var CARB_CAL_SHARE = 0.35;
-  function dayMacros(targetKcal, protein, fatFloor, carbFloor){
-    var carbs = CARB_CAL_SHARE*targetKcal/4;
-    var fat = (targetKcal - 4*protein - 4*carbs)/9;       // the remainder (~25%)
+  // Turn a day's calorie target into macros. Protein is always fixed. Then one
+  // macro is set by the day type and the other is the remainder:
+  //   high day    — carbs = 35% of calories, fat is the rest (carb-focused)
+  //   medium day  — fat = 35% of calories, carbs are the rest (~20%, fat-focused)
+  //   low day     — the original/even split: fat = your height minimum, carbs the rest
+  // Fat is never below the safe floor and carbs never below the 35 g fibre floor;
+  // if a day is too low in calories to hold protein + floor-fat + 35 g carbs, it
+  // rises to that minimum feasible day and the surplus (`raisedBy`) is repaid
+  // with steps (assigned to the high day by cyclePlan).
+  var CARB_CAL_SHARE = 0.35, FAT_CAL_SHARE = 0.35;
+  function dayMacros(targetKcal, protein, fatFloor, carbFloor, mode, fatMin){
+    var fat, carbs;
+    if(mode==="carb35"){ carbs = CARB_CAL_SHARE*targetKcal/4; fat = (targetKcal - 4*protein - 4*carbs)/9; }
+    else if(mode==="fat35"){ fat = FAT_CAL_SHARE*targetKcal/9; carbs = (targetKcal - 4*protein - 9*fat)/4; }
+    else { fat = fatMin; carbs = (targetKcal - 4*protein - 9*fat)/4; }   // original/low
     if(fat < fatFloor){ fat = fatFloor; carbs = (targetKcal - 4*protein - 9*fatFloor)/4; }
     var kcal = targetKcal;
-    if(carbs < carbFloor){                                // too low to keep 35 g carbs
-      carbs = carbFloor; fat = fatFloor;
-      kcal = 4*protein + 9*fatFloor + 4*carbFloor;        // eat the minimum feasible day
+    if(carbs < carbFloor){                                  // hold the fibre floor; trim fat to fit
+      carbs = carbFloor;
+      fat = (targetKcal - 4*protein - 4*carbFloor)/9;
+      if(fat < fatFloor){ fat = fatFloor; kcal = 4*protein + 9*fatFloor + 4*carbFloor; } // raise the day
     }
     return { protein:protein, fat:fat, carbs:carbs, kcal:kcal, raisedBy: kcal - targetKcal };
   }
 
   // Build the week. Every day carries the same base step target (whatever the
-  // goal needs beyond a 700-kcal food deficit); only days that had to be raised
-  // to the minimum feasible day get extra steps to pay back those calories.
+  // goal needs beyond a 700-kcal food deficit). When a low day has to be raised
+  // to stay workable, those extra calories are repaid with steps on the HIGH
+  // day(s) — the day with the most energy coming in to actually walk them.
+  var DAY_MODE = { high:"carb35", med:"fat35", low:"original" };
   function cyclePlan(o){
-    var protein=o.protein, fatFloor=fatFloorG(o.weightKg), carbFloor=o.carbFloor||35;
+    var protein=o.protein, fatFloor=fatFloorG(o.weightKg), carbFloor=o.carbFloor||35, fatMin=o.fatMin;
     var baseStepEnergy=o.stepDeficit||0, kps=o.kcalPerStep||0;
     var days = dayCalorieTargets(o.intake, o.maint, o.pattern, o.highDays).map(function(t){
-      var m = dayMacros(t.kcal, protein, fatFloor, carbFloor);
-      var stepEnergy = baseStepEnergy + m.raisedBy;        // base + payback for raised days
+      var m = dayMacros(t.kcal, protein, fatFloor, carbFloor, DAY_MODE[t.key]||"original", fatMin);
       return { key:t.key, label:t.label, count:t.n, kcal:m.kcal, protein:m.protein,
-               fat:m.fat, carbs:m.carbs, raised:m.raisedBy>0.5,
-               stepEnergy:stepEnergy, steps:(kps>0 ? roundSteps(stepEnergy/kps) : NaN) };
+               fat:m.fat, carbs:m.carbs, raised:m.raisedBy>0.5, raisedBy:Math.max(0,m.raisedBy) };
+    });
+    // surplus calories from raised days, repaid with steps on the high day(s)
+    var weeklyExtra = days.reduce(function(s,d){ return s + d.raisedBy*d.count; }, 0);
+    var highCount   = days.reduce(function(s,d){ return s + (d.key==="high"?d.count:0); }, 0);
+    var extraPerHigh = highCount>0 ? weeklyExtra/highCount : 0;
+    days.forEach(function(d){
+      d.stepEnergy = baseStepEnergy + (d.key==="high" ? extraPerHigh : 0);
+      d.steps = kps>0 ? roundSteps(d.stepEnergy/kps) : NaN;
     });
     var weeklyKcal = days.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
-    return { pattern:o.pattern, days:days, fatFloor:fatFloor, carbFloor:carbFloor, avgKcal: weeklyKcal/7 };
+    return { pattern:o.pattern, days:days, fatFloor:fatFloor, carbFloor:carbFloor,
+             anyRaised: weeklyExtra>0.5, avgKcal: weeklyKcal/7 };
   }
 
   // ---- daily weight log: IndexedDB, with a localStorage fallback ----------
@@ -1070,17 +1085,18 @@
         var hd = parseInt(state.highDays,10)===1 ? 1 : 2;
         if(state.pattern==="highlow") body += highDaysTabs(hd);   // carb cycle is always 1 high day
         var cp = cyclePlan({protein:e.protein, weightKg:bm.weightKg, intake:e.intake, maint:bm.maint,
-                            pattern:state.pattern, highDays:hd, carbFloor:e.fiber,
+                            pattern:state.pattern, highDays:hd, carbFloor:e.fiber, fatMin:e.fat,
                             stepDeficit:e.stepDeficit, kcalPerStep:e.kcalPerStep});
-        var anyRaised = cp.days.some(function(d){ return d.raised; });
         var pctText = state.pattern==="cycle" ? "High &amp; medium days are 95% &amp; 85%"
                                               : (hd===1 ? "The high day is 95%" : "High days are 85%");
+        var macroText = state.pattern==="cycle"
+          ? "High days are 35% carbs (low fat); medium days are 35% fat (lower carb); low days keep your normal split"
+          : "High days are 35% carbs; low days keep your normal split";
         body += cycleTableHTML(cp)+
-          '<span class="hint">Carbs are '+Math.round(CARB_CAL_SHARE*100)+'% of each day’s calories and fat takes the '+
-          'rest, never below ~'+fmt0(cp.fatFloor)+'g ('+FAT_FLOOR_PER_KG+' g/kg, the safe floor); protein is constant. '+
-          pctText+' of maintenance, the low days take the remainder, and the week still hits your '+fmt0(e.intake)+
-          ' kcal goal.'+(anyRaised ? ' Days with steps were lifted to the lowest workable calories, with steps added '+
-          'to keep the deficit on track.' : '')+'</span>';
+          '<span class="hint">'+macroText+' — protein stays constant and the week still hits your '+fmt0(e.intake)+
+          ' kcal goal. '+pctText+' of maintenance; the low days take the remainder.'+
+          (cp.anyRaised ? ' Low days that fell too low to keep '+e.fiber+'g carbs were lifted to the minimum, with '+
+          'the extra steps put on the high day (where you’ve eaten enough to walk them).' : '')+'</span>';
       }
     }
     var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier; '+
