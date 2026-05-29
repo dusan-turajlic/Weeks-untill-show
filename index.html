@@ -65,9 +65,22 @@
   .units button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
 
   .cardtitle{font-family:var(--serif);font-size:20px;font-weight:600;margin-bottom:4px}
-  .seg{margin-top:6px;display:flex;gap:6px}
+  .abouthead{display:flex;align-items:center;justify-content:space-between}
+  .abouthead .cardtitle{margin-bottom:0}
+  .linkbtn{border:none;background:transparent;color:var(--accent);font-family:var(--sans);
+           font-size:13px;font-weight:600;cursor:pointer;padding:4px 8px;border-radius:8px}
+  .linkbtn:hover{background:var(--accentSoft)}
+  .aboutsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .aboutsum .chip{background:var(--accentSoft);border:1px solid var(--line);border-radius:999px;
+                  padding:6px 13px;font-weight:600;color:var(--accentDeep);font-size:14px}
+  .donebtn{margin-top:16px;width:100%;border:1px solid var(--accent);background:var(--accent);color:#fff;
+           border-radius:12px;padding:12px;font-size:15px;font-weight:600;font-family:var(--sans);cursor:pointer}
+  .donebtn:disabled{opacity:.5;cursor:not-allowed}
+  .donebtn:not(:disabled):hover{filter:brightness(.95)}
+  .seg{margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:6px}
   .seg button{flex:1;border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:12px;
               padding:11px 0;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .seg button.wide{grid-column:1 / -1}
   .seg button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
   .warn{display:flex;gap:9px;align-items:flex-start;background:#f7e9e3;border:1px solid #e8cdc0;
         border-radius:12px;padding:10px 12px;margin-top:12px;font-size:12.5px;color:#a8472f;line-height:1.45}
@@ -198,6 +211,32 @@
     </div>
   </div>
 
+  <div class="card" id="aboutCard">
+    <div class="abouthead">
+      <div class="cardtitle">About you</div>
+      <button type="button" class="linkbtn" id="aboutEdit" hidden>Edit</button>
+    </div>
+    <div class="aboutsum" id="aboutSummary" hidden></div>
+    <div id="aboutForm">
+      <p class="sub" style="margin:2px 0 4px">Set this once — your sex and height fix your calorie, protein and fat targets.</p>
+      <label class="field">
+        <span class="flabel">Sex</span>
+        <div class="seg" id="sexSeg">
+          <button type="button" data-sex="male">Male</button>
+          <button type="button" data-sex="female">Female</button>
+          <button type="button" class="wide" data-sex="neutral">Prefer not to say</button>
+        </div>
+        <span class="hint" id="sexHint" hidden></span>
+      </label>
+      <label class="field">
+        <span class="flabel">Height</span>
+        <div class="ibox"><input id="height" inputmode="decimal" placeholder="0" /><span class="suffix" data-height-suffix>cm</span></div>
+        <span class="hint">Sets your minimum protein &amp; fat targets.</span>
+      </label>
+      <button type="button" class="donebtn" id="aboutDone">Done</button>
+    </div>
+  </div>
+
   <div class="card">
     <div class="units" id="units">
       <button data-unit="kg">kg</button>
@@ -216,23 +255,6 @@
       <span class="flabel">End date</span>
       <div class="ibox"><input id="endDate" type="date" /></div>
       <span class="hint" id="endHint">Pick a date on or after today</span>
-    </label>
-  </div>
-
-  <div class="card">
-    <div class="cardtitle">About you</div>
-    <p class="sub" style="margin:0 0 4px">Used to work out your maintenance calories, daily macros and the steps your goal needs.</p>
-    <label class="field">
-      <span class="flabel">Sex</span>
-      <div class="seg" id="sexSeg">
-        <button type="button" data-sex="male">Male</button>
-        <button type="button" data-sex="female">Female</button>
-      </div>
-    </label>
-    <label class="field">
-      <span class="flabel">Height</span>
-      <div class="ibox"><input id="height" inputmode="decimal" placeholder="0" /><span class="suffix" data-height-suffix>cm</span></div>
-      <span class="hint">Sets your minimum protein &amp; fat targets.</span>
     </label>
   </div>
 
@@ -304,9 +326,14 @@
     for(var i=0;i<t.length;i++){ if(weightLb < t[i][0]) return t[i][1]; }
     return t[t.length-1][1];
   }
+  // "Prefer not to say" runs the male and female versions and averages them, so
+  // every sex-keyed figure has a single, neutral path.
+  function bySex(sex, fn){
+    return sex==="neutral" ? (fn("male") + fn("female"))/2 : fn(sex);
+  }
   function maintenanceCalories(sex, weightKg){
     var lb = weightKg * KG_TO_LB;
-    return lb * maintMultiplier(sex, lb);
+    return lb * bySex(sex, function(s){ return maintMultiplier(s, lb); });
   }
 
   // Minimum daily protein & fat (g) to protect muscle and hormones, keyed to
@@ -332,8 +359,8 @@
     }
     return last[1];
   }
-  function minProtein(sex, heightCm){ return interp(MIN_PROTEIN[sex] || MIN_PROTEIN.male, heightCm); }
-  function minFat(sex, heightCm){ return interp(MIN_FAT[sex] || MIN_FAT.male, heightCm); }
+  function minProtein(sex, heightCm){ return bySex(sex, function(s){ return interp(MIN_PROTEIN[s], heightCm); }); }
+  function minFat(sex, heightCm){ return bySex(sex, function(s){ return interp(MIN_FAT[s], heightCm); }); }
 
   // Net kcal burned per step. Stride ≈ 0.414·height; walking costs ≈0.5 kcal
   // per kg per km net of rest. Heavier/taller people burn more per step.
@@ -564,8 +591,29 @@
   // ---- elements -----------------------------------------------------------
   var $ = function(id){ return document.getElementById(id); };
   var elWeight=$("weight"), elPct=$("pct"), elEnd=$("endDate");
-  var elHeight=$("height"), elSexSeg=$("sexSeg");
+  var elHeight=$("height"), elSexSeg=$("sexSeg"), elSexHint=$("sexHint");
+  var elAboutForm=$("aboutForm"), elAboutSummary=$("aboutSummary"),
+      elAboutEdit=$("aboutEdit"), elAboutDone=$("aboutDone");
   elEnd.min = todayStr;
+
+  var SEX_LABEL = {male:"Male", female:"Female", neutral:"Prefer not to say"};
+  // "About you" is set once: when both sex & height are filled it collapses to a
+  // summary so return visits land straight on the weight field. Edit reopens it.
+  var aboutComplete = function(){ return !!state.sex && state.height!==""; };
+  var aboutOpen = !aboutComplete();
+  function setAbout(){
+    var complete = aboutComplete();
+    elAboutForm.hidden    = !aboutOpen;
+    elAboutSummary.hidden = aboutOpen;
+    elAboutEdit.hidden    = aboutOpen;
+    elAboutDone.disabled  = !complete;
+    if(!aboutOpen){
+      var hsuffix = state.unit==="lb" ? "in" : "cm";
+      elAboutSummary.innerHTML =
+        '<span class="chip">'+(SEX_LABEL[state.sex]||"—")+'</span>'+
+        '<span class="chip">'+(state.height!==""?state.height+" "+hsuffix:"—")+'</span>';
+    }
+  }
 
   function setInputs(){
     elWeight.value = state.weight;
@@ -582,6 +630,13 @@
     document.querySelectorAll("[data-height-suffix]").forEach(function(s){
       s.textContent = state.unit==="lb" ? "in" : "cm";
     });
+    if(state.sex==="neutral"){
+      elSexHint.hidden = false;
+      elSexHint.textContent = "We average the male and female formulas for your calories, protein and fat.";
+    } else {
+      elSexHint.hidden = true;
+    }
+    setAbout();
   }
 
   // ---- compute ------------------------------------------------------------
@@ -617,12 +672,11 @@
     var heightCm = lb ? H*IN_TO_CM : H;
     var sex=state.sex;
     var valid = isFinite(weightKg) && weightKg>0 && isFinite(heightCm) && heightCm>0
-             && (sex==="male"||sex==="female");
+             && (sex==="male"||sex==="female"||sex==="neutral");
     if(!valid) return {valid:false};
     var maint=maintenanceCalories(sex, weightKg);
     return {valid:true, weightKg:weightKg, heightCm:heightCm, sex:sex,
-            maint:maint, mult:maintMultiplier(sex, weightKg*KG_TO_LB),
-            protein:minProtein(sex, heightCm), fat:minFat(sex, heightCm)};
+            maint:maint, protein:minProtein(sex, heightCm), fat:minFat(sex, heightCm)};
   }
 
   // Translate the projection (lose pct%/week to the end date) into the daily
@@ -840,16 +894,23 @@
       return;
     }
     var bm=e.bm, hasGoal=isFinite(e.intake);
-    // headline: maintenance, then what to eat + the deficit
-    var head=
-      '<div class="result" style="margin-top:0">'+
-        '<div class="cap">Daily maintenance</div>'+
-        '<div class="big">'+fmt0(bm.maint)+' <small>kcal/day</small></div>'+
-        '<div class="stats">'+
-          '<div><div class="k">Eat to hit goal</div><div class="v">'+(hasGoal?fmt0(e.intake):"—")+' <span>kcal</span></div></div>'+
-          '<div><div class="k">Food deficit</div><div class="v">'+(hasGoal?fmt0(e.foodDeficit):"—")+' <span>kcal</span></div></div>'+
-        '</div>'+
-      '</div>';
+    // headline: the calories to eat to reach the goal is the hero; maintenance
+    // and the deficit are the supporting stats.
+    var head = hasGoal
+      ? '<div class="result" style="margin-top:0">'+
+          '<div class="cap">Eat this to reach your goal</div>'+
+          '<div class="big">'+fmt0(e.intake)+' <small>kcal/day</small></div>'+
+          '<div class="stats">'+
+            '<div><div class="k">Maintenance</div><div class="v">'+fmt0(bm.maint)+' <span>kcal</span></div></div>'+
+            '<div><div class="k">Food deficit</div><div class="v">−'+fmt0(e.foodDeficit)+' <span>kcal</span></div></div>'+
+          '</div>'+
+        '</div>'
+      : '<div class="result" style="margin-top:0">'+
+          '<div class="cap">Daily maintenance</div>'+
+          '<div class="big">'+fmt0(bm.maint)+' <small>kcal/day</small></div>'+
+          '<div class="stats"><div><div class="k">Goal intake</div>'+
+            '<div class="v">log your weight &amp; rate</div></div></div>'+
+        '</div>';
     // macros (protein & fat are minimums; carbs are the remainder)
     var grid=
       '<div class="cardtitle" style="font-size:17px">Daily macros'+(hasGoal?'':' (minimums)')+'</div>'+
@@ -932,6 +993,7 @@
       state.unit    = "kg";
       state.sex     = "";
       state.height  = "";
+      aboutOpen     = true;   // reopen the one-time setup after a wipe
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
       render();
@@ -961,6 +1023,10 @@
   elSexSeg.addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
     state.sex = b.dataset.sex; persist(); setInputs(); render();
+  });
+  elAboutEdit.addEventListener("click", function(){ aboutOpen=true; setAbout(); });
+  elAboutDone.addEventListener("click", function(){
+    if(aboutComplete()){ aboutOpen=false; setAbout(); }
   });
   document.getElementById("units").addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;

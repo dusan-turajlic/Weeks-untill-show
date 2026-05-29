@@ -65,6 +65,20 @@ check("male protein interpolates between points",
 check("protein clamps at the short end", api.minProtein("male", 120) === 135);
 check("fat clamps at the tall end",      api.minFat("male", 230) === 93);
 
+// ---- "prefer not to say" averages the male & female formulas ---------------
+check("neutral maintenance = mean of male & female",
+  near(api.maintenanceCalories("neutral", 80),
+       (api.maintenanceCalories("male", 80) + api.maintenanceCalories("female", 80)) / 2, 1e-9));
+check("neutral protein = mean of male & female",
+  near(api.minProtein("neutral", 175),
+       (api.minProtein("male", 175) + api.minProtein("female", 175)) / 2, 1e-9));
+check("neutral fat = mean of male & female",
+  near(api.minFat("neutral", 170),
+       (api.minFat("male", 170) + api.minFat("female", 170)) / 2, 1e-9));
+check("neutral sits between the male & female maintenance values",
+  api.maintenanceCalories("neutral", 80) > Math.min(api.maintenanceCalories("male", 80), api.maintenanceCalories("female", 80)) &&
+  api.maintenanceCalories("neutral", 80) < Math.max(api.maintenanceCalories("male", 80), api.maintenanceCalories("female", 80)));
+
 // ---- kcal per step ---------------------------------------------------------
 var kps = api.calcKcalPerStep(80, 180);
 check("kcal/step 80kg/180cm ≈ 0.0298", near(kps, 0.0298, 0.002));

@@ -15,10 +15,11 @@ dependencies.
 - **Trajectory chart** — an inline SVG line chart of your weight from today
   (week N) to your end date (week 0).
 - **Week-by-week table** — every week's projected weight and cumulative loss.
-- **Calories, macros & steps** — add just your sex and height and the app works
-  out the maintenance calories for your current weight, the daily calories to
-  eat to hit your goal, a protein / fat / carb split (with a fibre target), and
-  the daily step count needed to make up the rest of the deficit. See
+- **Calories, macros & steps** — set your sex and height once (it collapses to a
+  summary afterwards, so return visits land on the weight field) and the app
+  works out the daily calories to eat to hit your goal as the headline, plus
+  maintenance, a protein / fat / carb split (with a fibre target), and the daily
+  step count needed to make up the rest of the deficit. See
   [How the calorie numbers work](#how-the-calorie-numbers-work).
 - **kg / lb toggle** — switch units on the fly (height follows as cm / in).
 - **Shareable links** — all inputs are stored in the URL's query string, so you
@@ -74,6 +75,8 @@ estimates.
   first.
 - **Minimum protein & fat** — set by your **height** (interpolated from a
   reference table, in cm) to protect muscle and keep hormones healthy.
+- **"Prefer not to say"** — every sex-keyed figure (maintenance multiplier,
+  protein and fat) is computed for both male and female and averaged.
 - **Carbs** — whatever calories are left after protein (4 kcal/g) and fat
   (9 kcal/g), at 4 kcal/g — including a target of **≥35 g fibre**.
 - **Deficit & intake** — the projected weight to lose × ~7,700 kcal/kg (≈3,500
