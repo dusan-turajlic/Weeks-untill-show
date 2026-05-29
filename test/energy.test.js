@@ -25,7 +25,7 @@ var energySrc = region("// ---- energy / macro constants & formulas",
 var api = new Function(
   energySrc +
   "return { maintMultiplier:maintMultiplier, maintenanceCalories:maintenanceCalories, " +
-  "minProtein:minProtein, minFat:minFat, interp:interp, calcKcalPerStep:calcKcalPerStep, " +
+  "minProtein:minProtein, minFat:minFat, interp:interp, calcKcalPerStep:calcKcalPerStep, roundSteps:roundSteps, " +
   "KCAL_PER_KG:KCAL_PER_KG, KG_TO_LB:KG_TO_LB, MAX_FOOD_DEFICIT:MAX_FOOD_DEFICIT, FIBER_MIN:FIBER_MIN };"
 )();
 
@@ -70,6 +70,12 @@ var kps = api.calcKcalPerStep(80, 180);
 check("kcal/step 80kg/180cm ≈ 0.0298", near(kps, 0.0298, 0.002));
 check("heavier person burns more per step",
   api.calcKcalPerStep(100, 180) > api.calcKcalPerStep(70, 180));
+
+// ---- step goals round to the nearest 1,000 ---------------------------------
+check("7077 steps -> 7000", api.roundSteps(7077) === 7000);
+check("5973 steps -> 6000", api.roundSteps(5973) === 6000);
+check("499 steps -> 0",     api.roundSteps(499) === 0);
+check("NaN stays NaN",      Number.isNaN(api.roundSteps(NaN)));
 
 // ---- end-to-end deficit / cap / steps split --------------------------------
 check("kcal-per-kg constant is 7700", api.KCAL_PER_KG === 7700);
