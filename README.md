@@ -98,24 +98,31 @@ Pick the pattern from the tabs, and choose **1 or 2 high-carb days** with the
 sub-tabs (fewer high days means each one packs in more carbs).
 
 The **whole week still totals 7 × your goal intake**, so the goal is unchanged —
-only the day-to-day distribution shifts. High (and medium) days are anchored to
-a share of **maintenance**, and the low days absorb whatever calories are left:
+only the day-to-day distribution shifts. Low days are pinned first (protein +
+their fat + the 35 g carb floor), and the high/medium days take whatever
+calories are left:
 
-- **High / Low** — 1 high day at **95%** of maintenance, or 2 high days at
-  **85%** each. The remaining weekly calories are split evenly across the low
-  days.
-- **Carb cycle** — always 1 high day (**95%**) + 2 medium days (**85%**) + 4 low
-  days (the remainder).
+- **High / Low** — 1 high day + 6 low, or 2 high days + 5 low.
+- **Carb cycle** — always 1 high day + 2 medium days + 4 low days.
 
-**Protein is constant every day.** Low days are low-*carb* days, so they carry a
-**solid fat amount — at least 0.7 g/kg/day** (well above the 0.5 g/kg survival
-floor) — at the **35 g carb floor**. That fixes the low-day calories; the high &
-medium days then split whatever calories are left (in a 95:85 ratio, so high
-days stay the biggest), which is what brings their fat down:
+**Protein is constant every day**, and low days are always low-*carb* days that
+sit on the **35 g carb floor**, which fixes their calories. The two patterns
+then handle fat differently:
+
+**Carb cycle** keeps a focused split:
 
 - **High day** — carbs = **35%** of the day's calories, fat is the remainder.
 - **Medium day** — fat = **35%** of calories, carbs are the remainder.
-- **Low day** — solid **0.7 g/kg** fat + 35 g carbs.
+- **Low day** — a solid **0.7 g/kg** fat.
+
+**High / Low** pins fat *low* and pours everything else into carbs, for the
+comfiest week:
+
+- **Low day** — as much fat as fits, **1 g/kg** (well above the 0.5 g/kg
+  survival floor), with carbs on the 35 g floor.
+- **High day** — fat held **low** (**0.7 g/kg** with two high days, **1 g/kg**
+  with a single high day) and **all the remaining calories go to carbs**. Two
+  high days spread those carbs more evenly; one high day concentrates them.
 
 The week still totals 7 × your goal intake. If the deficit is steep enough that
 solid low-day fat would make low days out-eat the high days, the low-day fat

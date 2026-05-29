@@ -154,16 +154,26 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
   check("carbs descend high > medium > low", highOf(cy).carbs > medOf(cy).carbs && medOf(cy).carbs > lowOf(cy).carbs);
 })();
 
-// High/Low structure and the 1-vs-2 high-day choice (high days are carb-focused).
+// High/Low: fat is pinned LOW and everything else becomes carbs.
 (function () {
   var two = plan({ pattern:"highlow", highDays:2 });
   var one = plan({ pattern:"highlow", highDays:1 });
   check("high/low (2): 2 high + 5 low days", highOf(two).count === 2 && lowOf(two).count === 5);
   check("high/low (1): 1 high + 6 low days", highOf(one).count === 1 && lowOf(one).count === 6);
-  check("high/low: low days carry the solid 0.7 g/kg fat", near(lowOf(two).fat, 0.7 * KG, 1e-6));
-  check("high/low: high day carbs = 35% of its calories",
-    near(highOf(two).carbs * 4, 0.35 * highOf(two).kcal, 1e-6));
+  check("high/low: low days carry as much fat as fits (1.0 g/kg = 80g for 80kg)",
+    near(lowOf(two).fat, 1.0 * KG, 1e-6) && near(lowOf(one).fat, 1.0 * KG, 1e-6));
+  check("high/low: low-day carbs sit on the 35g floor",
+    near(lowOf(two).carbs, 35, 1e-6) && near(lowOf(one).carbs, 35, 1e-6));
+  check("high/low (2 highs): high-day fat held at 0.7 g/kg (= 56g)", near(highOf(two).fat, 0.7 * KG, 1e-6));
+  check("high/low (1 high): high-day fat held at 1.0 g/kg (= 80g)", near(highOf(one).fat, 1.0 * KG, 1e-6));
+  check("high/low: high-day carbs are everything left after protein + fat",
+    near(highOf(two).carbs, (highOf(two).kcal - P * 4 - highOf(two).fat * 9) / 4, 1e-6) &&
+    near(highOf(one).carbs, (highOf(one).kcal - P * 4 - highOf(one).fat * 9) / 4, 1e-6));
+  check("high/low: high days hold LESS fat than low days (2 highs)", highOf(two).fat < lowOf(two).fat);
+  check("high/low: the high day is where the carbs pile up", highOf(two).carbs > lowOf(two).carbs);
   check("1 high day packs more carbs into that day than 2 high days", highOf(one).carbs > highOf(two).carbs);
+  check("high/low weekly average still equals goal intake",
+    near(two.avgKcal, INTAKE, 0.5) && near(one.avgKcal, INTAKE, 0.5));
 })();
 
 // Solid fat eases down only on a very steep deficit (so highs stay biggest).
