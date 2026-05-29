@@ -98,38 +98,42 @@ Pick the pattern from the tabs, and choose **1 or 2 high-carb days** with the
 sub-tabs (fewer high days means each one packs in more carbs).
 
 The **whole week still totals 7 × your goal intake**, so the goal is unchanged —
-only the day-to-day distribution shifts. Low days are pinned first (protein +
-their fat + the 35 g carb floor), and the high/medium days take whatever
-calories are left:
+only the day-to-day distribution shifts:
 
 - **High / Low** — 1 high day + 6 low, or 2 high days + 5 low.
 - **Carb cycle** — always 1 high day + 2 medium days + 4 low days.
 
-**Protein is constant every day**, and low days are always low-*carb* days that
-sit on the **35 g carb floor**, which fixes their calories. The two patterns
-then handle fat differently:
+**Protein is constant every day** in both patterns; only carbs (and, in carb
+cycle, fat) move around. The two patterns work differently:
 
-**Carb cycle** keeps a focused split:
+**High / Low** is a pure **carb shift** off the even baseline — protein *and*
+fat stay exactly the same every day, and carbs are pulled off the low days and
+stacked onto the high day(s):
+
+- **1 high day** — cut **100 kcal of carbs** (−25 g) from each of the 6 low
+  days and pile all 600 kcal onto the high day as carbs (**+150 g**).
+- **2 high days** — cut **150 kcal of carbs** (−37.5 g) from each of the 5 low
+  days and split the 750 kcal across the two high days (**+93.75 g each**).
+
+Because it only moves carbs around, the week still totals 7 × your goal intake
+exactly. If a low day can't give up that many carbs without breaking the 35 g
+floor, the high day still gets the full bump and the small surplus is walked off
+with **steps on the high day**.
+
+**Carb cycle** keeps a focused macro split per day type:
 
 - **High day** — carbs = **35%** of the day's calories, fat is the remainder.
 - **Medium day** — fat = **35%** of calories, carbs are the remainder.
-- **Low day** — a solid **0.7 g/kg** fat.
-
-**High / Low** makes high days genuinely *high-carb* and keeps low days fatty:
-
-- **High day** — fat drops to the **0.5 g/kg** floor and **every other calorie
-  becomes carbs**. Two high days spread those carbs more evenly; one high day
-  concentrates them into a single big refeed.
-- **Low day** — fat kept high at **0.7 g/kg** with carbs on the 35 g floor.
+- **Low day** — a solid **0.7 g/kg** fat at the 35 g carb floor.
 
 The week still totals 7 × your goal intake. If the deficit is steep enough that
 solid low-day fat would make low days out-eat the high days, the low-day fat
 eases down toward the floor until the high days are biggest again.
 
 Steps are the **same every day** (whatever the goal needs beyond a 700 kcal food
-deficit). If any day has to be lifted to stay workable, the extra calories are
-paid back with **steps on the high day** — where you've eaten enough to walk
-them. The per-day calories, macros and steps are shown in a table.
+deficit), with any extra from the cases above added to the **high day** — where
+you've eaten enough to walk them. The per-day calories, macros and steps are
+shown in a table.
 
 These are general estimates, not medical advice. If even a capped food deficit
 can't fit your protein + fat minimums, the app says so — lower the weekly % or

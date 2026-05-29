@@ -154,27 +154,53 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
   check("carbs descend high > medium > low", highOf(cy).carbs > medOf(cy).carbs && medOf(cy).carbs > lowOf(cy).carbs);
 })();
 
-// High/Low: high days are HIGH-CARB (fat to the floor); low days keep fat high.
+// High/Low: a pure carb shift off the even baseline. Protein & fat stay put on
+// every day; carbs are pulled off the low days and stacked onto the high day(s).
+// Worked example (80kg, P160, 1610 kcal/day, fat min 66g): even day = C94.
 (function () {
   var two = plan({ pattern:"highlow", highDays:2 });
   var one = plan({ pattern:"highlow", highDays:1 });
+  var evenC = (INTAKE - P * 4 - FATMIN * 9) / 4;   // baseline carbs = 94 g
+
   check("high/low (2): 2 high + 5 low days", highOf(two).count === 2 && lowOf(two).count === 5);
   check("high/low (1): 1 high + 6 low days", highOf(one).count === 1 && lowOf(one).count === 6);
-  check("high/low: low days keep fat high (0.7 g/kg = 56g for 80kg)",
-    near(lowOf(two).fat, 0.7 * KG, 1e-6) && near(lowOf(one).fat, 0.7 * KG, 1e-6));
-  check("high/low: low-day carbs sit on the 35g floor",
-    near(lowOf(two).carbs, 35, 1e-6) && near(lowOf(one).carbs, 35, 1e-6));
-  check("high/low: high-day fat drops to the 0.5 g/kg floor (= 40g)",
-    near(highOf(two).fat, FLOOR, 1e-6) && near(highOf(one).fat, FLOOR, 1e-6));
-  check("high/low: high-day carbs are everything left after protein + fat",
-    near(highOf(two).carbs, (highOf(two).kcal - P * 4 - highOf(two).fat * 9) / 4, 1e-6) &&
-    near(highOf(one).carbs, (highOf(one).kcal - P * 4 - highOf(one).fat * 9) / 4, 1e-6));
-  check("high/low: high days hold LESS fat than low days", highOf(two).fat < lowOf(two).fat);
+
+  // Protein and fat never move off the even-day values.
+  check("high/low: protein & fat identical on high and low days",
+    highOf(one).protein === P && lowOf(one).protein === P &&
+    near(highOf(one).fat, FATMIN, 1e-6) && near(lowOf(one).fat, FATMIN, 1e-6) &&
+    near(highOf(two).fat, FATMIN, 1e-6) && near(lowOf(two).fat, FATMIN, 1e-6));
+
+  // 1 high day: −100 kcal carbs (−25g) off each of 6 lows → +600 kcal (+150g) onto the high.
+  check("high/low (1): low-day carbs drop 25g (100 kcal) below the even baseline",
+    near(lowOf(one).carbs, evenC - 25, 1e-6));
+  check("high/low (1): high day gains 150g carbs (6×100 kcal)",
+    near(highOf(one).carbs, evenC + 150, 1e-6));
+
+  // 2 high days: −150 kcal carbs (−37.5g) off each of 5 lows → 750 kcal split over 2 highs (+93.75g each).
+  check("high/low (2): low-day carbs drop 37.5g (150 kcal) below the even baseline",
+    near(lowOf(two).carbs, evenC - 37.5, 1e-6));
+  check("high/low (2): each high day gains 93.75g carbs (5×150 / 2 / 4)",
+    near(highOf(two).carbs, evenC + 93.75, 1e-6));
+
   check("high/low: high days are where the carbs pile up",
     highOf(two).carbs > lowOf(two).carbs && highOf(one).carbs > lowOf(one).carbs);
   check("1 high day packs more carbs into that day than 2 high days", highOf(one).carbs > highOf(two).carbs);
-  check("high/low weekly average still equals goal intake",
-    near(two.avgKcal, INTAKE, 0.5) && near(one.avgKcal, INTAKE, 0.5));
+  check("high/low: the shift is calorie-neutral — week still averages goal intake",
+    near(two.avgKcal, INTAKE, 1e-6) && near(one.avgKcal, INTAKE, 1e-6));
+  check("high/low: no extra steps when no low day hits the carb floor",
+    !one.anyRaised && !two.anyRaised);
+})();
+
+// High/Low floor fallback: if a low day can't give up the carbs, the high day
+// still gets the full bump and the surplus is walked off with steps.
+(function () {
+  // Push the even baseline carbs near the floor so the 100-kcal cut can't fit.
+  var steep = plan({ pattern:"highlow", highDays:1, protein:230 });
+  check("high/low floor: low-day carbs never drop below 35g",
+    lowOf(steep).carbs >= 35 - 1e-9);
+  check("high/low floor: the unfunded carbs are repaid with steps on the high day",
+    steep.anyRaised && highOf(steep).steps > 0 && lowOf(steep).steps === 0);
 })();
 
 // Solid fat eases down only on a very steep deficit (so highs stay biggest).
