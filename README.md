@@ -86,6 +86,30 @@ estimates.
   shows the daily step count for it, using a height-based stride and the net
   cost of walking (~0.5 kcal per kg per km).
 
+### Eating patterns (carb cycling)
+
+You can spread the same weekly calories across different day types:
+
+- **Even** — the same macros every day (default).
+- **High / Low** — 2 high-carb days + 5 low-carb days.
+- **Carb cycle** — 2 high + 2 medium + 3 low days.
+
+The redistribution keeps your **weekly protein, fat and carbs — and therefore
+your weekly calorie average — identical** to eating evenly. Only the day-to-day
+split changes:
+
+- **Protein** is held constant every day (muscle retention).
+- **High days** drop fat to the **0.5 g/kg/day floor** — the lowest intake the
+  literature supports during a diet for hormonal health and essential fatty
+  acids — so carbs can peak. That fat is added back on the other days, so your
+  *weekly* fat average still meets your height-based minimum.
+- **Low days** sit at the **35 g carb (fibre) floor** — below that you're
+  essentially eating only fibre.
+
+If your deficit already keeps carbs near the 35 g floor, there's no room to
+cycle; the app says so and suggests adding steps or easing the rate/timeline
+rather than cutting fat below the safe floor.
+
 These are general estimates, not medical advice. If even a capped food deficit
 can't fit your protein + fat minimums, the app says so — lower the weekly % or
 push the end date out for a gentler plan.

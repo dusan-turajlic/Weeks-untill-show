@@ -82,8 +82,22 @@
               padding:11px 0;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
   .seg button.wide{grid-column:1 / -1}
   .seg button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
+  .seg.three{grid-template-columns:1fr 1fr 1fr}
+  .seg.three button{font-size:13.5px;padding:11px 4px}
   .warn{display:flex;gap:9px;align-items:flex-start;background:#f7e9e3;border:1px solid #e8cdc0;
         border-radius:12px;padding:10px 12px;margin-top:12px;font-size:12.5px;color:#a8472f;line-height:1.45}
+
+  /* per-day-type macro table for carb cycling */
+  .mtable{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+  .mtable th,.mtable td{padding:9px 8px;border-top:1px solid var(--line);text-align:right}
+  .mtable thead th{border-top:none;text-align:right;color:var(--inkSoft);font-weight:600;font-size:11px;
+                   letter-spacing:.05em;text-transform:uppercase}
+  .mtable th:first-child,.mtable td:first-child{text-align:left}
+  .mtable td.day{font-weight:600}
+  .mtable td.day .n{color:var(--inkSoft);font-weight:400;font-size:12px}
+  .mtable td.kc{font-family:var(--serif)}
+  .mtable tr.high td.day{color:var(--accentDeep)}
+  .mtable tr.low td.day{color:#a8472f}
 
   .result{background:linear-gradient(135deg,var(--accentDeep),var(--accent));border-radius:18px;padding:20px;margin-top:14px;color:#fff}
   .result .cap{font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.8}
@@ -371,6 +385,52 @@
   // Step goals are fuzzy estimates, so present them to the nearest 1,000.
   function roundSteps(n){ return isFinite(n) ? Math.round(n/1000)*1000 : NaN; }
 
+  // ---- carb cycling --------------------------------------------------------
+  // Lowest safe daily fat: the literature converges on ~0.5 g/kg/day during a
+  // diet (to protect hormones and cover essential fatty acids). High-carb days
+  // drop fat toward this floor to free calories for carbs; that fat is added
+  // back on the other days so the WEEKLY fat average still meets your minimum.
+  var FAT_FLOOR_PER_KG = 0.5;
+  function fatFloorG(weightKg){ return FAT_FLOOR_PER_KG * weightKg; }
+
+  // Day-type counts per 7-day week for each pattern.
+  var PATTERNS = {
+    even:   [{key:"med",  label:"Every day", n:7}],
+    highlow:[{key:"high", label:"High",      n:2}, {key:"low", label:"Low", n:5}],
+    cycle:  [{key:"high", label:"High",      n:2}, {key:"med", label:"Medium", n:2}, {key:"low", label:"Low", n:3}]
+  };
+
+  // Build a week of day-types that redistributes carbs (up on High, down to the
+  // 35 g floor on Low) and fat (down to the floor on High, up on the rest),
+  // keeping weekly protein, fat and carbs — and therefore the weekly calorie
+  // average — identical to eating `carbBase`/`fatBase`/`protein` every day.
+  function cyclePlan(protein, fatBase, carbBase, weightKg, pattern, carbFloor){
+    carbFloor = carbFloor || 35;
+    var spec = PATTERNS[pattern] || PATTERNS.even;
+    var nH=0,nM=0,nL=0;
+    spec.forEach(function(t){ if(t.key==="high")nH=t.n; else if(t.key==="low")nL=t.n; else nM=t.n; });
+    var floor = fatFloorG(weightKg);
+    var fatHigh = Math.min(fatBase, floor);                       // reduce toward floor (no-op if base<=floor)
+    var fatLow  = nL>0 ? (7*fatBase - nH*fatHigh - nM*fatBase)/nL : fatBase;
+    var carbHigh= nH>0 ? (7*carbBase - nL*carbFloor - nM*carbBase)/nH : carbBase;
+    function macros(key){
+      var fat  = key==="high" ? fatHigh : key==="low" ? fatLow  : fatBase;
+      var carb = key==="high" ? carbHigh: key==="low" ? carbFloor: carbBase;
+      return { fat:fat, carbs:carb, protein:protein, kcal: protein*4 + fat*9 + carb*4 };
+    }
+    var days = spec.map(function(t){ var m=macros(t.key); m.key=t.key; m.label=t.label; m.count=t.n; return m; });
+    var weeklyKcal = days.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
+    return {
+      pattern: pattern, days: days,
+      fatFloor: floor, fatReduced: fatHigh < fatBase - 1e-9,
+      carbFloor: carbFloor,
+      // there's only room to cycle if High days exceed the baseline carbs
+      // (true exactly when baseline carbs sit above the floor)
+      feasible: pattern==="even" || carbHigh > carbBase + 1e-9,
+      avgKcal: weeklyKcal/7
+    };
+  }
+
   // ---- daily weight log: IndexedDB, with a localStorage fallback ----------
   // Stored as { date:"YYYY-MM-DD", weight:Number }. IndexedDB has no practical
   // size limit, so the full history can grow without bumping into quotas.
@@ -460,7 +520,7 @@
   }
   function saveSettings(s){
     try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({
-      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height
+      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height, pattern:s.pattern
     })); }catch(e){}
   }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
@@ -481,7 +541,7 @@
       var p=new URLSearchParams(location.search);
       if(!p.toString()) return null;
       return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
-               sex:p.get("sex"), height:p.get("height"),
+               sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"),
                weight:p.get("weight"), log:p.get("log") };
     }catch(e){ return null; }
   }
@@ -489,6 +549,7 @@
   function addBodyParams(p, s){
     if(s.sex)    p.set("sex", s.sex);
     if(s.height) p.set("height", s.height);
+    if(s.pattern && s.pattern!=="even") p.set("pattern", s.pattern);
   }
   function writeURL(s, hist){
     try{
@@ -570,8 +631,9 @@
     pct:    pick("pct",  "1"),
     endDate:pick("end",  toDateStr(addDays(today,84))),
     unit:   pick("unit", "kg"),
-    sex:    pick("sex", ""),             // "male" | "female"
-    height: pick("height", "")           // cm (kg unit) or in (lb unit), like weight
+    sex:    pick("sex", ""),             // "male" | "female" | "neutral"
+    height: pick("height", ""),          // cm (kg unit) or in (lb unit), like weight
+    pattern:pick("pattern", "even")      // "even" | "highlow" | "cycle"
   };
 
   var logHistory = [];                  // cached daily log [{date,weight}] ascending
@@ -844,6 +906,21 @@
   function stat(k, v, cls){
     return '<div class="pstat"><div class="k">'+k+'</div><div class="v'+(cls?" "+cls:"")+'">'+v+'</div></div>';
   }
+  function patternSeg(active){
+    function b(key,label){ return '<button type="button" data-pattern="'+key+'"'+(active===key?' class="on"':'')+'>'+label+'</button>'; }
+    return '<div class="seg three" style="margin-top:6px">'+b("even","Even")+b("highlow","High / Low")+b("cycle","Carb cycle")+'</div>';
+  }
+  function cycleTableHTML(cp){
+    var rows = cp.days.map(function(d){
+      var cls = d.key==="high"?"high":d.key==="low"?"low":"";
+      return '<tr'+(cls?' class="'+cls+'"':'')+'>'+
+        '<td class="day">'+d.label+' <span class="n">×'+d.count+'</span></td>'+
+        '<td class="kc">'+fmt0(d.kcal)+'</td><td>'+fmt0(d.protein)+'</td>'+
+        '<td>'+fmt0(d.fat)+'</td><td>'+fmt0(d.carbs)+'</td></tr>';
+    }).join("");
+    return '<table class="mtable"><thead><tr><th>Day</th><th>kcal</th><th>P&nbsp;(g)</th>'+
+      '<th>F&nbsp;(g)</th><th>C&nbsp;(g)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
   function trackBanner(unit){
     var o=offTrack();
     if(!o.has) return "";
@@ -894,11 +971,12 @@
       return;
     }
     var bm=e.bm, hasGoal=isFinite(e.intake);
+    var cycling = hasGoal && e.macrosOk && state.pattern!=="even";
     // headline: the calories to eat to reach the goal is the hero; maintenance
     // and the deficit are the supporting stats.
     var head = hasGoal
       ? '<div class="result" style="margin-top:0">'+
-          '<div class="cap">Eat this to reach your goal</div>'+
+          '<div class="cap">Eat this to reach your goal'+(cycling?" · daily average":"")+'</div>'+
           '<div class="big">'+fmt0(e.intake)+' <small>kcal/day</small></div>'+
           '<div class="stats">'+
             '<div><div class="k">Maintenance</div><div class="v">'+fmt0(bm.maint)+' <span>kcal</span></div></div>'+
@@ -911,15 +989,36 @@
           '<div class="stats"><div><div class="k">Goal intake</div>'+
             '<div class="v">log your weight &amp; rate</div></div></div>'+
         '</div>';
-    // macros (protein & fat are minimums; carbs are the remainder)
+    // macros (protein & fat are minimums; carbs are the remainder). With a
+    // cycling pattern selected this grid is the daily *average*.
+    var mtitle = hasGoal ? (cycling ? "Daily macros · average" : "Daily macros") : "Daily macros (minimums)";
     var grid=
-      '<div class="cardtitle" style="font-size:17px">Daily macros'+(hasGoal?'':' (minimums)')+'</div>'+
+      '<div class="cardtitle" style="font-size:17px">'+mtitle+'</div>'+
       '<div class="pgrid" style="margin-top:6px">'+
         stat("Protein", fmt0(e.protein)+' <small>g</small>')+
         stat("Fat",     fmt0(e.fat)+' <small>g</small>')+
         stat("Carbs",   (hasGoal&&e.macrosOk?fmt0(e.carbs):"—")+' <small>g</small>')+
         stat("Fibre",   '≥'+e.fiber+' <small>g (of carbs)</small>')+
       '</div>';
+    // eating pattern: even, or carb-cycled high/low (+ medium) days
+    if(hasGoal && e.macrosOk){
+      grid+='<div class="cardtitle" style="font-size:17px;margin-top:16px">Eating pattern</div>'+
+        '<span class="hint">Same weekly calories — spread your carbs into high days, dropping fat to make room.</span>'+
+        patternSeg(state.pattern);
+      if(state.pattern!=="even"){
+        var cp=cyclePlan(e.protein, e.fat, e.carbs, bm.weightKg, state.pattern, e.fiber);
+        if(!cp.feasible){
+          grid+='<div class="warn">Your intake keeps carbs near the '+e.fiber+'g fibre floor, so there’s no room '+
+            'to cycle. Add steps (eat a little more) or ease the weekly % / push the date out, then try again.</div>';
+        } else {
+          grid+=cycleTableHTML(cp)+
+            '<span class="hint">High days drop fat to ~'+fmt0(cp.fatFloor)+'g ('+FAT_FLOOR_PER_KG+' g/kg — the lowest '+
+            'safe intake) so carbs can peak; that fat shifts to your other days, so your <b>weekly</b> fat average is '+
+            'unchanged. Low days sit at the '+e.fiber+'g carb (fibre) floor. Protein and weekly calories are identical '+
+            'to eating evenly.</span>';
+        }
+      }
+    }
     // steps to cover the part of the deficit food doesn't
     if(hasGoal){
       var stepsK = roundSteps(e.steps);
@@ -993,6 +1092,7 @@
       state.unit    = "kg";
       state.sex     = "";
       state.height  = "";
+      state.pattern = "even";
       aboutOpen     = true;   // reopen the one-time setup after a wipe
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
@@ -1031,6 +1131,12 @@
   document.getElementById("units").addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
     state.unit = b.dataset.unit; persist(); setInputs(); render();
+  });
+  // The energy card is re-rendered as innerHTML, so the pattern buttons are
+  // bound by delegation on the stable container.
+  $("energyCard").addEventListener("click", function(e){
+    var b = e.target.closest("[data-pattern]"); if(!b) return;
+    state.pattern = b.dataset.pattern; persist(); render();
   });
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;

@@ -26,6 +26,7 @@ var api = new Function(
   energySrc +
   "return { maintMultiplier:maintMultiplier, maintenanceCalories:maintenanceCalories, " +
   "minProtein:minProtein, minFat:minFat, interp:interp, calcKcalPerStep:calcKcalPerStep, roundSteps:roundSteps, " +
+  "fatFloorG:fatFloorG, cyclePlan:cyclePlan, " +
   "KCAL_PER_KG:KCAL_PER_KG, KG_TO_LB:KG_TO_LB, MAX_FOOD_DEFICIT:MAX_FOOD_DEFICIT, FIBER_MIN:FIBER_MIN };"
 )();
 
@@ -114,6 +115,46 @@ check("fibre target is 35g", api.FIBER_MIN === 35);
   check("10kg/84d (~917) caps food at 700, steps cover the rest",
     food === 700 && near(stepDef, 217, 2) && steps > 5000);
 })();
+
+// ---- carb cycling ----------------------------------------------------------
+// Baseline from the 90kg/180cm worked example: P177 F66 C95, intake ~1681.
+var P = 177, F = 66, C = 95, KG = 80, EVEN_KCAL = P * 4 + F * 9 + C * 4;
+
+check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
+
+(function () {
+  var hl = api.cyclePlan(P, F, C, KG, "highlow", 35);
+  var high = hl.days.find(function (d) { return d.key === "high"; });
+  var low  = hl.days.find(function (d) { return d.key === "low"; });
+  check("high/low: 2 high + 5 low days", high.count === 2 && low.count === 5);
+  check("high/low: weekly calorie average is unchanged", near(hl.avgKcal, EVEN_KCAL, 0.5));
+  check("high/low: low days sit at the 35g carb floor", near(low.carbs, 35, 1e-9));
+  check("high/low: high days have far more carbs than low", high.carbs > low.carbs + 50);
+  check("high/low: high days drop fat to the floor (40g)", near(high.fat, 40, 1e-9));
+  check("high/low: fat is added back on low days (above baseline)", low.fat > F);
+  check("high/low: protein is constant across day types", high.protein === P && low.protein === P);
+  check("high/low: high days are higher calorie than low days", high.kcal > low.kcal);
+})();
+
+(function () {
+  var cy = api.cyclePlan(P, F, C, KG, "cycle", 35);
+  var med = cy.days.find(function (d) { return d.key === "med"; });
+  check("cycle: 2 high + 2 medium + 3 low days",
+    cy.days.find(function (d) { return d.key === "high"; }).count === 2 &&
+    med.count === 2 &&
+    cy.days.find(function (d) { return d.key === "low"; }).count === 3);
+  check("cycle: weekly calorie average is unchanged", near(cy.avgKcal, EVEN_KCAL, 0.5));
+  check("cycle: medium days equal the baseline", near(med.fat, F, 1e-9) && near(med.carbs, C, 1e-9));
+})();
+
+// When baseline carbs are already at the floor there's no room to cycle.
+check("infeasible to cycle when baseline carbs = floor",
+  api.cyclePlan(P, F, 35, KG, "highlow", 35).feasible === false);
+check("feasible to cycle when baseline carbs are above the floor",
+  api.cyclePlan(P, F, 60, KG, "highlow", 35).feasible === true);
+check("even pattern is always feasible and unchanged",
+  api.cyclePlan(P, F, C, KG, "even", 35).feasible === true &&
+  near(api.cyclePlan(P, F, C, KG, "even", 35).avgKcal, EVEN_KCAL, 1e-9));
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);
