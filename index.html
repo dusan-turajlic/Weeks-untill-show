@@ -64,6 +64,51 @@
                 padding:5px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans)}
   .units button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
 
+  .cardtitle{font-family:var(--serif);font-size:20px;font-weight:600;margin-bottom:4px}
+  .abouthead{display:flex;align-items:center;justify-content:space-between}
+  .abouthead .cardtitle{margin-bottom:0}
+  .linkbtn{border:none;background:transparent;color:var(--accent);font-family:var(--sans);
+           font-size:13px;font-weight:600;cursor:pointer;padding:4px 8px;border-radius:8px}
+  .linkbtn:hover{background:var(--accentSoft)}
+  .aboutsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .aboutsum .chip{background:var(--accentSoft);border:1px solid var(--line);border-radius:999px;
+                  padding:6px 13px;font-weight:600;color:var(--accentDeep);font-size:14px}
+  .donebtn{margin-top:16px;width:100%;border:1px solid var(--accent);background:var(--accent);color:#fff;
+           border-radius:12px;padding:12px;font-size:15px;font-weight:600;font-family:var(--sans);cursor:pointer}
+  .donebtn:disabled{opacity:.5;cursor:not-allowed}
+  .donebtn:not(:disabled):hover{filter:brightness(.95)}
+  .seg{margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .seg button{flex:1;border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:12px;
+              padding:11px 0;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .seg button.wide{grid-column:1 / -1}
+  .seg button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
+
+  /* tabs (eating pattern) + sub-tabs (high-day count) */
+  .tabs{display:flex;gap:4px;margin-top:8px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:4px}
+  .tabs button{flex:1;border:none;background:transparent;color:var(--inkSoft);font-family:var(--sans);
+               font-size:14px;font-weight:600;padding:10px 6px;border-radius:9px;cursor:pointer;transition:background .12s,color .12s}
+  .tabs button:hover:not(.on){background:var(--bg)}
+  .tabs button.on{background:var(--accentSoft);color:var(--accentDeep)}
+  .subtabs{display:flex;align-items:center;gap:6px;margin-top:12px}
+  .subtabs .lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--inkSoft);font-weight:600;margin-right:2px}
+  .subtabs button{border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:999px;
+                  padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .subtabs button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
+  .warn{display:flex;gap:9px;align-items:flex-start;background:#f7e9e3;border:1px solid #e8cdc0;
+        border-radius:12px;padding:10px 12px;margin-top:12px;font-size:12.5px;color:#a8472f;line-height:1.45}
+
+  /* per-day-type macro table for carb cycling */
+  .mtable{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+  .mtable th,.mtable td{padding:9px 8px;border-top:1px solid var(--line);text-align:right}
+  .mtable thead th{border-top:none;text-align:right;color:var(--inkSoft);font-weight:600;font-size:11px;
+                   letter-spacing:.05em;text-transform:uppercase}
+  .mtable th:first-child,.mtable td:first-child{text-align:left}
+  .mtable td.day{font-weight:600}
+  .mtable td.day .n{color:var(--inkSoft);font-weight:400;font-size:12px}
+  .mtable td.kc{font-family:var(--serif)}
+  .mtable tr.high td.day{color:var(--accentDeep)}
+  .mtable tr.low td.day{color:#a8472f}
+
   .result{background:linear-gradient(135deg,var(--accentDeep),var(--accent));border-radius:18px;padding:20px;margin-top:14px;color:#fff}
   .result .cap{font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.8}
   .result .big{font-family:var(--serif);font-size:46px;font-weight:700;line-height:1}
@@ -190,6 +235,37 @@
     </div>
   </div>
 
+  <div class="card" id="aboutCard">
+    <div class="abouthead">
+      <div class="cardtitle">About you</div>
+      <button type="button" class="linkbtn" id="aboutEdit" hidden>Edit</button>
+    </div>
+    <div class="aboutsum" id="aboutSummary" hidden></div>
+    <div id="aboutForm">
+      <p class="sub" style="margin:2px 0 4px">Set this once — your sex and height fix your calorie, protein and fat targets.</p>
+      <label class="field">
+        <span class="flabel">Sex</span>
+        <div class="seg" id="sexSeg">
+          <button type="button" data-sex="male">Male</button>
+          <button type="button" data-sex="female">Female</button>
+          <button type="button" class="wide" data-sex="neutral">Prefer not to say</button>
+        </div>
+        <span class="hint" id="sexHint" hidden></span>
+      </label>
+      <label class="field">
+        <span class="flabel">Height</span>
+        <div class="ibox"><input id="height" inputmode="decimal" placeholder="0" /><span class="suffix" data-height-suffix>cm</span></div>
+        <span class="hint">Sets your minimum protein &amp; fat targets.</span>
+      </label>
+      <label class="field">
+        <span class="flabel">Daily steps now</span>
+        <div class="ibox"><input id="curSteps" inputmode="numeric" placeholder="0" /><span class="suffix">steps</span></div>
+        <span class="hint">Optional — your current daily average, so the plan can show your total step target.</span>
+      </label>
+      <button type="button" class="donebtn" id="aboutDone">Done</button>
+    </div>
+  </div>
+
   <div class="card">
     <div class="units" id="units">
       <button data-unit="kg">kg</button>
@@ -210,6 +286,8 @@
       <span class="hint" id="endHint">Pick a date on or after today</span>
     </label>
   </div>
+
+  <div id="energyCard"></div>
 
   <div class="result">
     <div class="cap">Projected weight on <span id="resDate">—</span></div>
@@ -257,6 +335,219 @@
   "use strict";
   var WEEK_MS = 7*24*60*60*1000;
   var DAY_MS  = 24*60*60*1000;
+
+  // ---- energy / macro constants & formulas --------------------------------
+  var LB_TO_KG = 0.45359237, KG_TO_LB = 1/LB_TO_KG, IN_TO_CM = 2.54;
+  var KCAL_PER_KG = 7700;            // ~energy in 1 kg of body weight (mostly fat)
+  var KCAL_FAT = 9, KCAL_PROTEIN = 4, KCAL_CARB = 4;
+  var MAX_FOOD_DEFICIT = 700;        // never cut more than this from food; steps cover the rest
+  var FIBER_MIN = 35;                // g/day of fibre to aim for (counted within carbs)
+
+  // Maintenance calories = bodyweight(lb) × a multiplier that tapers as weight
+  // rises. Brackets are sex-specific; we use the midpoint of each range.
+  // [upper-bound-lb (Infinity = top bracket), multiplier]
+  var MAINT_MULT = {
+    male:[[200,12],[250,10.5],[300,9],[400,7.5],[Infinity,6]],
+    female:[[150,13.5],[200,11.5],[250,10.5],[300,9],[400,7.5],[Infinity,6]]
+  };
+  function maintMultiplier(sex, weightLb){
+    var t = MAINT_MULT[sex] || MAINT_MULT.male;
+    for(var i=0;i<t.length;i++){ if(weightLb < t[i][0]) return t[i][1]; }
+    return t[t.length-1][1];
+  }
+  // "Prefer not to say" runs the male and female versions and averages them, so
+  // every sex-keyed figure has a single, neutral path.
+  function bySex(sex, fn){
+    return sex==="neutral" ? (fn("male") + fn("female"))/2 : fn(sex);
+  }
+  function maintenanceCalories(sex, weightKg){
+    var lb = weightKg * KG_TO_LB;
+    return lb * bySex(sex, function(s){ return maintMultiplier(s, lb); });
+  }
+
+  // Minimum daily protein & fat (g) to protect muscle and hormones, keyed to
+  // height. Reference points are in cm; we linearly interpolate (and clamp at
+  // the ends). 1 in = 2.54 cm, so e.g. 5'9" = 175.26 cm.
+  var MIN_PROTEIN = {
+    male:[[160.02,135],[167.64,150],[175.26,165],[182.88,185],[190.5,205],[198.12,230]],
+    female:[[144.78,90],[152.4,100],[160.02,115],[167.64,130],[175.26,145],[182.88,165]]
+  };
+  var MIN_FAT = {
+    male:[[160.02,45],[167.64,52],[175.26,60],[182.88,70],[190.5,81],[198.12,93]],
+    female:[[144.78,45],[152.4,50],[160.02,57],[167.64,65],[175.26,74],[182.88,85]]
+  };
+  function interp(table, x){
+    if(x <= table[0][0]) return table[0][1];
+    var last = table[table.length-1];
+    if(x >= last[0]) return last[1];
+    for(var i=1;i<table.length;i++){
+      if(x <= table[i][0]){
+        var a=table[i-1], b=table[i], f=(x-a[0])/(b[0]-a[0]);
+        return a[1] + f*(b[1]-a[1]);
+      }
+    }
+    return last[1];
+  }
+  function minProtein(sex, heightCm){ return bySex(sex, function(s){ return interp(MIN_PROTEIN[s], heightCm); }); }
+  function minFat(sex, heightCm){ return bySex(sex, function(s){ return interp(MIN_FAT[s], heightCm); }); }
+
+  // Net kcal burned per step. Stride ≈ 0.414·height; walking costs ≈0.5 kcal
+  // per kg per km net of rest. Heavier/taller people burn more per step.
+  function calcKcalPerStep(weightKg, heightCm){
+    var strideM = (heightCm/100) * 0.414;
+    return 0.5 * weightKg * strideM / 1000;
+  }
+  // Step goals are fuzzy estimates, so present them to the nearest 1,000.
+  function roundSteps(n){ return isFinite(n) ? Math.round(n/1000)*1000 : NaN; }
+
+  // ---- carb cycling --------------------------------------------------------
+  // Lowest safe daily fat: the literature converges on ~0.5 g/kg/day during a
+  // diet (to protect hormones and cover essential fatty acids). Cycling pins
+  // fat at this floor every day to free as many calories as possible for carbs.
+  var FAT_FLOOR_PER_KG = 0.5;
+  function fatFloorG(weightKg){ return FAT_FLOOR_PER_KG * weightKg; }
+
+  // Two eating patterns redistribute the same weekly calories across day types.
+  // Protein and fat are held constant every day; only carbs move around.
+  //
+  //   • Carb cycle — low days carry their fat at LOW_FAT_PER_KG g/kg (above the
+  //     0.5 g/kg floor) with carbs on the 35 g floor, which fixes their
+  //     calories; the high & medium days split whatever's left (high = 35%
+  //     carbs, medium = 35% fat). If a steep deficit would make low days
+  //     out-eat the highs, low-day fat eases toward the floor.
+  //   • High/Low — a pure carb shift off the even baseline: cut a fixed chunk
+  //     of carbs from every low day and pile it onto the high day(s) as carbs.
+  //     One high day cuts HIGHLOW_CUT_1H kcal/low-day; two high days cut
+  //     HIGHLOW_CUT_2H each. Protein never moves; the week still totals
+  //     7×intake. If a low day can't give up that many carbs without breaking
+  //     the 35 g floor, we first trim the HIGH day's fat (from its height
+  //     minimum down to HIGH_FAT_MIN_PER_KG g/kg) to make room for the carbs,
+  //     and only what's left after that is walked off with steps on the high
+  //     day.
+  var CARB_CAL_SHARE = 0.35, FAT_CAL_SHARE = 0.35, LOW_FAT_PER_KG = 0.7;
+  var HIGHLOW_CUT_1H = 100, HIGHLOW_CUT_2H = 150;   // carbs (kcal) pulled per low day
+  var HIGH_FAT_MIN_PER_KG = 0.6;                     // how low a high day's fat may be trimmed
+
+  function dayCounts(pattern, highDays){
+    var h = highDays===1 ? 1 : 2;
+    if(pattern==="highlow") return {high:h, med:0, low:7-h};
+    if(pattern==="cycle")   return {high:1, med:2, low:4};
+    return {high:0, med:0, low:7};
+  }
+
+  // Protein is fixed; one macro is set by the day type and the other is the
+  // remainder. Fat never drops below the safe floor and carbs never below 35 g;
+  // if a day is too low to hold protein + floor-fat + 35 g carbs, it rises to
+  // that minimum feasible day and the surplus (`raisedBy`) is repaid with steps.
+  //   carb35 (high) — carbs = 35% of calories, fat is the rest
+  //   fat35 (medium)— fat = 35% of calories, carbs are the rest
+  //   fixedFat (low/even) — fat = a set target, carbs are the rest
+  function splitMacros(targetKcal, P, fatFloor, carbFloor, mode, fatSet){
+    var fat, carbs;
+    if(mode==="carb35"){ carbs = CARB_CAL_SHARE*targetKcal/4; fat = (targetKcal - 4*P - 4*carbs)/9; }
+    else if(mode==="fat35"){ fat = FAT_CAL_SHARE*targetKcal/9; carbs = (targetKcal - 4*P - 9*fat)/4; }
+    else { fat = fatSet; carbs = (targetKcal - 4*P - 9*fat)/4; }
+    if(fat < fatFloor){ fat = fatFloor; carbs = (targetKcal - 4*P - 9*fatFloor)/4; }
+    var kcal = targetKcal;
+    if(carbs < carbFloor){
+      carbs = carbFloor; fat = (targetKcal - 4*P - 4*carbFloor)/9;
+      if(fat < fatFloor){ fat = fatFloor; kcal = 4*P + 9*fatFloor + 4*carbFloor; }
+    }
+    return { protein:P, fat:fat, carbs:carbs, kcal:kcal, raisedBy: kcal - targetKcal };
+  }
+
+  function cyclePlan(o){
+    var P=o.protein, kg=o.weightKg, I=o.intake;
+    var fatFloor=fatFloorG(kg), carbFloor=o.carbFloor||35;
+    var baseStepEnergy=o.stepDeficit||0, kps=o.kcalPerStep||0;
+    var n=dayCounts(o.pattern, o.highDays);
+
+    // Even (or no high days): one day type at the goal intake, original split.
+    if(n.high===0){
+      var m0=splitMacros(I, P, fatFloor, carbFloor, "fixedFat", o.fatMin);
+      return { pattern:o.pattern, fatFloor:fatFloor, carbFloor:carbFloor, lowFat:m0.fat,
+               anyRaised:false, avgKcal:m0.kcal,
+               days:[{key:"med", label:"Every day", count:7, kcal:m0.kcal, protein:m0.protein,
+                      fat:m0.fat, carbs:m0.carbs, raised:false,
+                      steps:(kps>0 ? roundSteps(baseStepEnergy/kps) : NaN)}] };
+    }
+
+    // High/Low — carb shift off the even baseline. Protein stays put; we pull a
+    // fixed chunk of carbs from each low day and stack it onto the high day(s).
+    // If the lows hit the 35 g carb floor before funding the full bump, trim the
+    // high day's fat (down to a 0.6 g/kg minimum) to make room; only what's
+    // still unfunded after that gets walked off with steps on the high day.
+    if(o.pattern==="highlow"){
+      var base = splitMacros(I, P, fatFloor, carbFloor, "fixedFat", o.fatMin); // even day
+      var cut  = (n.high===1 ? HIGHLOW_CUT_1H : HIGHLOW_CUT_2H);               // kcal off each low day
+      var lowCarbs   = Math.max(carbFloor, base.carbs - cut/4);
+      var pulledPerLow = (base.carbs - lowCarbs)*4;          // kcal actually taken from a low day
+      var pool       = cut * n.low;                          // carbs (kcal) the high day(s) get
+      var shortfall  = pool - pulledPerLow*n.low;            // bump the lows couldn't fund
+
+      // Trim high-day fat (height min → 0.6 g/kg) to absorb the shortfall first.
+      var highFat = base.fat, highFatMin = Math.max(fatFloor, HIGH_FAT_MIN_PER_KG*kg);
+      if(shortfall > 0 && highFat > highFatMin){
+        var fatUsed = Math.min(shortfall, (highFat - highFatMin)*9*n.high);
+        highFat   -= (fatUsed/n.high)/9;
+        shortfall -= fatUsed;                                // remainder (if any) → steps
+      }
+
+      var highCarbs  = base.carbs + (pool/n.high)/4;
+      var lowKcal    = 4*P + 9*base.fat + 4*lowCarbs;
+      var highKcal   = 4*P + 9*highFat  + 4*highCarbs;
+      var hlDays = [
+        {key:"high",label:"High",count:n.high,kcal:highKcal,protein:P,fat:highFat, carbs:highCarbs,raised:false},
+        {key:"low", label:"Low", count:n.low, kcal:lowKcal, protein:P,fat:base.fat,carbs:lowCarbs, raised:base.raisedBy>0.5}
+      ];
+      var hlExtraPerHigh = shortfall>0 ? shortfall/n.high : 0;
+      hlDays.forEach(function(d){
+        d.stepEnergy = baseStepEnergy + (d.key==="high" ? hlExtraPerHigh : 0);
+        d.steps = kps>0 ? roundSteps(d.stepEnergy/kps) : NaN;
+      });
+      var hlWeekly = hlDays.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
+      return { pattern:"highlow", days:hlDays, fatFloor:fatFloor, carbFloor:carbFloor,
+               lowFat:base.fat, highFat:highFat, fatTrimmed:base.fat-highFat>0.5,
+               anyRaised:shortfall>0.5, avgKcal:hlWeekly/7 };
+    }
+
+    // Carb cycle — low-day fat kept high, eased down only if it would make low
+    // days out-eat the highs; high/medium split the leftover calories.
+    var wSum = n.high*0.95 + n.med*0.85;
+    var lowFat = Math.max(fatFloor, LOW_FAT_PER_KG*kg);
+    function targets(lf){
+      var lowKcal = 4*P + 9*lf + 4*carbFloor;          // high fat + floor carbs fixes low days
+      var R = 7*I - n.low*lowKcal;                     // calories left for high + medium
+      return { lowKcal:lowKcal, highKcal:R*0.95/wSum, medKcal:R*0.85/wSum };
+    }
+    var t = targets(lowFat);
+    while(lowFat > fatFloor && t.highKcal <= t.lowKcal + 1){ lowFat -= 1; t = targets(lowFat); }
+
+    // High/Low makes high days HIGH-CARB: fat to the floor, everything else
+    // carbs. Carb cycle keeps 35%-carb high days and 35%-fat medium days.
+    var defs=[];
+    if(n.high) defs.push({key:"high",label:"High", count:n.high, kcal:t.highKcal, mode:"carb35", fatSet:o.fatMin});
+    if(n.med)  defs.push({key:"med", label:"Medium",count:n.med,  kcal:t.medKcal,  mode:"fat35",  fatSet:o.fatMin});
+    defs.push({key:"low", label:"Low", count:n.low, kcal:t.lowKcal, mode:"fixedFat", fatSet:lowFat});
+
+    var days = defs.map(function(d){
+      var m=splitMacros(d.kcal, P, fatFloor, carbFloor, d.mode, d.fatSet);
+      return { key:d.key, label:d.label, count:d.count, kcal:m.kcal, protein:m.protein,
+               fat:m.fat, carbs:m.carbs, raised:m.raisedBy>0.5, raisedBy:Math.max(0,m.raisedBy) };
+    });
+    // surplus from any raised day is repaid with steps on the HIGH day(s)
+    var weeklyExtra = days.reduce(function(s,d){ return s + d.raisedBy*d.count; }, 0);
+    var highCount   = days.reduce(function(s,d){ return s + (d.key==="high"?d.count:0); }, 0);
+    var extraPerHigh = highCount>0 ? weeklyExtra/highCount : 0;
+    days.forEach(function(d){
+      d.stepEnergy = baseStepEnergy + (d.key==="high" ? extraPerHigh : 0);
+      d.steps = kps>0 ? roundSteps(d.stepEnergy/kps) : NaN;
+    });
+    var weeklyKcal = days.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
+    var lowDay = days.filter(function(d){return d.key==="low";})[0];
+    return { pattern:o.pattern, days:days, fatFloor:fatFloor, carbFloor:carbFloor,
+             lowFat: lowDay ? lowDay.fat : lowFat, anyRaised: weeklyExtra>0.5, avgKcal: weeklyKcal/7 };
+  }
 
   // ---- daily weight log: IndexedDB, with a localStorage fallback ----------
   // Stored as { date:"YYYY-MM-DD", weight:Number }. IndexedDB has no practical
@@ -346,7 +637,10 @@
     try{ return JSON.parse(localStorage.getItem(LS_SETTINGS)||"null"); }catch(e){ return null; }
   }
   function saveSettings(s){
-    try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({pct:s.pct, endDate:s.endDate, unit:s.unit})); }catch(e){}
+    try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({
+      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height,
+      pattern:s.pattern, highDays:s.highDays, curSteps:s.curSteps
+    })); }catch(e){}
   }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
   function encodeLog(history){
@@ -366,13 +660,22 @@
       var p=new URLSearchParams(location.search);
       if(!p.toString()) return null;
       return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
-               weight:p.get("weight"), log:p.get("log") };
+               sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"), highDays:p.get("highDays"),
+               curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log") };
     }catch(e){ return null; }
+  }
+  // Add the body-metric params, omitting any that are empty to keep links tidy.
+  function addBodyParams(p, s){
+    if(s.sex)      p.set("sex", s.sex);
+    if(s.height)   p.set("height", s.height);
+    if(s.curSteps) p.set("steps", s.curSteps);
+    if(s.pattern && s.pattern!=="even"){ p.set("pattern", s.pattern); p.set("highDays", s.highDays); }
   }
   function writeURL(s, hist){
     try{
       var p=new URLSearchParams();
       p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
+      addBodyParams(p, s);
       if(hist && hist.length) p.set("log", encodeLog(hist));
       history.replaceState(null, "", location.pathname + "?" + p.toString() + location.hash);
     }catch(e){}
@@ -380,6 +683,7 @@
   function buildShareUrl(s, hist){
     var p=new URLSearchParams();
     p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
+    addBodyParams(p, s);
     if(hist && hist.length) p.set("log", encodeLog(hist));
     var base;
     try{
@@ -396,6 +700,7 @@
   }
   function addDays(d,n){ var x=new Date(d); x.setDate(x.getDate()+n); return x; }
   function fmt(n){ return isFinite(n) ? n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : "—"; }
+  function fmt0(n){ return isFinite(n) ? Math.round(n).toLocaleString() : "—"; }   // whole numbers (kcal, g, steps)
   function clampDecimals(val){
     if(val==="") return "";
     var cleaned = val.replace(/,/g,".").replace(/[^0-9.]/g,"");   // comma -> dot
@@ -445,7 +750,12 @@
     weight: "",                          // today's logged weight (filled on init)
     pct:    pick("pct",  "1"),
     endDate:pick("end",  toDateStr(addDays(today,84))),
-    unit:   pick("unit", "kg")
+    unit:   pick("unit", "kg"),
+    sex:    pick("sex", ""),             // "male" | "female" | "neutral"
+    height: pick("height", ""),          // cm (kg unit) or in (lb unit), like weight
+    pattern:pick("pattern", "even"),     // "even" | "highlow" | "cycle"
+    highDays:pick("highDays", "2"),      // number of high-carb days per week ("1" | "2")
+    curSteps:pick("curSteps", "")        // current daily average step count (optional)
   };
 
   var logHistory = [];                  // cached daily log [{date,weight}] ascending
@@ -465,16 +775,54 @@
   // ---- elements -----------------------------------------------------------
   var $ = function(id){ return document.getElementById(id); };
   var elWeight=$("weight"), elPct=$("pct"), elEnd=$("endDate");
+  var elHeight=$("height"), elSexSeg=$("sexSeg"), elSexHint=$("sexHint"), elCurSteps=$("curSteps");
+  var elAboutForm=$("aboutForm"), elAboutSummary=$("aboutSummary"),
+      elAboutEdit=$("aboutEdit"), elAboutDone=$("aboutDone");
   elEnd.min = todayStr;
+
+  var SEX_LABEL = {male:"Male", female:"Female", neutral:"Prefer not to say"};
+  // "About you" is set once: when both sex & height are filled it collapses to a
+  // summary so return visits land straight on the weight field. Edit reopens it.
+  var aboutComplete = function(){ return !!state.sex && state.height!==""; };
+  var aboutOpen = !aboutComplete();
+  function setAbout(){
+    var complete = aboutComplete();
+    elAboutForm.hidden    = !aboutOpen;
+    elAboutSummary.hidden = aboutOpen;
+    elAboutEdit.hidden    = aboutOpen;
+    elAboutDone.disabled  = !complete;
+    if(!aboutOpen){
+      var hsuffix = state.unit==="lb" ? "in" : "cm";
+      elAboutSummary.innerHTML =
+        '<span class="chip">'+(SEX_LABEL[state.sex]||"—")+'</span>'+
+        '<span class="chip">'+(state.height!==""?state.height+" "+hsuffix:"—")+'</span>'+
+        (state.curSteps!==""?'<span class="chip">'+fmt0(parseInt(state.curSteps,10))+' steps/day</span>':"");
+    }
+  }
 
   function setInputs(){
     elWeight.value = state.weight;
     elPct.value = state.pct;
     elEnd.value = state.endDate;
+    elHeight.value = state.height;
+    elCurSteps.value = state.curSteps;
     document.querySelectorAll("[data-unit-suffix]").forEach(function(s){ s.textContent = state.unit; });
     document.querySelectorAll("#units button").forEach(function(b){
       b.classList.toggle("on", b.dataset.unit===state.unit);
     });
+    document.querySelectorAll("#sexSeg button").forEach(function(b){
+      b.classList.toggle("on", b.dataset.sex===state.sex);
+    });
+    document.querySelectorAll("[data-height-suffix]").forEach(function(s){
+      s.textContent = state.unit==="lb" ? "in" : "cm";
+    });
+    if(state.sex==="neutral"){
+      elSexHint.hidden = false;
+      elSexHint.textContent = "We average the male and female formulas for your calories, protein and fat.";
+    } else {
+      elSexHint.hidden = true;
+    }
+    setAbout();
   }
 
   // ---- compute ------------------------------------------------------------
@@ -498,6 +846,55 @@
     if(!end || isNaN(end)) return null;
     var T = (end - today)/WEEK_MS;
     return T>=0 ? Math.floor(T) : null;
+  }
+
+  // ---- maintenance calories + minimum macros -------------------------------
+  // Weight/height are entered in the display unit (kg+cm or lb+in), mirroring
+  // how the weight field works, and converted to metric for the formulas.
+  function bodyMetrics(){
+    var W=parseFloat(state.weight), H=parseFloat(state.height);
+    var lb=state.unit==="lb";
+    var weightKg = lb ? W*LB_TO_KG : W;
+    var heightCm = lb ? H*IN_TO_CM : H;
+    var sex=state.sex;
+    var valid = isFinite(weightKg) && weightKg>0 && isFinite(heightCm) && heightCm>0
+             && (sex==="male"||sex==="female"||sex==="neutral");
+    if(!valid) return {valid:false};
+    var maint=maintenanceCalories(sex, weightKg);
+    return {valid:true, weightKg:weightKg, heightCm:heightCm, sex:sex,
+            maint:maint, protein:minProtein(sex, heightCm), fat:minFat(sex, heightCm)};
+  }
+
+  // Translate the projection (lose pct%/week to the end date) into the daily
+  // deficit, the calories to eat, the macro split, and a step target. The food
+  // deficit is capped at MAX_FOOD_DEFICIT; any remainder is covered by steps.
+  function energyPlan(){
+    var bm=bodyMetrics();
+    if(!bm.valid) return {valid:false};
+    var c=compute();
+    var out={valid:true, bm:bm, days:NaN, lostKg:NaN, totalDeficit:NaN,
+             needDeficit:NaN, foodDeficit:NaN, stepDeficit:NaN, kcalPerStep:NaN,
+             intake:NaN, steps:NaN, protein:bm.protein, fat:bm.fat,
+             carbs:NaN, proteinKcal:bm.protein*KCAL_PROTEIN, fatKcal:bm.fat*KCAL_FAT,
+             fiber:FIBER_MIN, macrosOk:true};
+    if(c.valid){
+      out.lostKg = state.unit==="lb" ? c.lost*LB_TO_KG : c.lost;
+      var end=new Date(state.endDate+"T00:00:00");
+      out.days=Math.max(1, Math.round((end-today)/DAY_MS));
+      out.totalDeficit = out.lostKg*KCAL_PER_KG;
+      out.needDeficit  = out.totalDeficit/out.days;               // to hit goal by date
+      out.foodDeficit  = Math.min(Math.max(0,out.needDeficit), MAX_FOOD_DEFICIT);
+      out.stepDeficit  = Math.max(0, out.needDeficit - out.foodDeficit);
+      out.intake = bm.maint - out.foodDeficit;
+      var kps = calcKcalPerStep(bm.weightKg, bm.heightCm);
+      out.kcalPerStep = kps;
+      out.steps = kps>0 ? out.stepDeficit/kps : NaN;
+      // Macros: protein & fat are fixed minimums; carbs take the remainder.
+      var carbKcal = out.intake - out.proteinKcal - out.fatKcal;
+      out.macrosOk = carbKcal >= 0;
+      out.carbs = Math.max(0, carbKcal)/KCAL_CARB;
+    }
+    return out;
   }
 
   // ---- actual progress from the daily log ---------------------------------
@@ -634,6 +1031,32 @@
   function stat(k, v, cls){
     return '<div class="pstat"><div class="k">'+k+'</div><div class="v'+(cls?" "+cls:"")+'">'+v+'</div></div>';
   }
+  function patternTabs(active){
+    function b(key,label){ return '<button type="button" role="tab" data-pattern="'+key+'"'+(active===key?' class="on" aria-selected="true"':'')+'>'+label+'</button>'; }
+    return '<div class="tabs" role="tablist">'+b("even","Even")+b("highlow","High / Low")+b("cycle","Carb cycle")+'</div>';
+  }
+  function highDaysTabs(active){
+    function b(n){ return '<button type="button" data-highdays="'+n+'"'+(active===n?' class="on"':'')+'>'+n+(n===1?" day":" days")+'</button>'; }
+    return '<div class="subtabs"><span class="lbl">High-carb days</span>'+b(1)+b(2)+'</div>';
+  }
+  function cycleTableHTML(cp, cur){
+    var hasCur = isFinite(cur) && cur>0;
+    var anyAdded = cp.days.some(function(d){ return isFinite(d.steps) && d.steps>0; });
+    var showSteps = anyAdded || hasCur;
+    var rows = cp.days.map(function(d){
+      var cls = d.key==="high"?"high":d.key==="low"?"low":"";
+      var added = (isFinite(d.steps) && d.steps>0) ? d.steps : 0;
+      var steps = hasCur ? fmt0(cur+added) : (added>0 ? "+"+fmt0(added) : "—");
+      return '<tr'+(cls?' class="'+cls+'"':'')+'>'+
+        '<td class="day">'+d.label+' <span class="n">×'+d.count+'</span></td>'+
+        '<td class="kc">'+fmt0(d.kcal)+'</td><td>'+fmt0(d.protein)+'</td>'+
+        '<td>'+fmt0(d.fat)+'</td><td>'+fmt0(d.carbs)+'</td>'+
+        (showSteps ? '<td>'+steps+'</td>' : '')+'</tr>';
+    }).join("");
+    return '<table class="mtable"><thead><tr><th>Day</th><th>kcal</th><th>P&nbsp;(g)</th>'+
+      '<th>F&nbsp;(g)</th><th>C&nbsp;(g)</th>'+(showSteps?'<th>Steps'+(hasCur?'/day':'')+'</th>':'')+
+      '</tr></thead><tbody>'+rows+'</tbody></table>';
+  }
   function trackBanner(unit){
     var o=offTrack();
     if(!o.has) return "";
@@ -674,6 +1097,112 @@
         : '<span class="hint">Log another day to see your trend.</span>');
   }
 
+  // ---- maintenance calories, intake, macros & step target -----------------
+  function renderEnergy(){
+    var ec=$("energyCard"), e=energyPlan();
+    if(!e.valid){
+      ec.innerHTML='<div class="card"><div class="cardtitle">Calories &amp; macros</div>'+
+        '<div class="muted">Pick your sex and enter your height above to see your maintenance '+
+        'calories, the intake and macros for your goal, and the daily steps it needs.</div></div>';
+      return;
+    }
+    var bm=e.bm, hasGoal=isFinite(e.intake);
+    var cycling = hasGoal && e.macrosOk && state.pattern!=="even";
+    // headline: the calories to eat to reach the goal is the hero; maintenance
+    // and the deficit are the supporting stats.
+    var head = hasGoal
+      ? '<div class="result" style="margin-top:0">'+
+          '<div class="cap">Eat this to reach your goal'+(cycling?" · daily average":"")+'</div>'+
+          '<div class="big">'+fmt0(e.intake)+' <small>kcal/day</small></div>'+
+          '<div class="stats">'+
+            '<div><div class="k">Maintenance</div><div class="v">'+fmt0(bm.maint)+' <span>kcal</span></div></div>'+
+            '<div><div class="k">Food deficit</div><div class="v">−'+fmt0(e.foodDeficit)+' <span>kcal</span></div></div>'+
+          '</div>'+
+        '</div>'
+      : '<div class="result" style="margin-top:0">'+
+          '<div class="cap">Daily maintenance</div>'+
+          '<div class="big">'+fmt0(bm.maint)+' <small>kcal/day</small></div>'+
+          '<div class="stats"><div><div class="k">Goal intake</div>'+
+            '<div class="v">log your weight &amp; rate</div></div></div>'+
+        '</div>';
+    // shared building blocks --------------------------------------------------
+    function macrosGrid(title){
+      return '<div class="cardtitle" style="font-size:17px">'+title+'</div>'+
+        '<div class="pgrid" style="margin-top:6px">'+
+          stat("Protein", fmt0(e.protein)+' <small>g</small>')+
+          stat("Fat",     fmt0(e.fat)+' <small>g</small>')+
+          stat("Carbs",   (hasGoal&&e.macrosOk?fmt0(e.carbs):"—")+' <small>g</small>')+
+          stat("Fibre",   '≥'+e.fiber+' <small>g (of carbs)</small>')+
+        '</div>';
+    }
+    function stepsSection(){
+      var stepsK = roundSteps(e.steps);
+      var cur = parseInt(state.curSteps,10), hasCur = isFinite(cur) && cur>0;
+      var stepNote = stepsK>0
+        ? (hasCur ? "Your "+fmt0(cur)+"/day average plus the steps needed to cover the rest of the deficit."
+                  : "Added on top of your current daily average to cover the rest of the deficit.")
+        : "Your food deficit already covers your goal — extra steps are optional but recommended.";
+      var grid = hasCur
+        ? stat("Target / day", fmt0(cur+Math.max(0,stepsK))+' <small>steps total</small>')+
+          stat("To add",       (stepsK>0?'+'+fmt0(stepsK):'0')+' <small>over '+fmt0(cur)+' now</small>')
+        : stat("Steps / day",  '+'+fmt0(stepsK)+' <small>to your daily average</small>')+
+          stat("Over",         e.days+' <small>days</small>');
+      return '<div class="cardtitle" style="font-size:17px;margin-top:14px">Daily steps</div>'+
+        '<div class="pgrid" style="margin-top:6px">'+grid+'</div>'+
+        '<span class="hint">'+stepNote+'</span>';
+    }
+
+    var body;
+    if(!hasGoal){
+      body = macrosGrid("Daily macros (minimums)");
+    } else if(!e.macrosOk){
+      body = macrosGrid("Daily macros") +
+        '<div class="warn">At '+fmt0(e.intake)+' kcal you can’t fit your minimum protein ('+fmt0(e.protein)+
+        'g) and fat ('+fmt0(e.fat)+'g). Lower the weekly % or push the end date out so there’s room for carbs.</div>';
+    } else {
+      // eating-pattern tabs sit at the top; the chosen pattern fills the rest
+      body = '<div class="cardtitle" style="font-size:17px">Eating pattern</div>'+patternTabs(state.pattern);
+      if(state.pattern==="even"){
+        body += '<span class="hint">The same calories and macros every day.</span>'+
+                macrosGrid("Daily macros")+stepsSection();
+      } else {
+        var hd = parseInt(state.highDays,10)===1 ? 1 : 2;
+        if(state.pattern==="highlow") body += highDaysTabs(hd);   // carb cycle is always 1 high day
+        var cp = cyclePlan({protein:e.protein, weightKg:bm.weightKg, intake:e.intake, maint:bm.maint,
+                            pattern:state.pattern, highDays:hd, carbFloor:e.fiber, fatMin:e.fat,
+                            stepDeficit:e.stepDeficit, kcalPerStep:e.kcalPerStep});
+        var hiDay = cp.days.filter(function(d){return d.key==="high";})[0];
+        var loDay = cp.days.filter(function(d){return d.key==="low"; })[0];
+        var macroText, steepEase = false;
+        if(state.pattern==="cycle"){
+          macroText = "Low days carry a solid ~"+fmt0(cp.lowFat)+"g fat ("+LOW_FAT_PER_KG+" g/kg) at the "+e.fiber+
+            "g carb floor; high days are 35% carbs and medium days 35% fat, taking whatever calories are left";
+          steepEase = cp.lowFat < LOW_FAT_PER_KG*bm.weightKg - 0.5;
+        } else {
+          var cut = hd===1 ? 100 : 150;
+          macroText = "Protein stays the same every day — only carbs move. Each low day drops "+cut+
+            " kcal of carbs (to ~"+fmt0(loDay?loDay.carbs:0)+"g) and that goes onto the high day"+(hd===1?"":"s")+
+            " (~"+fmt0(hiDay?hiDay.carbs:0)+"g carbs"+(hd===1?"":" each")+")";
+        }
+        var cur = parseInt(state.curSteps,10), hasCur = isFinite(cur) && cur>0;
+        body += cycleTableHTML(cp, cur)+
+          '<span class="hint">'+macroText+'. The week still averages your '+fmt0(e.intake)+' kcal goal.'+
+          (hasCur ? ' The Steps column is your total daily target (your ~'+fmt0(cur)+'/day average plus any added).' : '')+
+          (steepEase ? ' (Your deficit is steep enough that low-day fat had to ease below '+LOW_FAT_PER_KG+
+          ' g/kg so the high days stay the biggest.)' : '')+
+          (cp.fatTrimmed ? ' The low days hit the '+e.fiber+'g carb floor, so the high day’s fat was trimmed to ~'+
+          fmt0(cp.highFat)+'g to make room for the carbs'+(cp.anyRaised ? ', and the rest is walked off with steps.' : '.') : '')+
+          (cp.anyRaised && !cp.fatTrimmed ? ' Some low days couldn’t give up that many carbs without breaking the '+
+          e.fiber+'g floor, so the extra is walked off with steps on the high day.' : '')+'</span>';
+      }
+    }
+    var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier; '+
+      'protein &amp; fat targets come from your height. Goal calories = maintenance − the deficit to hit your date '+
+      '(food deficit capped at '+MAX_FOOD_DEFICIT+' kcal, steps cover any more; ~'+KCAL_PER_KG.toLocaleString()+
+      ' kcal per kg). These are estimates, not medical advice.</p>';
+    ec.innerHTML=head+'<div class="card">'+body+note+'</div>';
+  }
+
   function render(){
     var c=compute(), unit=state.unit;
     var wl=weeksLeft(), hasToday=!!todayEntry();
@@ -700,6 +1229,7 @@
     }
 
     renderProgress();
+    renderEnergy();
   }
 
   // ---- persistence (settings + shareable URL) -----------------------------
@@ -717,6 +1247,12 @@
       state.pct     = "1";
       state.endDate = toDateStr(addDays(today,84));
       state.unit    = "kg";
+      state.sex     = "";
+      state.height  = "";
+      state.pattern = "even";
+      state.highDays= "2";
+      state.curSteps= "";
+      aboutOpen     = true;   // reopen the one-time setup after a wipe
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
       render();
@@ -741,10 +1277,32 @@
     });
   }
   onDecimalInput(elPct,"pct");
+  onDecimalInput(elHeight,"height");
+  elCurSteps.addEventListener("input", function(){
+    var cleaned = elCurSteps.value.replace(/[^0-9]/g,"").slice(0,6);   // whole steps only
+    if(cleaned !== elCurSteps.value) elCurSteps.value = cleaned;
+    state.curSteps = cleaned; persist(); render();
+  });
   elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; persist(); render(); });
+  elSexSeg.addEventListener("click", function(e){
+    var b = e.target.closest("button"); if(!b) return;
+    state.sex = b.dataset.sex; persist(); setInputs(); render();
+  });
+  elAboutEdit.addEventListener("click", function(){ aboutOpen=true; setAbout(); });
+  elAboutDone.addEventListener("click", function(){
+    if(aboutComplete()){ aboutOpen=false; setAbout(); }
+  });
   document.getElementById("units").addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
     state.unit = b.dataset.unit; persist(); setInputs(); render();
+  });
+  // The energy card is re-rendered as innerHTML, so the pattern buttons are
+  // bound by delegation on the stable container.
+  $("energyCard").addEventListener("click", function(e){
+    var p = e.target.closest("[data-pattern]");
+    if(p){ state.pattern = p.dataset.pattern; persist(); render(); return; }
+    var h = e.target.closest("[data-highdays]");
+    if(h){ state.highDays = h.dataset.highdays; persist(); render(); return; }
   });
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
