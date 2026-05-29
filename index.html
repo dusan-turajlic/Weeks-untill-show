@@ -69,9 +69,6 @@
   .seg button{flex:1;border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:12px;
               padding:11px 0;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
   .seg button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
-  .ibox select{flex:1;border:none;outline:none;background:transparent;font-size:17px;
-               font-family:var(--sans);color:var(--ink);padding:12px 0;width:100%;
-               -webkit-appearance:none;appearance:none;cursor:pointer}
   .warn{display:flex;gap:9px;align-items:flex-start;background:#f7e9e3;border:1px solid #e8cdc0;
         border-radius:12px;padding:10px 12px;margin-top:12px;font-size:12.5px;color:#a8472f;line-height:1.45}
 
@@ -224,34 +221,18 @@
 
   <div class="card">
     <div class="cardtitle">About you</div>
-    <p class="sub" style="margin:0 0 4px">Used to estimate your maintenance calories, body fat and the deficit for your goal.</p>
+    <p class="sub" style="margin:0 0 4px">Used to work out your maintenance calories, daily macros and the steps your goal needs.</p>
     <label class="field">
       <span class="flabel">Sex</span>
       <div class="seg" id="sexSeg">
         <button type="button" data-sex="male">Male</button>
         <button type="button" data-sex="female">Female</button>
       </div>
-      <span class="hint">Used by the energy &amp; body-fat formulas (biological sex).</span>
-    </label>
-    <label class="field">
-      <span class="flabel">Age</span>
-      <div class="ibox"><input id="age" inputmode="numeric" placeholder="0" /><span class="suffix">yrs</span></div>
     </label>
     <label class="field">
       <span class="flabel">Height</span>
       <div class="ibox"><input id="height" inputmode="decimal" placeholder="0" /><span class="suffix" data-height-suffix>cm</span></div>
-    </label>
-    <label class="field">
-      <span class="flabel">Activity level</span>
-      <div class="ibox">
-        <select id="activity">
-          <option value="sedentary">Sedentary — little or no exercise</option>
-          <option value="light">Lightly active — 1–3 days/week</option>
-          <option value="moderate">Moderately active — 3–5 days/week</option>
-          <option value="very">Very active — 6–7 days/week</option>
-          <option value="extra">Extra active — hard daily / physical job</option>
-        </select>
-      </div>
+      <span class="hint">Sets your minimum protein &amp; fat targets.</span>
     </label>
   </div>
 
@@ -304,31 +285,56 @@
   var WEEK_MS = 7*24*60*60*1000;
   var DAY_MS  = 24*60*60*1000;
 
-  // ---- energy / body-composition constants & formulas ---------------------
-  var LB_TO_KG = 0.45359237, IN_TO_CM = 2.54;
+  // ---- energy / macro constants & formulas --------------------------------
+  var LB_TO_KG = 0.45359237, KG_TO_LB = 1/LB_TO_KG, IN_TO_CM = 2.54;
   var KCAL_PER_KG = 7700;            // ~energy in 1 kg of body weight (mostly fat)
-  // Standard physical-activity multipliers applied to BMR to get TDEE.
-  var ACTIVITY = {
-    sedentary:{mult:1.2,   label:"Sedentary"},
-    light:    {mult:1.375, label:"Lightly active"},
-    moderate: {mult:1.55,  label:"Moderately active"},
-    very:     {mult:1.725, label:"Very active"},
-    extra:    {mult:1.9,   label:"Extra active"}
-  };
+  var KCAL_FAT = 9, KCAL_PROTEIN = 4, KCAL_CARB = 4;
+  var MAX_FOOD_DEFICIT = 700;        // never cut more than this from food; steps cover the rest
+  var FIBER_MIN = 35;                // g/day of fibre to aim for (counted within carbs)
 
-  // Resting metabolic rate — Mifflin-St Jeor (1990), the current standard
-  // predictive equation recommended for healthy adults.
-  function calcBMR(weightKg, heightCm, age, sexMale){
-    return 10*weightKg + 6.25*heightCm - 5*age + (sexMale ? 5 : -161);
+  // Maintenance calories = bodyweight(lb) × a multiplier that tapers as weight
+  // rises. Brackets are sex-specific; we use the midpoint of each range.
+  // [upper-bound-lb (Infinity = top bracket), multiplier]
+  var MAINT_MULT = {
+    male:[[200,12],[250,10.5],[300,9],[400,7.5],[Infinity,6]],
+    female:[[150,13.5],[200,11.5],[250,10.5],[300,9],[400,7.5],[Infinity,6]]
+  };
+  function maintMultiplier(sex, weightLb){
+    var t = MAINT_MULT[sex] || MAINT_MULT.male;
+    for(var i=0;i<t.length;i++){ if(weightLb < t[i][0]) return t[i][1]; }
+    return t[t.length-1][1];
   }
-  // Body-fat % estimate — CUN-BAE (Gómez-Ambrosi 2012), a modern equation that
-  // is more accurate than older BMI-based estimates from sex, age and BMI.
-  function calcBodyFat(weightKg, heightCm, age, sexMale){
-    var m = heightCm/100, bmi = weightKg/(m*m), s = sexMale ? 0 : 1;
-    var bf = -44.988 + 0.503*age + 10.689*s + 3.172*bmi - 0.026*bmi*bmi
-             + 0.181*bmi*s - 0.02*bmi*age - 0.005*bmi*bmi*s + 0.00021*bmi*bmi*age;
-    return Math.max(3, Math.min(60, bf));   // clamp to a plausible range
+  function maintenanceCalories(sex, weightKg){
+    var lb = weightKg * KG_TO_LB;
+    return lb * maintMultiplier(sex, lb);
   }
+
+  // Minimum daily protein & fat (g) to protect muscle and hormones, keyed to
+  // height. Reference points are in cm; we linearly interpolate (and clamp at
+  // the ends). 1 in = 2.54 cm, so e.g. 5'9" = 175.26 cm.
+  var MIN_PROTEIN = {
+    male:[[160.02,135],[167.64,150],[175.26,165],[182.88,185],[190.5,205],[198.12,230]],
+    female:[[144.78,90],[152.4,100],[160.02,115],[167.64,130],[175.26,145],[182.88,165]]
+  };
+  var MIN_FAT = {
+    male:[[160.02,45],[167.64,52],[175.26,60],[182.88,70],[190.5,81],[198.12,93]],
+    female:[[144.78,45],[152.4,50],[160.02,57],[167.64,65],[175.26,74],[182.88,85]]
+  };
+  function interp(table, x){
+    if(x <= table[0][0]) return table[0][1];
+    var last = table[table.length-1];
+    if(x >= last[0]) return last[1];
+    for(var i=1;i<table.length;i++){
+      if(x <= table[i][0]){
+        var a=table[i-1], b=table[i], f=(x-a[0])/(b[0]-a[0]);
+        return a[1] + f*(b[1]-a[1]);
+      }
+    }
+    return last[1];
+  }
+  function minProtein(sex, heightCm){ return interp(MIN_PROTEIN[sex] || MIN_PROTEIN.male, heightCm); }
+  function minFat(sex, heightCm){ return interp(MIN_FAT[sex] || MIN_FAT.male, heightCm); }
+
   // Net kcal burned per step. Stride ≈ 0.414·height; walking costs ≈0.5 kcal
   // per kg per km net of rest. Heavier/taller people burn more per step.
   function calcKcalPerStep(weightKg, heightCm){
@@ -425,8 +431,7 @@
   }
   function saveSettings(s){
     try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({
-      pct:s.pct, endDate:s.endDate, unit:s.unit,
-      sex:s.sex, age:s.age, height:s.height, activity:s.activity
+      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height
     })); }catch(e){}
   }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
@@ -447,16 +452,14 @@
       var p=new URLSearchParams(location.search);
       if(!p.toString()) return null;
       return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
-               sex:p.get("sex"), age:p.get("age"), height:p.get("height"), activity:p.get("activity"),
+               sex:p.get("sex"), height:p.get("height"),
                weight:p.get("weight"), log:p.get("log") };
     }catch(e){ return null; }
   }
   // Add the body-metric params, omitting any that are empty to keep links tidy.
   function addBodyParams(p, s){
-    if(s.sex)      p.set("sex", s.sex);
-    if(s.age)      p.set("age", s.age);
-    if(s.height)   p.set("height", s.height);
-    if(s.activity) p.set("activity", s.activity);
+    if(s.sex)    p.set("sex", s.sex);
+    if(s.height) p.set("height", s.height);
   }
   function writeURL(s, hist){
     try{
@@ -487,8 +490,7 @@
   }
   function addDays(d,n){ var x=new Date(d); x.setDate(x.getDate()+n); return x; }
   function fmt(n){ return isFinite(n) ? n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : "—"; }
-  function fmt0(n){ return isFinite(n) ? Math.round(n).toLocaleString() : "—"; }   // whole numbers (kcal, steps)
-  function fmt1(n){ return isFinite(n) ? n.toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1}) : "—"; }
+  function fmt0(n){ return isFinite(n) ? Math.round(n).toLocaleString() : "—"; }   // whole numbers (kcal, g, steps)
   function clampDecimals(val){
     if(val==="") return "";
     var cleaned = val.replace(/,/g,".").replace(/[^0-9.]/g,"");   // comma -> dot
@@ -498,7 +500,6 @@
     if(dp!==undefined) cleaned = ip+"."+dp.slice(0,2);
     return cleaned;
   }
-  function clampInt(val){ return val.replace(/[^0-9]/g,"").slice(0,3); }   // age: whole years
   function prettyDate(str){
     if(!str) return "—";
     var d = new Date(str+"T00:00:00");
@@ -541,9 +542,7 @@
     endDate:pick("end",  toDateStr(addDays(today,84))),
     unit:   pick("unit", "kg"),
     sex:    pick("sex", ""),             // "male" | "female"
-    age:    pick("age", ""),             // whole years
-    height: pick("height", ""),          // cm (kg unit) or in (lb unit), like weight
-    activity:pick("activity", "moderate")
+    height: pick("height", "")           // cm (kg unit) or in (lb unit), like weight
   };
 
   var logHistory = [];                  // cached daily log [{date,weight}] ascending
@@ -563,16 +562,14 @@
   // ---- elements -----------------------------------------------------------
   var $ = function(id){ return document.getElementById(id); };
   var elWeight=$("weight"), elPct=$("pct"), elEnd=$("endDate");
-  var elAge=$("age"), elHeight=$("height"), elActivity=$("activity"), elSexSeg=$("sexSeg");
+  var elHeight=$("height"), elSexSeg=$("sexSeg");
   elEnd.min = todayStr;
 
   function setInputs(){
     elWeight.value = state.weight;
     elPct.value = state.pct;
     elEnd.value = state.endDate;
-    elAge.value = state.age;
     elHeight.value = state.height;
-    elActivity.value = state.activity;
     document.querySelectorAll("[data-unit-suffix]").forEach(function(s){ s.textContent = state.unit; });
     document.querySelectorAll("#units button").forEach(function(b){
       b.classList.toggle("on", b.dataset.unit===state.unit);
@@ -608,47 +605,53 @@
     return T>=0 ? Math.floor(T) : null;
   }
 
-  // ---- body composition + maintenance calories ----------------------------
+  // ---- maintenance calories + minimum macros -------------------------------
   // Weight/height are entered in the display unit (kg+cm or lb+in), mirroring
   // how the weight field works, and converted to metric for the formulas.
   function bodyMetrics(){
-    var W=parseFloat(state.weight), H=parseFloat(state.height), age=parseFloat(state.age);
+    var W=parseFloat(state.weight), H=parseFloat(state.height);
     var lb=state.unit==="lb";
     var weightKg = lb ? W*LB_TO_KG : W;
     var heightCm = lb ? H*IN_TO_CM : H;
-    var sexMale  = state.sex==="male";
+    var sex=state.sex;
     var valid = isFinite(weightKg) && weightKg>0 && isFinite(heightCm) && heightCm>0
-             && isFinite(age) && age>0 && (state.sex==="male"||state.sex==="female");
+             && (sex==="male"||sex==="female");
     if(!valid) return {valid:false};
-    var m=heightCm/100, bmi=weightKg/(m*m);
-    var bmr=calcBMR(weightKg, heightCm, age, sexMale);
-    var bf =calcBodyFat(weightKg, heightCm, age, sexMale);
-    var lbm=weightKg*(1-bf/100);
-    var act=ACTIVITY[state.activity] || ACTIVITY.moderate;
-    var tdee=bmr*act.mult;
-    return {valid:true, weightKg:weightKg, heightCm:heightCm, age:age, bmi:bmi,
-            bmr:bmr, bf:bf, lbm:lbm, tdee:tdee, act:act, sexMale:sexMale};
+    var maint=maintenanceCalories(sex, weightKg);
+    return {valid:true, weightKg:weightKg, heightCm:heightCm, sex:sex,
+            maint:maint, mult:maintMultiplier(sex, weightKg*KG_TO_LB),
+            protein:minProtein(sex, heightCm), fat:minFat(sex, heightCm)};
   }
 
   // Translate the projection (lose pct%/week to the end date) into the daily
-  // deficit, the calories to eat, and an equivalent daily step target.
+  // deficit, the calories to eat, the macro split, and a step target. The food
+  // deficit is capped at MAX_FOOD_DEFICIT; any remainder is covered by steps.
   function energyPlan(){
     var bm=bodyMetrics();
     if(!bm.valid) return {valid:false};
     var c=compute();
-    var lostKg=NaN, days=NaN, dailyDeficit=NaN, totalDeficit=NaN, intake=NaN, steps=NaN;
+    var out={valid:true, bm:bm, days:NaN, lostKg:NaN, totalDeficit:NaN,
+             needDeficit:NaN, foodDeficit:NaN, stepDeficit:NaN,
+             intake:NaN, steps:NaN, protein:bm.protein, fat:bm.fat,
+             carbs:NaN, proteinKcal:bm.protein*KCAL_PROTEIN, fatKcal:bm.fat*KCAL_FAT,
+             fiber:FIBER_MIN, macrosOk:true};
     if(c.valid){
-      lostKg = state.unit==="lb" ? c.lost*LB_TO_KG : c.lost;
+      out.lostKg = state.unit==="lb" ? c.lost*LB_TO_KG : c.lost;
       var end=new Date(state.endDate+"T00:00:00");
-      days=Math.max(1, Math.round((end-today)/DAY_MS));
-      totalDeficit = lostKg*KCAL_PER_KG;
-      dailyDeficit = totalDeficit/days;
-      intake = bm.tdee - dailyDeficit;
+      out.days=Math.max(1, Math.round((end-today)/DAY_MS));
+      out.totalDeficit = out.lostKg*KCAL_PER_KG;
+      out.needDeficit  = out.totalDeficit/out.days;               // to hit goal by date
+      out.foodDeficit  = Math.min(Math.max(0,out.needDeficit), MAX_FOOD_DEFICIT);
+      out.stepDeficit  = Math.max(0, out.needDeficit - out.foodDeficit);
+      out.intake = bm.maint - out.foodDeficit;
       var kps = calcKcalPerStep(bm.weightKg, bm.heightCm);
-      steps = kps>0 ? dailyDeficit/kps : NaN;
+      out.steps = kps>0 ? out.stepDeficit/kps : NaN;
+      // Macros: protein & fat are fixed minimums; carbs take the remainder.
+      var carbKcal = out.intake - out.proteinKcal - out.fatKcal;
+      out.macrosOk = carbKcal >= 0;
+      out.carbs = Math.max(0, carbKcal)/KCAL_CARB;
     }
-    return {valid:true, bm:bm, days:days, lostKg:lostKg, totalDeficit:totalDeficit,
-            dailyDeficit:dailyDeficit, intake:intake, steps:steps};
+    return out;
   }
 
   // ---- actual progress from the daily log ---------------------------------
@@ -825,61 +828,58 @@
         : '<span class="hint">Log another day to see your trend.</span>');
   }
 
-  // ---- maintenance calories, deficit & step target -----------------------
+  // ---- maintenance calories, intake, macros & step target -----------------
   function renderEnergy(){
-    var ec=$("energyCard"), e=energyPlan(), unit=state.unit;
+    var ec=$("energyCard"), e=energyPlan();
     if(!e.valid){
-      ec.innerHTML='<div class="card"><div class="cardtitle">Energy &amp; deficit</div>'+
-        '<div class="muted">Add your sex, age and height above to estimate maintenance '+
-        'calories, body fat and the daily deficit (and step target) for your goal.</div></div>';
+      ec.innerHTML='<div class="card"><div class="cardtitle">Calories &amp; macros</div>'+
+        '<div class="muted">Pick your sex and enter your height above to see your maintenance '+
+        'calories, the intake and macros for your goal, and the daily steps it needs.</div></div>';
       return;
     }
-    var bm=e.bm;
-    var lbm = unit==="lb" ? bm.lbm/LB_TO_KG : bm.lbm;   // show lean mass in the display unit
-    var hasGoal = isFinite(e.dailyDeficit);
-    var deficitPos = hasGoal && e.dailyDeficit>0.5;
+    var bm=e.bm, hasGoal=isFinite(e.intake);
     // headline: maintenance, then what to eat + the deficit
     var head=
       '<div class="result" style="margin-top:0">'+
-        '<div class="cap">Daily maintenance · '+bm.act.label+'</div>'+
-        '<div class="big">'+fmt0(bm.tdee)+' <small>kcal/day</small></div>'+
+        '<div class="cap">Daily maintenance</div>'+
+        '<div class="big">'+fmt0(bm.maint)+' <small>kcal/day</small></div>'+
         '<div class="stats">'+
           '<div><div class="k">Eat to hit goal</div><div class="v">'+(hasGoal?fmt0(e.intake):"—")+' <span>kcal</span></div></div>'+
-          '<div><div class="k">Daily deficit</div><div class="v">'+(hasGoal?fmt0(e.dailyDeficit):"—")+' <span>kcal</span></div></div>'+
+          '<div><div class="k">Food deficit</div><div class="v">'+(hasGoal?fmt0(e.foodDeficit):"—")+' <span>kcal</span></div></div>'+
         '</div>'+
       '</div>';
-    // detail grid
+    // macros (protein & fat are minimums; carbs are the remainder)
     var grid=
-      '<div class="pgrid" style="margin-top:12px">'+
-        stat("Body fat (est.)", fmt1(bm.bf)+'<small>%</small>')+
-        stat("Lean mass",       fmt(lbm)+' <small>'+unit+'</small>')+
-        stat("BMI",             fmt1(bm.bmi))+
-        stat("Resting (BMR)",   fmt0(bm.bmr)+' <small>kcal</small>')+
+      '<div class="cardtitle" style="font-size:17px">Daily macros'+(hasGoal?'':' (minimums)')+'</div>'+
+      '<div class="pgrid" style="margin-top:6px">'+
+        stat("Protein", fmt0(e.protein)+' <small>g</small>')+
+        stat("Fat",     fmt0(e.fat)+' <small>g</small>')+
+        stat("Carbs",   (hasGoal&&e.macrosOk?fmt0(e.carbs):"—")+' <small>g</small>')+
+        stat("Fibre",   '≥'+e.fiber+' <small>g (of carbs)</small>')+
       '</div>';
-    if(deficitPos){
-      grid+='<div class="pgrid" style="margin-top:0">'+
-        stat("Steps for full deficit", fmt0(e.steps))+
-        stat("Over",                   e.days+' <small>days</small>')+
-      '</div>';
+    // steps to cover the part of the deficit food doesn't
+    if(hasGoal){
+      var stepNote = e.steps>50
+        ? "to cover the rest of the deficit"
+        : "food alone covers your deficit — steps optional but recommended";
+      grid+='<div class="cardtitle" style="font-size:17px;margin-top:14px">Daily steps</div>'+
+        '<div class="pgrid" style="margin-top:6px">'+
+          stat("Steps / day", fmt0(e.steps))+
+          stat("Over",        e.days+' <small>days</small>')+
+        '</div>'+
+        '<span class="hint">'+stepNote+'.</span>';
     }
-    // warnings for an unsafe / unrealistic plan
+    // warning when even a capped food deficit can't fit the protein + fat floor
     var warn="";
-    if(hasGoal && deficitPos){
-      if(e.intake < bm.bmr){
-        warn='<div class="warn">Eating '+fmt0(e.intake)+' kcal is below your resting metabolic rate ('+
-          fmt0(bm.bmr)+' kcal). That pace is aggressive — consider a longer timeframe or a smaller weekly %.</div>';
-      } else {
-        var floor = bm.sexMale ? 1500 : 1200;
-        if(e.intake < floor){
-          warn='<div class="warn">Eating '+fmt0(e.intake)+' kcal/day is quite low. Aim to stay near or above '+
-            floor+' kcal — extend the end date or lower the weekly % for a gentler deficit.</div>';
-        }
-      }
+    if(hasGoal && !e.macrosOk){
+      warn='<div class="warn">At '+fmt0(e.intake)+' kcal you can\'t fit your minimum protein ('+
+        fmt0(e.protein)+'g) and fat ('+fmt0(e.fat)+'g). Lower the weekly % or push the end date '+
+        'out so there\'s room for carbs.</div>';
     }
-    var note='<p class="note" style="margin-top:14px">Maintenance uses the Mifflin-St Jeor equation × your activity '+
-      'level. Body fat is estimated with the CUN-BAE formula from your sex, age and BMI. The deficit assumes '+
-      '~'+KCAL_PER_KG.toLocaleString()+' kcal per kg (≈3,500 kcal per lb) of body weight, '+
-      'and the steps figure is the walking needed to burn the whole deficit if you ate at maintenance — all are estimates.</p>';
+    var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier. '+
+      'Protein &amp; fat minimums come from your height; carbs take whatever calories are left (with ≥'+e.fiber+
+      'g fibre). The food deficit is capped at '+MAX_FOOD_DEFICIT+' kcal — anything more is made up with steps '+
+      '(~'+KCAL_PER_KG.toLocaleString()+' kcal per kg lost). These are estimates, not medical advice.</p>';
     ec.innerHTML=head+'<div class="card">'+grid+warn+note+'</div>';
   }
 
@@ -928,9 +928,7 @@
       state.endDate = toDateStr(addDays(today,84));
       state.unit    = "kg";
       state.sex     = "";
-      state.age     = "";
       state.height  = "";
-      state.activity= "moderate";
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
       render();
@@ -957,12 +955,6 @@
   onDecimalInput(elPct,"pct");
   onDecimalInput(elHeight,"height");
   elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; persist(); render(); });
-  elAge.addEventListener("input", function(){
-    var cleaned = clampInt(elAge.value);
-    if(cleaned !== elAge.value) elAge.value = cleaned;
-    state.age = cleaned; persist(); render();
-  });
-  elActivity.addEventListener("change", function(){ state.activity = elActivity.value; persist(); render(); });
   elSexSeg.addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
     state.sex = b.dataset.sex; persist(); setInputs(); render();

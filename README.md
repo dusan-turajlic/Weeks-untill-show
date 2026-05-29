@@ -15,11 +15,11 @@ dependencies.
 - **Trajectory chart** — an inline SVG line chart of your weight from today
   (week N) to your end date (week 0).
 - **Week-by-week table** — every week's projected weight and cumulative loss.
-- **Maintenance calories & deficit** — add your sex, age, height and activity
-  level to estimate your daily maintenance calories (TDEE), the calories to eat
-  to hit your goal, the daily deficit that requires, and an equivalent daily
-  step target. Also estimates your body fat %, lean mass and BMI. See
-  [How the energy numbers work](#how-the-energy-numbers-work).
+- **Calories, macros & steps** — add just your sex and height and the app works
+  out the maintenance calories for your current weight, the daily calories to
+  eat to hit your goal, a protein / fat / carb split (with a fibre target), and
+  the daily step count needed to make up the rest of the deficit. See
+  [How the calorie numbers work](#how-the-calorie-numbers-work).
 - **kg / lb toggle** — switch units on the fly (height follows as cm / in).
 - **Shareable links** — all inputs are stored in the URL's query string, so you
   can bookmark or share a link to restore the exact projection (use the
@@ -61,29 +61,31 @@ loss percentage divided by 100 — so the loss compounds on your current weight
 rather than being linear. Week 0 is your end date; higher week numbers count
 back toward today. Only whole weeks between today and the end date are shown.
 
-## How the energy numbers work
+## How the calorie numbers work
 
-All figures are estimates from well-established equations:
+The aim is to keep input minimal — sex, height and your logged weight — and turn
+the chosen rate of loss into a simple, actionable plan. All figures are
+estimates.
 
-- **Resting metabolic rate (BMR)** — the
-  [Mifflin-St Jeor equation](https://en.wikipedia.org/wiki/Basal_metabolic_rate#BMR_estimation_formulas),
-  the predictive equation recommended for healthy adults:
-  `10·kg + 6.25·cm − 5·age + (5 for male / −161 for female)`.
-- **Maintenance (TDEE)** — BMR multiplied by a standard physical-activity factor
-  (1.2 sedentary → 1.9 extra active).
-- **Body fat %** — the CUN-BAE equation (Gómez-Ambrosi et al., 2012), a modern
-  estimate from sex, age and BMI; clamped to a 3–60 % plausible range. Lean mass
-  is `weight × (1 − bodyfat%)`.
-- **Daily deficit** — the projected weight to lose × ~7,700 kcal/kg (≈3,500
-  kcal/lb), spread over the days until your end date. "Eat to hit goal" is
-  maintenance minus that deficit.
-- **Step target** — the walking needed to burn the whole deficit if you ate at
-  maintenance, using a height-based stride and the net cost of walking
-  (~0.5 kcal per kg per km).
+- **Maintenance calories** — your current weight in **pounds** × a multiplier
+  that tapers as weight rises (the midpoint of a sex-specific range). For
+  example a male under 200 lb uses ~12×, 200–250 lb ~10.5×, and so on; women use
+  a slightly higher set of brackets. Weight entered in kg is converted to lb
+  first.
+- **Minimum protein & fat** — set by your **height** (interpolated from a
+  reference table, in cm) to protect muscle and keep hormones healthy.
+- **Carbs** — whatever calories are left after protein (4 kcal/g) and fat
+  (9 kcal/g), at 4 kcal/g — including a target of **≥35 g fibre**.
+- **Deficit & intake** — the projected weight to lose × ~7,700 kcal/kg (≈3,500
+  kcal/lb), spread over the days until your end date. The deficit taken from
+  **food is capped at 700 kcal** so the diet never gets too aggressive.
+- **Steps** — any deficit beyond that 700 kcal is made up with walking. The app
+  shows the daily step count for it, using a height-based stride and the net
+  cost of walking (~0.5 kcal per kg per km).
 
-These are general estimates, not medical advice. The app warns when a goal
-implies eating below your BMR or an unusually low intake — extend the end date or
-lower the weekly % for a gentler deficit.
+These are general estimates, not medical advice. If even a capped food deficit
+can't fit your protein + fat minimums, the app says so — lower the weekly % or
+push the end date out for a gentler plan.
 
 ## Tests
 
@@ -91,5 +93,5 @@ Pure logic is covered by dependency-free Node tests:
 
 ```bash
 node test/offtrack.test.js   # on/off-track indicator
-node test/energy.test.js     # BMR, body fat, kcal-per-step formulas
+node test/energy.test.js     # maintenance, macros, deficit cap & steps
 ```
