@@ -413,12 +413,15 @@
   //   • High/Low — a pure carb shift off the even baseline: cut a fixed chunk
   //     of carbs from every low day and pile it onto the high day(s) as carbs.
   //     One high day cuts HIGHLOW_CUT_1H kcal/low-day; two high days cut
-  //     HIGHLOW_CUT_2H each. Protein & fat never move; the week still totals
+  //     HIGHLOW_CUT_2H each. Protein never moves; the week still totals
   //     7×intake. If a low day can't give up that many carbs without breaking
-  //     the 35 g floor, the high day still gets the full bump and the leftover
-  //     is burned off with steps on the high day.
+  //     the 35 g floor, we first trim the HIGH day's fat (from its height
+  //     minimum down to HIGH_FAT_MIN_PER_KG g/kg) to make room for the carbs,
+  //     and only what's left after that is walked off with steps on the high
+  //     day.
   var CARB_CAL_SHARE = 0.35, FAT_CAL_SHARE = 0.35, LOW_FAT_PER_KG = 0.7;
   var HIGHLOW_CUT_1H = 100, HIGHLOW_CUT_2H = 150;   // carbs (kcal) pulled per low day
+  var HIGH_FAT_MIN_PER_KG = 0.6;                     // how low a high day's fat may be trimmed
 
   function dayCounts(pattern, highDays){
     var h = highDays===1 ? 1 : 2;
@@ -464,22 +467,32 @@
                       steps:(kps>0 ? roundSteps(baseStepEnergy/kps) : NaN)}] };
     }
 
-    // High/Low — carb shift off the even baseline. Protein & fat stay put; we
-    // pull a fixed chunk of carbs from each low day and stack it onto the high
-    // day(s). Anything a low day can't give up (35 g carb floor) still lands on
-    // the high day as carbs, with the surplus burned by steps on the high day.
+    // High/Low — carb shift off the even baseline. Protein stays put; we pull a
+    // fixed chunk of carbs from each low day and stack it onto the high day(s).
+    // If the lows hit the 35 g carb floor before funding the full bump, trim the
+    // high day's fat (down to a 0.6 g/kg minimum) to make room; only what's
+    // still unfunded after that gets walked off with steps on the high day.
     if(o.pattern==="highlow"){
       var base = splitMacros(I, P, fatFloor, carbFloor, "fixedFat", o.fatMin); // even day
       var cut  = (n.high===1 ? HIGHLOW_CUT_1H : HIGHLOW_CUT_2H);               // kcal off each low day
       var lowCarbs   = Math.max(carbFloor, base.carbs - cut/4);
       var pulledPerLow = (base.carbs - lowCarbs)*4;          // kcal actually taken from a low day
       var pool       = cut * n.low;                          // carbs (kcal) the high day(s) get
-      var shortfall  = pool - pulledPerLow*n.low;            // surplus the lows couldn't fund → steps
+      var shortfall  = pool - pulledPerLow*n.low;            // bump the lows couldn't fund
+
+      // Trim high-day fat (height min → 0.6 g/kg) to absorb the shortfall first.
+      var highFat = base.fat, highFatMin = Math.max(fatFloor, HIGH_FAT_MIN_PER_KG*kg);
+      if(shortfall > 0 && highFat > highFatMin){
+        var fatUsed = Math.min(shortfall, (highFat - highFatMin)*9*n.high);
+        highFat   -= (fatUsed/n.high)/9;
+        shortfall -= fatUsed;                                // remainder (if any) → steps
+      }
+
       var highCarbs  = base.carbs + (pool/n.high)/4;
       var lowKcal    = 4*P + 9*base.fat + 4*lowCarbs;
-      var highKcal   = 4*P + 9*base.fat + 4*highCarbs;
+      var highKcal   = 4*P + 9*highFat  + 4*highCarbs;
       var hlDays = [
-        {key:"high",label:"High",count:n.high,kcal:highKcal,protein:P,fat:base.fat,carbs:highCarbs,raised:false},
+        {key:"high",label:"High",count:n.high,kcal:highKcal,protein:P,fat:highFat, carbs:highCarbs,raised:false},
         {key:"low", label:"Low", count:n.low, kcal:lowKcal, protein:P,fat:base.fat,carbs:lowCarbs, raised:base.raisedBy>0.5}
       ];
       var hlExtraPerHigh = shortfall>0 ? shortfall/n.high : 0;
@@ -489,7 +502,8 @@
       });
       var hlWeekly = hlDays.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
       return { pattern:"highlow", days:hlDays, fatFloor:fatFloor, carbFloor:carbFloor,
-               lowFat:base.fat, anyRaised:shortfall>0.5, avgKcal:hlWeekly/7 };
+               lowFat:base.fat, highFat:highFat, fatTrimmed:base.fat-highFat>0.5,
+               anyRaised:shortfall>0.5, avgKcal:hlWeekly/7 };
     }
 
     // Carb cycle — low-day fat kept high, eased down only if it would make low
@@ -1150,7 +1164,7 @@
           steepEase = cp.lowFat < LOW_FAT_PER_KG*bm.weightKg - 0.5;
         } else {
           var cut = hd===1 ? 100 : 150;
-          macroText = "Protein and fat stay the same every day — only carbs move. Each low day drops "+cut+
+          macroText = "Protein stays the same every day — only carbs move. Each low day drops "+cut+
             " kcal of carbs (to ~"+fmt0(loDay?loDay.carbs:0)+"g) and that goes onto the high day"+(hd===1?"":"s")+
             " (~"+fmt0(hiDay?hiDay.carbs:0)+"g carbs"+(hd===1?"":" each")+")";
         }
@@ -1158,8 +1172,10 @@
           '<span class="hint">'+macroText+'. The week still averages your '+fmt0(e.intake)+' kcal goal.'+
           (steepEase ? ' (Your deficit is steep enough that low-day fat had to ease below '+LOW_FAT_PER_KG+
           ' g/kg so the high days stay the biggest.)' : '')+
-          (cp.anyRaised ? ' Some low days couldn’t give up that many carbs without breaking the '+e.fiber+
-          'g floor, so the high day takes the full carb bump and the extra is walked off with steps.' : '')+'</span>';
+          (cp.fatTrimmed ? ' The low days hit the '+e.fiber+'g carb floor, so the high day’s fat was trimmed to ~'+
+          fmt0(cp.highFat)+'g to make room for the carbs'+(cp.anyRaised ? ', and the rest is walked off with steps.' : '.') : '')+
+          (cp.anyRaised && !cp.fatTrimmed ? ' Some low days couldn’t give up that many carbs without breaking the '+
+          e.fiber+'g floor, so the extra is walked off with steps on the high day.' : '')+'</span>';
       }
     }
     var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier; '+

@@ -116,9 +116,11 @@ stacked onto the high day(s):
   days and split the 750 kcal across the two high days (**+93.75 g each**).
 
 Because it only moves carbs around, the week still totals 7 × your goal intake
-exactly. If a low day can't give up that many carbs without breaking the 35 g
-floor, the high day still gets the full bump and the small surplus is walked off
-with **steps on the high day**.
+exactly. If the low days bottom out at the 35 g carb floor before funding the
+full bump, the **high day's fat is trimmed first** (from its height minimum down
+to a 0.6 g/kg floor) to make room for the carbs — that keeps the day healthy and
+avoids piling on cardio. Only what's still unfunded after that is walked off with
+**steps on the high day**.
 
 **Carb cycle** keeps a focused macro split per day type:
 

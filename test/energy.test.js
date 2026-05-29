@@ -192,15 +192,27 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
     !one.anyRaised && !two.anyRaised);
 })();
 
-// High/Low floor fallback: if a low day can't give up the carbs, the high day
-// still gets the full bump and the surplus is walked off with steps.
+// High/Low floor fallback: when low days hit the carb floor, trim the HIGH
+// day's fat (down to a 0.6 g/kg minimum) to fit the carbs before adding steps.
 (function () {
-  // Push the even baseline carbs near the floor so the 100-kcal cut can't fit.
-  var steep = plan({ pattern:"highlow", highDays:1, protein:230 });
-  check("high/low floor: low-day carbs never drop below 35g",
-    lowOf(steep).carbs >= 35 - 1e-9);
-  check("high/low floor: the unfunded carbs are repaid with steps on the high day",
-    steep.anyRaised && highOf(steep).steps > 0 && lowOf(steep).steps === 0);
+  var FAT06 = 0.6 * KG;  // 48 g for 80 kg
+  // Moderate (protein 200): the lows floor out, but trimming the high day's fat
+  // a bit covers the whole shortfall — no extra steps needed.
+  var mod = plan({ pattern:"highlow", highDays:1, protein:200 });
+  check("high/low trim: low days sit on the 35g carb floor", near(lowOf(mod).carbs, 35, 1e-6));
+  check("high/low trim: high-day fat is trimmed below the (unchanged) low-day fat",
+    highOf(mod).fat < lowOf(mod).fat - 0.5);
+  check("high/low trim: trimmed fat stays at/above the 0.6 g/kg minimum", highOf(mod).fat >= FAT06 - 1e-6);
+  check("high/low trim: trimming fat avoided extra steps on the high day",
+    !mod.anyRaised && highOf(mod).steps === lowOf(mod).steps);
+
+  // Severe (protein 230): fat trims all the way to the 0.6 g/kg min and there's
+  // still a shortfall, so the rest is walked off with steps on the high day.
+  var sev = plan({ pattern:"highlow", highDays:1, protein:230 });
+  check("high/low trim: severe case never drops low-day carbs below 35g", lowOf(sev).carbs >= 35 - 1e-9);
+  check("high/low trim: severe case pins high-day fat at the 0.6 g/kg min", near(highOf(sev).fat, FAT06, 1e-6));
+  check("high/low trim: leftover shortfall still becomes steps on the high day",
+    sev.anyRaised && highOf(sev).steps > lowOf(sev).steps);
 })();
 
 // Solid fat eases down only on a very steep deficit (so highs stay biggest).
