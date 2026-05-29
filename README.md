@@ -107,24 +107,24 @@ a share of **maintenance**, and the low days absorb whatever calories are left:
 - **Carb cycle** — always 1 high day (**95%**) + 2 medium days (**85%**) + 4 low
   days (the remainder).
 
-**Protein is constant every day.** The other two macros depend on the day type:
+**Protein is constant every day.** Low days are low-*carb* days, so they carry a
+**solid fat amount — at least 0.7 g/kg/day** (well above the 0.5 g/kg survival
+floor) — at the **35 g carb floor**. That fixes the low-day calories; the high &
+medium days then split whatever calories are left (in a 95:85 ratio, so high
+days stay the biggest), which is what brings their fat down:
 
-- **High day** — carbs = **35%** of the day's calories, fat is the remainder
-  (carb-focused).
-- **Medium day** — fat = **35%** of calories, carbs are the remainder (~20%,
-  fat-focused).
-- **Low day** — your normal/even split (fat at your height-based minimum, carbs
-  take the rest).
+- **High day** — carbs = **35%** of the day's calories, fat is the remainder.
+- **Medium day** — fat = **35%** of calories, carbs are the remainder.
+- **Low day** — solid **0.7 g/kg** fat + 35 g carbs.
 
-Fat never drops below the **0.5 g/kg/day floor** (the lowest the literature
-supports during a diet, for hormones and essential fatty acids) and carbs never
-below the **35 g fibre floor**. If a low day falls too low to hold both, it's
-lifted to the minimum workable day (protein + floor fat + 35 g carbs).
+The week still totals 7 × your goal intake. If the deficit is steep enough that
+solid low-day fat would make low days out-eat the high days, the low-day fat
+eases down toward the floor until the high days are biggest again.
 
 Steps are the **same every day** (whatever the goal needs beyond a 700 kcal food
-deficit). When a low day has to be lifted, the extra calories are paid back with
-**steps on the high day** — the day you've eaten enough to actually walk them.
-The per-day calories, macros and steps are shown in a table.
+deficit). If any day has to be lifted to stay workable, the extra calories are
+paid back with **steps on the high day** — where you've eaten enough to walk
+them. The per-day calories, macros and steps are shown in a table.
 
 These are general estimates, not medical advice. If even a capped food deficit
 can't fit your protein + fat minimums, the app says so — lower the weekly % or
