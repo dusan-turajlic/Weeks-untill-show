@@ -91,8 +91,11 @@ estimates.
 You can spread the same weekly calories across different day types:
 
 - **Even** — the same macros every day (default).
-- **High / Low** — 2 high-carb days + 5 low-carb days.
-- **Carb cycle** — 2 high + 2 medium + 3 low days.
+- **High / Low** — high-carb days + low-carb days.
+- **Carb cycle** — high + medium + low days.
+
+Pick the pattern from the tabs, and choose **1 or 2 high-carb days** with the
+sub-tabs (fewer high days means each one packs in more carbs).
 
 The redistribution keeps your **weekly protein, fat and carbs — and therefore
 your weekly calorie average — identical** to eating evenly. Only the day-to-day

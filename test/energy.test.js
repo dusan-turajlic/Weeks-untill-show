@@ -147,6 +147,25 @@ check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
   check("cycle: medium days equal the baseline", near(med.fat, F, 1e-9) && near(med.carbs, C, 1e-9));
 })();
 
+// High-day count is configurable (1 or 2).
+(function () {
+  var one = api.cyclePlan(P, F, C, KG, "highlow", 35, 1);
+  var two = api.cyclePlan(P, F, C, KG, "highlow", 35, 2);
+  check("high/low with 1 high day -> 1 high + 6 low",
+    one.days.find(function (d) { return d.key === "high"; }).count === 1 &&
+    one.days.find(function (d) { return d.key === "low"; }).count === 6);
+  check("high/low with 1 high day keeps the weekly average", near(one.avgKcal, EVEN_KCAL, 0.5));
+  check("1 high day packs more carbs into that day than 2 high days",
+    one.days.find(function (d) { return d.key === "high"; }).carbs >
+    two.days.find(function (d) { return d.key === "high"; }).carbs);
+  var cyc1 = api.cyclePlan(P, F, C, KG, "cycle", 35, 1);
+  check("cycle with 1 high day -> 1 high + 3 medium + 3 low",
+    cyc1.days.find(function (d) { return d.key === "high"; }).count === 1 &&
+    cyc1.days.find(function (d) { return d.key === "med"; }).count === 3 &&
+    cyc1.days.find(function (d) { return d.key === "low"; }).count === 3);
+  check("cycle with 1 high day keeps the weekly average", near(cyc1.avgKcal, EVEN_KCAL, 0.5));
+})();
+
 // When baseline carbs are already at the floor there's no room to cycle.
 check("infeasible to cycle when baseline carbs = floor",
   api.cyclePlan(P, F, 35, KG, "highlow", 35).feasible === false);

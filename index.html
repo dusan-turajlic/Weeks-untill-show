@@ -82,8 +82,18 @@
               padding:11px 0;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
   .seg button.wide{grid-column:1 / -1}
   .seg button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
-  .seg.three{grid-template-columns:1fr 1fr 1fr}
-  .seg.three button{font-size:13.5px;padding:11px 4px}
+
+  /* tabs (eating pattern) + sub-tabs (high-day count) */
+  .tabs{display:flex;gap:4px;margin-top:8px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:4px}
+  .tabs button{flex:1;border:none;background:transparent;color:var(--inkSoft);font-family:var(--sans);
+               font-size:14px;font-weight:600;padding:10px 6px;border-radius:9px;cursor:pointer;transition:background .12s,color .12s}
+  .tabs button:hover:not(.on){background:var(--bg)}
+  .tabs button.on{background:var(--accentSoft);color:var(--accentDeep)}
+  .subtabs{display:flex;align-items:center;gap:6px;margin-top:12px}
+  .subtabs .lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--inkSoft);font-weight:600;margin-right:2px}
+  .subtabs button{border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:999px;
+                  padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .subtabs button.on{border-color:var(--accent);background:var(--accentSoft);color:var(--accentDeep)}
   .warn{display:flex;gap:9px;align-items:flex-start;background:#f7e9e3;border:1px solid #e8cdc0;
         border-radius:12px;padding:10px 12px;margin-top:12px;font-size:12.5px;color:#a8472f;line-height:1.45}
 
@@ -393,20 +403,28 @@
   var FAT_FLOOR_PER_KG = 0.5;
   function fatFloorG(weightKg){ return FAT_FLOOR_PER_KG * weightKg; }
 
-  // Day-type counts per 7-day week for each pattern.
-  var PATTERNS = {
-    even:   [{key:"med",  label:"Every day", n:7}],
-    highlow:[{key:"high", label:"High",      n:2}, {key:"low", label:"Low", n:5}],
-    cycle:  [{key:"high", label:"High",      n:2}, {key:"med", label:"Medium", n:2}, {key:"low", label:"Low", n:3}]
-  };
+  // Day-type counts per 7-day week for a pattern, given how many High days the
+  // user picked (1 or 2). High/Low fills the rest with Low; Carb cycle keeps
+  // 3 Low days and lets Medium absorb the remainder.
+  function patternSpec(pattern, highDays){
+    var h = highDays===1 ? 1 : 2;
+    if(pattern==="highlow") return [{key:"high",label:"High",n:h},{key:"low",label:"Low",n:7-h}];
+    if(pattern==="cycle"){
+      var low=3, med=7-h-low, spec=[{key:"high",label:"High",n:h}];
+      if(med>0) spec.push({key:"med",label:"Medium",n:med});
+      spec.push({key:"low",label:"Low",n:low});
+      return spec;
+    }
+    return [{key:"med",label:"Every day",n:7}];
+  }
 
   // Build a week of day-types that redistributes carbs (up on High, down to the
   // 35 g floor on Low) and fat (down to the floor on High, up on the rest),
   // keeping weekly protein, fat and carbs — and therefore the weekly calorie
   // average — identical to eating `carbBase`/`fatBase`/`protein` every day.
-  function cyclePlan(protein, fatBase, carbBase, weightKg, pattern, carbFloor){
+  function cyclePlan(protein, fatBase, carbBase, weightKg, pattern, carbFloor, highDays){
     carbFloor = carbFloor || 35;
-    var spec = PATTERNS[pattern] || PATTERNS.even;
+    var spec = patternSpec(pattern, highDays);
     var nH=0,nM=0,nL=0;
     spec.forEach(function(t){ if(t.key==="high")nH=t.n; else if(t.key==="low")nL=t.n; else nM=t.n; });
     var floor = fatFloorG(weightKg);
@@ -520,7 +538,8 @@
   }
   function saveSettings(s){
     try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({
-      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height, pattern:s.pattern
+      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height,
+      pattern:s.pattern, highDays:s.highDays
     })); }catch(e){}
   }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
@@ -541,7 +560,7 @@
       var p=new URLSearchParams(location.search);
       if(!p.toString()) return null;
       return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
-               sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"),
+               sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"), highDays:p.get("highDays"),
                weight:p.get("weight"), log:p.get("log") };
     }catch(e){ return null; }
   }
@@ -549,7 +568,7 @@
   function addBodyParams(p, s){
     if(s.sex)    p.set("sex", s.sex);
     if(s.height) p.set("height", s.height);
-    if(s.pattern && s.pattern!=="even") p.set("pattern", s.pattern);
+    if(s.pattern && s.pattern!=="even"){ p.set("pattern", s.pattern); p.set("highDays", s.highDays); }
   }
   function writeURL(s, hist){
     try{
@@ -633,7 +652,8 @@
     unit:   pick("unit", "kg"),
     sex:    pick("sex", ""),             // "male" | "female" | "neutral"
     height: pick("height", ""),          // cm (kg unit) or in (lb unit), like weight
-    pattern:pick("pattern", "even")      // "even" | "highlow" | "cycle"
+    pattern:pick("pattern", "even"),     // "even" | "highlow" | "cycle"
+    highDays:pick("highDays", "2")       // number of high-carb days per week ("1" | "2")
   };
 
   var logHistory = [];                  // cached daily log [{date,weight}] ascending
@@ -906,9 +926,13 @@
   function stat(k, v, cls){
     return '<div class="pstat"><div class="k">'+k+'</div><div class="v'+(cls?" "+cls:"")+'">'+v+'</div></div>';
   }
-  function patternSeg(active){
-    function b(key,label){ return '<button type="button" data-pattern="'+key+'"'+(active===key?' class="on"':'')+'>'+label+'</button>'; }
-    return '<div class="seg three" style="margin-top:6px">'+b("even","Even")+b("highlow","High / Low")+b("cycle","Carb cycle")+'</div>';
+  function patternTabs(active){
+    function b(key,label){ return '<button type="button" role="tab" data-pattern="'+key+'"'+(active===key?' class="on" aria-selected="true"':'')+'>'+label+'</button>'; }
+    return '<div class="tabs" role="tablist">'+b("even","Even")+b("highlow","High / Low")+b("cycle","Carb cycle")+'</div>';
+  }
+  function highDaysTabs(active){
+    function b(n){ return '<button type="button" data-highdays="'+n+'"'+(active===n?' class="on"':'')+'>'+n+(n===1?" day":" days")+'</button>'; }
+    return '<div class="subtabs"><span class="lbl">High-carb days</span>'+b(1)+b(2)+'</div>';
   }
   function cycleTableHTML(cp){
     var rows = cp.days.map(function(d){
@@ -1003,10 +1027,12 @@
     // eating pattern: even, or carb-cycled high/low (+ medium) days
     if(hasGoal && e.macrosOk){
       grid+='<div class="cardtitle" style="font-size:17px;margin-top:16px">Eating pattern</div>'+
-        '<span class="hint">Same weekly calories — spread your carbs into high days, dropping fat to make room.</span>'+
-        patternSeg(state.pattern);
+        '<span class="hint">Same weekly calories — spread your carbs into high-carb days, dropping fat to make room.</span>'+
+        patternTabs(state.pattern);
       if(state.pattern!=="even"){
-        var cp=cyclePlan(e.protein, e.fat, e.carbs, bm.weightKg, state.pattern, e.fiber);
+        var hd=parseInt(state.highDays,10)===1?1:2;
+        grid+=highDaysTabs(hd);
+        var cp=cyclePlan(e.protein, e.fat, e.carbs, bm.weightKg, state.pattern, e.fiber, hd);
         if(!cp.feasible){
           grid+='<div class="warn">Your intake keeps carbs near the '+e.fiber+'g fibre floor, so there’s no room '+
             'to cycle. Add steps (eat a little more) or ease the weekly % / push the date out, then try again.</div>';
@@ -1093,6 +1119,7 @@
       state.sex     = "";
       state.height  = "";
       state.pattern = "even";
+      state.highDays= "2";
       aboutOpen     = true;   // reopen the one-time setup after a wipe
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
@@ -1135,8 +1162,10 @@
   // The energy card is re-rendered as innerHTML, so the pattern buttons are
   // bound by delegation on the stable container.
   $("energyCard").addEventListener("click", function(e){
-    var b = e.target.closest("[data-pattern]"); if(!b) return;
-    state.pattern = b.dataset.pattern; persist(); render();
+    var p = e.target.closest("[data-pattern]");
+    if(p){ state.pattern = p.dataset.pattern; persist(); render(); return; }
+    var h = e.target.closest("[data-highdays]");
+    if(h){ state.highDays = h.dataset.highdays; persist(); render(); return; }
   });
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
