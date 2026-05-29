@@ -97,21 +97,24 @@ You can spread the same weekly calories across different day types:
 Pick the pattern from the tabs, and choose **1 or 2 high-carb days** with the
 sub-tabs (fewer high days means each one packs in more carbs).
 
-The redistribution keeps your **weekly protein, fat and carbs — and therefore
-your weekly calorie average — identical** to eating evenly. Only the day-to-day
-split changes:
+The **whole week still totals 7 × your goal intake**, so the goal is unchanged —
+only the day-to-day distribution shifts. High (and medium) days are anchored to
+a share of **maintenance**, and the low days absorb whatever calories are left:
 
-- **Protein** is held constant every day (muscle retention).
-- **High days** drop fat to the **0.5 g/kg/day floor** — the lowest intake the
-  literature supports during a diet for hormonal health and essential fatty
-  acids — so carbs can peak. That fat is added back on the other days, so your
-  *weekly* fat average still meets your height-based minimum.
-- **Low days** sit at the **35 g carb (fibre) floor** — below that you're
-  essentially eating only fibre.
+- **High / Low** — 1 high day at **95%** of maintenance, or 2 high days at
+  **85%** each. The remaining weekly calories are split evenly across the low
+  days.
+- **Carb cycle** — always 1 high day (**95%**) + 2 medium days (**85%**) + 4 low
+  days (the remainder).
 
-If your deficit already keeps carbs near the 35 g floor, there's no room to
-cycle; the app says so and suggests adding steps or easing the rate/timeline
-rather than cutting fat below the safe floor.
+Within each day: **protein is constant**, **fat is pinned at the 0.5 g/kg/day
+floor** (the lowest intake the literature supports during a diet, for hormones
+and essential fatty acids) to **maximise carbs**, and **carbs take the rest** —
+never below the **35 g fibre floor**.
+
+If the deficit is too steep for the low days to hold protein + floor-fat + 35 g
+carbs at once, the app says so and suggests adding steps, easing the weekly %,
+or pushing the date out rather than cutting fat below the safe floor.
 
 These are general estimates, not medical advice. If even a capped food deficit
 can't fit your protein + fat minimums, the app says so — lower the weekly % or

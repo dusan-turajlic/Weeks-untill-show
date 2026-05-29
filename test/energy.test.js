@@ -117,63 +117,60 @@ check("fibre target is 35g", api.FIBER_MIN === 35);
 })();
 
 // ---- carb cycling ----------------------------------------------------------
-// Baseline from the 90kg/180cm worked example: P177 F66 C95, intake ~1681.
-var P = 177, F = 66, C = 95, KG = 80, EVEN_KCAL = P * 4 + F * 9 + C * 4;
+// cyclePlan(protein, weightKg, intake, maint, pattern, carbFloor, highDays)
+// Worked example: 80kg, protein 160g, goal intake 1610 kcal, maintenance 2300.
+var P = 160, KG = 80, INTAKE = 1610, MAINT = 2300, FLOOR = 40; // 0.5 g/kg
+function highOf(p){ return p.days.filter(function(d){return d.key==="high";})[0]; }
+function lowOf(p){ return p.days.filter(function(d){return d.key==="low";})[0]; }
+function medOf(p){ return p.days.filter(function(d){return d.key==="med";})[0]; }
 
 check("fat floor is 0.5 g/kg", api.fatFloorG(80) === 40);
 
+// High/Low with 2 high days @ 85% maintenance.
 (function () {
-  var hl = api.cyclePlan(P, F, C, KG, "highlow", 35);
-  var high = hl.days.find(function (d) { return d.key === "high"; });
-  var low  = hl.days.find(function (d) { return d.key === "low"; });
-  check("high/low: 2 high + 5 low days", high.count === 2 && low.count === 5);
-  check("high/low: weekly calorie average is unchanged", near(hl.avgKcal, EVEN_KCAL, 0.5));
-  check("high/low: low days sit at the 35g carb floor", near(low.carbs, 35, 1e-9));
-  check("high/low: high days have far more carbs than low", high.carbs > low.carbs + 50);
-  check("high/low: high days drop fat to the floor (40g)", near(high.fat, 40, 1e-9));
-  check("high/low: fat is added back on low days (above baseline)", low.fat > F);
-  check("high/low: protein is constant across day types", high.protein === P && low.protein === P);
-  check("high/low: high days are higher calorie than low days", high.kcal > low.kcal);
+  var hl = api.cyclePlan(P, KG, INTAKE, MAINT, "highlow", 35, 2);
+  check("high/low (2): 2 high + 5 low days", highOf(hl).count === 2 && lowOf(hl).count === 5);
+  check("high/low (2): weekly average equals goal intake", near(hl.avgKcal, INTAKE, 0.5));
+  check("high/low (2): high days = 85% of maintenance", near(highOf(hl).kcal, 0.85 * MAINT, 1e-6));
+  check("high/low (2): low days take the remainder",
+    near(lowOf(hl).kcal, (INTAKE * 7 - 2 * 0.85 * MAINT) / 5, 1e-6));
+  check("high/low (2): fat pinned at the floor every day",
+    near(highOf(hl).fat, FLOOR, 1e-9) && near(lowOf(hl).fat, FLOOR, 1e-9));
+  check("high/low (2): protein constant every day", highOf(hl).protein === P && lowOf(hl).protein === P);
+  check("high/low (2): high days carry more carbs than low days", highOf(hl).carbs > lowOf(hl).carbs);
+  check("high/low (2): low-day carbs stay above the 35g floor", lowOf(hl).carbs >= 35);
 })();
 
+// High/Low with 1 high day @ 95% maintenance — that day packs in more carbs.
 (function () {
-  var cy = api.cyclePlan(P, F, C, KG, "cycle", 35);
-  var med = cy.days.find(function (d) { return d.key === "med"; });
-  check("cycle: 2 high + 2 medium + 3 low days",
-    cy.days.find(function (d) { return d.key === "high"; }).count === 2 &&
-    med.count === 2 &&
-    cy.days.find(function (d) { return d.key === "low"; }).count === 3);
-  check("cycle: weekly calorie average is unchanged", near(cy.avgKcal, EVEN_KCAL, 0.5));
-  check("cycle: medium days equal the baseline", near(med.fat, F, 1e-9) && near(med.carbs, C, 1e-9));
+  var one = api.cyclePlan(P, KG, INTAKE, MAINT, "highlow", 35, 1);
+  var two = api.cyclePlan(P, KG, INTAKE, MAINT, "highlow", 35, 2);
+  check("high/low (1): 1 high + 6 low days", highOf(one).count === 1 && lowOf(one).count === 6);
+  check("high/low (1): high day = 95% of maintenance", near(highOf(one).kcal, 0.95 * MAINT, 1e-6));
+  check("high/low (1): weekly average equals goal intake", near(one.avgKcal, INTAKE, 0.5));
+  check("1 high day packs more carbs into that day than 2 high days", highOf(one).carbs > highOf(two).carbs);
 })();
 
-// High-day count is configurable (1 or 2).
+// Carb cycle: always 1 high @95% + 2 medium @85% + 4 low.
 (function () {
-  var one = api.cyclePlan(P, F, C, KG, "highlow", 35, 1);
-  var two = api.cyclePlan(P, F, C, KG, "highlow", 35, 2);
-  check("high/low with 1 high day -> 1 high + 6 low",
-    one.days.find(function (d) { return d.key === "high"; }).count === 1 &&
-    one.days.find(function (d) { return d.key === "low"; }).count === 6);
-  check("high/low with 1 high day keeps the weekly average", near(one.avgKcal, EVEN_KCAL, 0.5));
-  check("1 high day packs more carbs into that day than 2 high days",
-    one.days.find(function (d) { return d.key === "high"; }).carbs >
-    two.days.find(function (d) { return d.key === "high"; }).carbs);
-  var cyc1 = api.cyclePlan(P, F, C, KG, "cycle", 35, 1);
-  check("cycle with 1 high day -> 1 high + 3 medium + 3 low",
-    cyc1.days.find(function (d) { return d.key === "high"; }).count === 1 &&
-    cyc1.days.find(function (d) { return d.key === "med"; }).count === 3 &&
-    cyc1.days.find(function (d) { return d.key === "low"; }).count === 3);
-  check("cycle with 1 high day keeps the weekly average", near(cyc1.avgKcal, EVEN_KCAL, 0.5));
+  var cy = api.cyclePlan(P, KG, INTAKE, MAINT, "cycle", 35, 2);
+  check("cycle: 1 high + 2 medium + 4 low days",
+    highOf(cy).count === 1 && medOf(cy).count === 2 && lowOf(cy).count === 4);
+  check("cycle: high = 95% maintenance, medium = 85% maintenance",
+    near(highOf(cy).kcal, 0.95 * MAINT, 1e-6) && near(medOf(cy).kcal, 0.85 * MAINT, 1e-6));
+  check("cycle: weekly average equals goal intake", near(cy.avgKcal, INTAKE, 0.5));
+  check("cycle: carbs descend high > medium > low",
+    highOf(cy).carbs > medOf(cy).carbs && medOf(cy).carbs > lowOf(cy).carbs);
 })();
 
-// When baseline carbs are already at the floor there's no room to cycle.
-check("infeasible to cycle when baseline carbs = floor",
-  api.cyclePlan(P, F, 35, KG, "highlow", 35).feasible === false);
-check("feasible to cycle when baseline carbs are above the floor",
-  api.cyclePlan(P, F, 60, KG, "highlow", 35).feasible === true);
-check("even pattern is always feasible and unchanged",
-  api.cyclePlan(P, F, C, KG, "even", 35).feasible === true &&
-  near(api.cyclePlan(P, F, C, KG, "even", 35).avgKcal, EVEN_KCAL, 1e-9));
+// Feasibility guards.
+check("infeasible when the deficit is too steep for the low days",
+  api.cyclePlan(P, KG, 1100, MAINT, "highlow", 35, 2).feasible === false);
+check("infeasible when the deficit is too small (high day not actually higher)",
+  api.cyclePlan(P, KG, 2200, MAINT, "highlow", 35, 2).feasible === false);
+check("even pattern is always feasible and averages the intake",
+  api.cyclePlan(P, KG, INTAKE, MAINT, "even", 35, 2).feasible === true &&
+  near(api.cyclePlan(P, KG, INTAKE, MAINT, "even", 35, 2).avgKcal, INTAKE, 1e-9));
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

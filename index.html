@@ -397,56 +397,57 @@
 
   // ---- carb cycling --------------------------------------------------------
   // Lowest safe daily fat: the literature converges on ~0.5 g/kg/day during a
-  // diet (to protect hormones and cover essential fatty acids). High-carb days
-  // drop fat toward this floor to free calories for carbs; that fat is added
-  // back on the other days so the WEEKLY fat average still meets your minimum.
+  // diet (to protect hormones and cover essential fatty acids). Cycling pins
+  // fat at this floor every day to free as many calories as possible for carbs.
   var FAT_FLOOR_PER_KG = 0.5;
   function fatFloorG(weightKg){ return FAT_FLOOR_PER_KG * weightKg; }
 
-  // Day-type counts per 7-day week for a pattern, given how many High days the
-  // user picked (1 or 2). High/Low fills the rest with Low; Carb cycle keeps
-  // 3 Low days and lets Medium absorb the remainder.
-  function patternSpec(pattern, highDays){
-    var h = highDays===1 ? 1 : 2;
-    if(pattern==="highlow") return [{key:"high",label:"High",n:h},{key:"low",label:"Low",n:7-h}];
-    if(pattern==="cycle"){
-      var low=3, med=7-h-low, spec=[{key:"high",label:"High",n:h}];
-      if(med>0) spec.push({key:"med",label:"Medium",n:med});
-      spec.push({key:"low",label:"Low",n:low});
-      return spec;
+  // Day-calorie targets per week. The whole week still totals 7×intake (so the
+  // goal is unchanged), but high (and medium) days are anchored to a share of
+  // *maintenance* and the leftover calories are split across the low days:
+  //   High/Low  — 1 high @95% maint, or 2 high @85% maint each; rest are low.
+  //   Carb cycle— 1 high @95% maint + 2 medium @85% maint; rest (4) are low.
+  function dayCalorieTargets(intake, maint, pattern, highDays){
+    var weekly = intake*7;
+    if(pattern==="highlow"){
+      var h = highDays===1 ? 1 : 2;
+      var highKcal = (h===1 ? 0.95 : 0.85) * maint;
+      var lowN = 7-h;
+      return [{key:"high",label:"High",n:h,kcal:highKcal},
+              {key:"low", label:"Low", n:lowN,kcal:(weekly - h*highKcal)/lowN}];
     }
-    return [{key:"med",label:"Every day",n:7}];
+    if(pattern==="cycle"){
+      var hi=0.95*maint, med=0.85*maint, lowN=4;
+      return [{key:"high",label:"High",  n:1,kcal:hi},
+              {key:"med", label:"Medium",n:2,kcal:med},
+              {key:"low", label:"Low",   n:lowN,kcal:(weekly - hi - 2*med)/lowN}];
+    }
+    return [{key:"med",label:"Every day",n:7,kcal:intake}];
   }
 
-  // Build a week of day-types that redistributes carbs (up on High, down to the
-  // 35 g floor on Low) and fat (down to the floor on High, up on the rest),
-  // keeping weekly protein, fat and carbs — and therefore the weekly calorie
-  // average — identical to eating `carbBase`/`fatBase`/`protein` every day.
-  function cyclePlan(protein, fatBase, carbBase, weightKg, pattern, carbFloor, highDays){
+  // Turn each day's calorie target into macros: protein fixed every day, fat
+  // pinned at the safe floor (minimise fat → maximise carbs), carbs take the
+  // rest. Carbs can't drop below the 35 g fibre floor; if a day is too low in
+  // calories to hold protein + floor-fat + 35 g carbs at once, it's infeasible.
+  function cyclePlan(protein, weightKg, intake, maint, pattern, carbFloor, highDays){
     carbFloor = carbFloor || 35;
-    var spec = patternSpec(pattern, highDays);
-    var nH=0,nM=0,nL=0;
-    spec.forEach(function(t){ if(t.key==="high")nH=t.n; else if(t.key==="low")nL=t.n; else nM=t.n; });
-    var floor = fatFloorG(weightKg);
-    var fatHigh = Math.min(fatBase, floor);                       // reduce toward floor (no-op if base<=floor)
-    var fatLow  = nL>0 ? (7*fatBase - nH*fatHigh - nM*fatBase)/nL : fatBase;
-    var carbHigh= nH>0 ? (7*carbBase - nL*carbFloor - nM*carbBase)/nH : carbBase;
-    function macros(key){
-      var fat  = key==="high" ? fatHigh : key==="low" ? fatLow  : fatBase;
-      var carb = key==="high" ? carbHigh: key==="low" ? carbFloor: carbBase;
-      return { fat:fat, carbs:carb, protein:protein, kcal: protein*4 + fat*9 + carb*4 };
-    }
-    var days = spec.map(function(t){ var m=macros(t.key); m.key=t.key; m.label=t.label; m.count=t.n; return m; });
+    var fatFloor = fatFloorG(weightKg);
+    var specs = dayCalorieTargets(intake, maint, pattern, highDays);
+    var feasible = true;
+    var days = specs.map(function(t){
+      var afterProtein = t.kcal - protein*4;
+      var carbs = (afterProtein - fatFloor*9)/4;         // fat at floor, carbs take the rest
+      if(carbs < carbFloor || afterProtein <= 0) feasible = false;
+      return {key:t.key, label:t.label, count:t.n, kcal:t.kcal,
+              protein:protein, fat:fatFloor, carbs:carbs};
+    });
+    // a "high" day must actually out-calorie a "low" day, else cycling is moot
+    var hi = days.filter(function(d){return d.key==="high";})[0];
+    var lo = days.filter(function(d){return d.key==="low";})[0];
+    if(hi && lo && hi.kcal <= lo.kcal + 1e-6) feasible = false;
     var weeklyKcal = days.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
-    return {
-      pattern: pattern, days: days,
-      fatFloor: floor, fatReduced: fatHigh < fatBase - 1e-9,
-      carbFloor: carbFloor,
-      // there's only room to cycle if High days exceed the baseline carbs
-      // (true exactly when baseline carbs sit above the floor)
-      feasible: pattern==="even" || carbHigh > carbBase + 1e-9,
-      avgKcal: weeklyKcal/7
-    };
+    return { pattern:pattern, days:days, fatFloor:fatFloor, carbFloor:carbFloor,
+             feasible: pattern==="even" || feasible, avgKcal: weeklyKcal/7 };
   }
 
   // ---- daily weight log: IndexedDB, with a localStorage fallback ----------
@@ -1027,21 +1028,23 @@
     // eating pattern: even, or carb-cycled high/low (+ medium) days
     if(hasGoal && e.macrosOk){
       grid+='<div class="cardtitle" style="font-size:17px;margin-top:16px">Eating pattern</div>'+
-        '<span class="hint">Same weekly calories — spread your carbs into high-carb days, dropping fat to make room.</span>'+
+        '<span class="hint">High days are anchored to your maintenance; the low days take the rest — so the week '+
+        'still averages your goal calories.</span>'+
         patternTabs(state.pattern);
       if(state.pattern!=="even"){
         var hd=parseInt(state.highDays,10)===1?1:2;
-        grid+=highDaysTabs(hd);
-        var cp=cyclePlan(e.protein, e.fat, e.carbs, bm.weightKg, state.pattern, e.fiber, hd);
+        if(state.pattern==="highlow") grid+=highDaysTabs(hd);   // carb cycle is always 1 high day
+        var cp=cyclePlan(e.protein, bm.weightKg, e.intake, bm.maint, state.pattern, e.fiber, hd);
         if(!cp.feasible){
-          grid+='<div class="warn">Your intake keeps carbs near the '+e.fiber+'g fibre floor, so there’s no room '+
-            'to cycle. Add steps (eat a little more) or ease the weekly % / push the date out, then try again.</div>';
+          grid+='<div class="warn">Your deficit is too steep to cycle here — the low days can’t hold your protein, the '+
+            fmt0(cp.fatFloor)+'g fat floor and '+e.fiber+'g carbs at once. Add steps (eat a little more), ease the '+
+            'weekly % or push the date out, then try again.</div>';
         } else {
           grid+=cycleTableHTML(cp)+
-            '<span class="hint">High days drop fat to ~'+fmt0(cp.fatFloor)+'g ('+FAT_FLOOR_PER_KG+' g/kg — the lowest '+
-            'safe intake) so carbs can peak; that fat shifts to your other days, so your <b>weekly</b> fat average is '+
-            'unchanged. Low days sit at the '+e.fiber+'g carb (fibre) floor. Protein and weekly calories are identical '+
-            'to eating evenly.</span>';
+            '<span class="hint">Fat is held at ~'+fmt0(cp.fatFloor)+'g every day ('+FAT_FLOOR_PER_KG+' g/kg — the lowest '+
+            'safe intake) to push carbs as high as possible; protein stays constant. High'+(state.pattern==="cycle"?' &amp; medium days are':' days are')+
+            ' '+(state.pattern==="cycle"?'95% / 85%':(hd===1?'95%':'85%'))+' of maintenance, the low days take the remainder, '+
+            'and the week still averages your '+fmt0(e.intake)+' kcal goal.</span>';
         }
       }
     }
