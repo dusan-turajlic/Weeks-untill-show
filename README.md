@@ -107,14 +107,17 @@ a share of **maintenance**, and the low days absorb whatever calories are left:
 - **Carb cycle** — always 1 high day (**95%**) + 2 medium days (**85%**) + 4 low
   days (the remainder).
 
-Within each day: **protein is constant**, **fat is pinned at the 0.5 g/kg/day
-floor** (the lowest intake the literature supports during a diet, for hormones
-and essential fatty acids) to **maximise carbs**, and **carbs take the rest** —
-never below the **35 g fibre floor**.
+Within each day: **protein is constant**, **carbs are 35% of that day's
+calories**, and **fat is whatever's left** — but fat never drops below the
+**0.5 g/kg/day floor** (the lowest intake the literature supports during a diet,
+for hormones and essential fatty acids). If holding that fat floor would push
+carbs under the **35 g fibre floor**, the day is lifted to the lowest workable
+calories (protein + floor fat + 35 g carbs) and the extra calories are paid back
+with **steps on that day**.
 
-If the deficit is too steep for the low days to hold protein + floor-fat + 35 g
-carbs at once, the app says so and suggests adding steps, easing the weekly %,
-or pushing the date out rather than cutting fat below the safe floor.
+Steps are otherwise the **same every day** (whatever the goal needs beyond a
+700 kcal food deficit); only the lifted days carry extra. When cycling, the
+per-day calories, macros and steps are shown in a table.
 
 These are general estimates, not medical advice. If even a capped food deficit
 can't fit your protein + fat minimums, the app says so — lower the weekly % or

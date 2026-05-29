@@ -425,29 +425,40 @@
     return [{key:"med",label:"Every day",n:7,kcal:intake}];
   }
 
-  // Turn each day's calorie target into macros: protein fixed every day, fat
-  // pinned at the safe floor (minimise fat → maximise carbs), carbs take the
-  // rest. Carbs can't drop below the 35 g fibre floor; if a day is too low in
-  // calories to hold protein + floor-fat + 35 g carbs at once, it's infeasible.
-  function cyclePlan(protein, weightKg, intake, maint, pattern, carbFloor, highDays){
-    carbFloor = carbFloor || 35;
-    var fatFloor = fatFloorG(weightKg);
-    var specs = dayCalorieTargets(intake, maint, pattern, highDays);
-    var feasible = true;
-    var days = specs.map(function(t){
-      var afterProtein = t.kcal - protein*4;
-      var carbs = (afterProtein - fatFloor*9)/4;         // fat at floor, carbs take the rest
-      if(carbs < carbFloor || afterProtein <= 0) feasible = false;
-      return {key:t.key, label:t.label, count:t.n, kcal:t.kcal,
-              protein:protein, fat:fatFloor, carbs:carbs};
+  // Turn a day's calorie target into macros: protein is fixed, carbs are 35% of
+  // the day's calories, and fat is whatever's left. Fat won't drop below the
+  // safe floor — if it would, carbs are cut to hold the floor. If carbs would
+  // then fall under the 35 g fibre floor, the day can't be eaten that low, so it
+  // rises to the minimum feasible day (protein + floor fat + 35 g carbs) and the
+  // extra calories (`raisedBy`) are paid back with steps.
+  var CARB_CAL_SHARE = 0.35;
+  function dayMacros(targetKcal, protein, fatFloor, carbFloor){
+    var carbs = CARB_CAL_SHARE*targetKcal/4;
+    var fat = (targetKcal - 4*protein - 4*carbs)/9;       // the remainder (~25%)
+    if(fat < fatFloor){ fat = fatFloor; carbs = (targetKcal - 4*protein - 9*fatFloor)/4; }
+    var kcal = targetKcal;
+    if(carbs < carbFloor){                                // too low to keep 35 g carbs
+      carbs = carbFloor; fat = fatFloor;
+      kcal = 4*protein + 9*fatFloor + 4*carbFloor;        // eat the minimum feasible day
+    }
+    return { protein:protein, fat:fat, carbs:carbs, kcal:kcal, raisedBy: kcal - targetKcal };
+  }
+
+  // Build the week. Every day carries the same base step target (whatever the
+  // goal needs beyond a 700-kcal food deficit); only days that had to be raised
+  // to the minimum feasible day get extra steps to pay back those calories.
+  function cyclePlan(o){
+    var protein=o.protein, fatFloor=fatFloorG(o.weightKg), carbFloor=o.carbFloor||35;
+    var baseStepEnergy=o.stepDeficit||0, kps=o.kcalPerStep||0;
+    var days = dayCalorieTargets(o.intake, o.maint, o.pattern, o.highDays).map(function(t){
+      var m = dayMacros(t.kcal, protein, fatFloor, carbFloor);
+      var stepEnergy = baseStepEnergy + m.raisedBy;        // base + payback for raised days
+      return { key:t.key, label:t.label, count:t.n, kcal:m.kcal, protein:m.protein,
+               fat:m.fat, carbs:m.carbs, raised:m.raisedBy>0.5,
+               stepEnergy:stepEnergy, steps:(kps>0 ? roundSteps(stepEnergy/kps) : NaN) };
     });
-    // a "high" day must actually out-calorie a "low" day, else cycling is moot
-    var hi = days.filter(function(d){return d.key==="high";})[0];
-    var lo = days.filter(function(d){return d.key==="low";})[0];
-    if(hi && lo && hi.kcal <= lo.kcal + 1e-6) feasible = false;
     var weeklyKcal = days.reduce(function(s,d){ return s + d.kcal*d.count; }, 0);
-    return { pattern:pattern, days:days, fatFloor:fatFloor, carbFloor:carbFloor,
-             feasible: pattern==="even" || feasible, avgKcal: weeklyKcal/7 };
+    return { pattern:o.pattern, days:days, fatFloor:fatFloor, carbFloor:carbFloor, avgKcal: weeklyKcal/7 };
   }
 
   // ---- daily weight log: IndexedDB, with a localStorage fallback ----------
@@ -770,7 +781,7 @@
     if(!bm.valid) return {valid:false};
     var c=compute();
     var out={valid:true, bm:bm, days:NaN, lostKg:NaN, totalDeficit:NaN,
-             needDeficit:NaN, foodDeficit:NaN, stepDeficit:NaN,
+             needDeficit:NaN, foodDeficit:NaN, stepDeficit:NaN, kcalPerStep:NaN,
              intake:NaN, steps:NaN, protein:bm.protein, fat:bm.fat,
              carbs:NaN, proteinKcal:bm.protein*KCAL_PROTEIN, fatKcal:bm.fat*KCAL_FAT,
              fiber:FIBER_MIN, macrosOk:true};
@@ -784,6 +795,7 @@
       out.stepDeficit  = Math.max(0, out.needDeficit - out.foodDeficit);
       out.intake = bm.maint - out.foodDeficit;
       var kps = calcKcalPerStep(bm.weightKg, bm.heightCm);
+      out.kcalPerStep = kps;
       out.steps = kps>0 ? out.stepDeficit/kps : NaN;
       // Macros: protein & fat are fixed minimums; carbs take the remainder.
       var carbKcal = out.intake - out.proteinKcal - out.fatKcal;
@@ -936,15 +948,19 @@
     return '<div class="subtabs"><span class="lbl">High-carb days</span>'+b(1)+b(2)+'</div>';
   }
   function cycleTableHTML(cp){
+    var anySteps = cp.days.some(function(d){ return isFinite(d.steps) && d.steps>0; });
     var rows = cp.days.map(function(d){
       var cls = d.key==="high"?"high":d.key==="low"?"low":"";
+      var steps = (isFinite(d.steps) && d.steps>0) ? "+"+fmt0(d.steps) : "—";
       return '<tr'+(cls?' class="'+cls+'"':'')+'>'+
         '<td class="day">'+d.label+' <span class="n">×'+d.count+'</span></td>'+
         '<td class="kc">'+fmt0(d.kcal)+'</td><td>'+fmt0(d.protein)+'</td>'+
-        '<td>'+fmt0(d.fat)+'</td><td>'+fmt0(d.carbs)+'</td></tr>';
+        '<td>'+fmt0(d.fat)+'</td><td>'+fmt0(d.carbs)+'</td>'+
+        (anySteps ? '<td>'+steps+'</td>' : '')+'</tr>';
     }).join("");
     return '<table class="mtable"><thead><tr><th>Day</th><th>kcal</th><th>P&nbsp;(g)</th>'+
-      '<th>F&nbsp;(g)</th><th>C&nbsp;(g)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+      '<th>F&nbsp;(g)</th><th>C&nbsp;(g)</th>'+(anySteps?'<th>Steps</th>':'')+
+      '</tr></thead><tbody>'+rows+'</tbody></table>';
   }
   function trackBanner(unit){
     var o=offTrack();
@@ -1014,65 +1030,64 @@
           '<div class="stats"><div><div class="k">Goal intake</div>'+
             '<div class="v">log your weight &amp; rate</div></div></div>'+
         '</div>';
-    // macros (protein & fat are minimums; carbs are the remainder). With a
-    // cycling pattern selected this grid is the daily *average*.
-    var mtitle = hasGoal ? (cycling ? "Daily macros · average" : "Daily macros") : "Daily macros (minimums)";
-    var grid=
-      '<div class="cardtitle" style="font-size:17px">'+mtitle+'</div>'+
-      '<div class="pgrid" style="margin-top:6px">'+
-        stat("Protein", fmt0(e.protein)+' <small>g</small>')+
-        stat("Fat",     fmt0(e.fat)+' <small>g</small>')+
-        stat("Carbs",   (hasGoal&&e.macrosOk?fmt0(e.carbs):"—")+' <small>g</small>')+
-        stat("Fibre",   '≥'+e.fiber+' <small>g (of carbs)</small>')+
-      '</div>';
-    // eating pattern: even, or carb-cycled high/low (+ medium) days
-    if(hasGoal && e.macrosOk){
-      grid+='<div class="cardtitle" style="font-size:17px;margin-top:16px">Eating pattern</div>'+
-        '<span class="hint">High days are anchored to your maintenance; the low days take the rest — so the week '+
-        'still averages your goal calories.</span>'+
-        patternTabs(state.pattern);
-      if(state.pattern!=="even"){
-        var hd=parseInt(state.highDays,10)===1?1:2;
-        if(state.pattern==="highlow") grid+=highDaysTabs(hd);   // carb cycle is always 1 high day
-        var cp=cyclePlan(e.protein, bm.weightKg, e.intake, bm.maint, state.pattern, e.fiber, hd);
-        if(!cp.feasible){
-          grid+='<div class="warn">Your deficit is too steep to cycle here — the low days can’t hold your protein, the '+
-            fmt0(cp.fatFloor)+'g fat floor and '+e.fiber+'g carbs at once. Add steps (eat a little more), ease the '+
-            'weekly % or push the date out, then try again.</div>';
-        } else {
-          grid+=cycleTableHTML(cp)+
-            '<span class="hint">Fat is held at ~'+fmt0(cp.fatFloor)+'g every day ('+FAT_FLOOR_PER_KG+' g/kg — the lowest '+
-            'safe intake) to push carbs as high as possible; protein stays constant. High'+(state.pattern==="cycle"?' &amp; medium days are':' days are')+
-            ' '+(state.pattern==="cycle"?'95% / 85%':(hd===1?'95%':'85%'))+' of maintenance, the low days take the remainder, '+
-            'and the week still averages your '+fmt0(e.intake)+' kcal goal.</span>';
-        }
-      }
+    // shared building blocks --------------------------------------------------
+    function macrosGrid(title){
+      return '<div class="cardtitle" style="font-size:17px">'+title+'</div>'+
+        '<div class="pgrid" style="margin-top:6px">'+
+          stat("Protein", fmt0(e.protein)+' <small>g</small>')+
+          stat("Fat",     fmt0(e.fat)+' <small>g</small>')+
+          stat("Carbs",   (hasGoal&&e.macrosOk?fmt0(e.carbs):"—")+' <small>g</small>')+
+          stat("Fibre",   '≥'+e.fiber+' <small>g (of carbs)</small>')+
+        '</div>';
     }
-    // steps to cover the part of the deficit food doesn't
-    if(hasGoal){
+    function stepsSection(){
       var stepsK = roundSteps(e.steps);
       var stepNote = stepsK>0
         ? "Added on top of your current daily average to cover the rest of the deficit."
         : "Your food deficit already covers your goal — extra steps are optional but recommended.";
-      grid+='<div class="cardtitle" style="font-size:17px;margin-top:14px">Daily steps</div>'+
+      return '<div class="cardtitle" style="font-size:17px;margin-top:14px">Daily steps</div>'+
         '<div class="pgrid" style="margin-top:6px">'+
           stat("Steps / day", '+'+fmt0(stepsK)+' <small>to your daily average</small>')+
           stat("Over",        e.days+' <small>days</small>')+
         '</div>'+
         '<span class="hint">'+stepNote+'</span>';
     }
-    // warning when even a capped food deficit can't fit the protein + fat floor
-    var warn="";
-    if(hasGoal && !e.macrosOk){
-      warn='<div class="warn">At '+fmt0(e.intake)+' kcal you can\'t fit your minimum protein ('+
-        fmt0(e.protein)+'g) and fat ('+fmt0(e.fat)+'g). Lower the weekly % or push the end date '+
-        'out so there\'s room for carbs.</div>';
+
+    var body;
+    if(!hasGoal){
+      body = macrosGrid("Daily macros (minimums)");
+    } else if(!e.macrosOk){
+      body = macrosGrid("Daily macros") +
+        '<div class="warn">At '+fmt0(e.intake)+' kcal you can’t fit your minimum protein ('+fmt0(e.protein)+
+        'g) and fat ('+fmt0(e.fat)+'g). Lower the weekly % or push the end date out so there’s room for carbs.</div>';
+    } else {
+      // eating-pattern tabs sit at the top; the chosen pattern fills the rest
+      body = '<div class="cardtitle" style="font-size:17px">Eating pattern</div>'+patternTabs(state.pattern);
+      if(state.pattern==="even"){
+        body += '<span class="hint">The same calories and macros every day.</span>'+
+                macrosGrid("Daily macros")+stepsSection();
+      } else {
+        var hd = parseInt(state.highDays,10)===1 ? 1 : 2;
+        if(state.pattern==="highlow") body += highDaysTabs(hd);   // carb cycle is always 1 high day
+        var cp = cyclePlan({protein:e.protein, weightKg:bm.weightKg, intake:e.intake, maint:bm.maint,
+                            pattern:state.pattern, highDays:hd, carbFloor:e.fiber,
+                            stepDeficit:e.stepDeficit, kcalPerStep:e.kcalPerStep});
+        var anyRaised = cp.days.some(function(d){ return d.raised; });
+        var pctText = state.pattern==="cycle" ? "High &amp; medium days are 95% &amp; 85%"
+                                              : (hd===1 ? "The high day is 95%" : "High days are 85%");
+        body += cycleTableHTML(cp)+
+          '<span class="hint">Carbs are '+Math.round(CARB_CAL_SHARE*100)+'% of each day’s calories and fat takes the '+
+          'rest, never below ~'+fmt0(cp.fatFloor)+'g ('+FAT_FLOOR_PER_KG+' g/kg, the safe floor); protein is constant. '+
+          pctText+' of maintenance, the low days take the remainder, and the week still hits your '+fmt0(e.intake)+
+          ' kcal goal.'+(anyRaised ? ' Days with steps were lifted to the lowest workable calories, with steps added '+
+          'to keep the deficit on track.' : '')+'</span>';
+      }
     }
-    var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier. '+
-      'Protein &amp; fat minimums come from your height; carbs take whatever calories are left (with ≥'+e.fiber+
-      'g fibre). The food deficit is capped at '+MAX_FOOD_DEFICIT+' kcal — anything more is made up with steps '+
-      '(~'+KCAL_PER_KG.toLocaleString()+' kcal per kg lost). These are estimates, not medical advice.</p>';
-    ec.innerHTML=head+'<div class="card">'+grid+warn+note+'</div>';
+    var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier; '+
+      'protein &amp; fat targets come from your height. Goal calories = maintenance − the deficit to hit your date '+
+      '(food deficit capped at '+MAX_FOOD_DEFICIT+' kcal, steps cover any more; ~'+KCAL_PER_KG.toLocaleString()+
+      ' kcal per kg). These are estimates, not medical advice.</p>';
+    ec.innerHTML=head+'<div class="card">'+body+note+'</div>';
   }
 
   function render(){
