@@ -365,10 +365,12 @@
   var urlData    = readURL();          // shared link (may carry full history)
   var lsSettings = loadSettings();     // settings previously saved on this device
 
+  // Local settings win once the device has been used; a shared link only seeds
+  // settings on a device that has none yet (mirrors the history rule below).
   function pick(key, dflt){
     var sk = key==="end" ? "endDate" : key;
-    if(urlData && urlData[sk]!=null && urlData[sk]!=="") return urlData[sk];
     if(lsSettings && lsSettings[sk]!=null && lsSettings[sk]!=="") return lsSettings[sk];
+    if(urlData && urlData[sk]!=null && urlData[sk]!=="") return urlData[sk];
     return dflt;
   }
 
@@ -681,17 +683,18 @@
     setInputs();
     render();                          // settings + countdown visible immediately
 
-    var importP = Promise.resolve();
-    if(urlData){
+    // Local history is the source of truth. A shared link only seeds a device
+    // that has no history yet — it never overwrites or merges into existing data.
+    WeightLog.getAll().then(function(existing){
+      if(existing.length || !urlData) return existing;
       var imported = [];
       if(urlData.log){ imported = decodeLog(urlData.log); }
       else if(urlData.weight!=null && urlData.weight!=="" && isFinite(parseFloat(urlData.weight))){
         imported = [{date:todayStr, weight:parseFloat(urlData.weight)}]; // legacy link: seed today
       }
-      if(imported.length) importP = WeightLog.putMany(imported);
-    }
-
-    importP.then(function(){ return WeightLog.getAll(); })
+      if(!imported.length) return existing;
+      return WeightLog.putMany(imported).then(function(){ return WeightLog.getAll(); });
+    })
       .then(function(all){
         logHistory = all;
         var te = todayEntry();
