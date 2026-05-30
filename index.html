@@ -259,6 +259,13 @@
   .mprecipe[open] summary{margin-bottom:6px}
   .mprecipe ol{margin:4px 0 4px 18px;padding:0;font-size:14px;line-height:1.5}
   .mprecipe li{margin:2px 0}
+  .mpacts{display:flex;gap:2px;flex-shrink:0}
+  .mpadd{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+  .mpadd .mealta{min-height:90px}
+  .mpadd-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:8px}
+  .mpadd-row .save{border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:10px;
+                   padding:9px 16px;font-size:14px;font-weight:600;font-family:var(--sans);cursor:pointer}
+  .mpadd-row .save:hover{filter:brightness(.95)}
   .modal .mbtn.go{background:var(--accent);border-color:var(--accent);color:#fff}
   .modal .mbtn.go:hover{filter:brightness(.95)}
   .modal .sheet.wide{max-width:440px}
@@ -392,8 +399,8 @@
     <p class="sub">Build a plan with the AI prompt from the Projection tab, then paste its JSON here to import and save it.</p>
 
     <div class="card">
-      <div class="cardtitle">Import from AI</div>
-      <p class="sub" style="margin:2px 0 10px">Paste a plan — or a recipe block from a meal's “Recipes from AI” button (the whole code block is fine). It’s saved on this device and travels in your shareable link.</p>
+      <div class="cardtitle">Import a plan</div>
+      <p class="sub" style="margin:2px 0 10px">Paste the plan JSON the AI produced (the whole code block is fine). It’s saved on this device and travels in your shareable link. To add recipes, use the <b>Add recipe</b> button on each meal below.</p>
       <textarea id="mealJson" class="mealta" spellcheck="false" placeholder="Paste the AI’s JSON here…"></textarea>
       <button type="button" class="donebtn" id="mealImportBtn">Import plan</button>
       <span class="hint mealmsg" id="mealImportMsg" hidden></span>
@@ -902,6 +909,7 @@
     return null;
   })();
   var mealDay = 0;                      // selected day-type tab in the meal view
+  var mealEditor = null;                // "di-mi" of the meal whose add-recipe box is open
 
   function todayEntry(){
     for(var i=logHistory.length-1;i>=0;i--){ if(logHistory[i].date===todayStr) return logHistory[i]; }
@@ -1272,17 +1280,21 @@
     });
     return H.join("");
   }
-  // One card per meal, with a "Recipes from AI" button and any saved recipes.
+  // One card per meal: a button to copy the recipe prompt, a button to paste
+  // recipes back in, the meal's macros/items, and any saved recipes.
   function mealCardHTML(m, di, mi){
     var id=di+"-"+mi, H=[];
     H.push('<div class="card mpmealhead">');
     H.push('<div class="abouthead"><div class="cardtitle">'+esc(m.name||"Meal")+'</div>'+
-           '<button type="button" class="linkbtn" data-recipe="'+id+'">Recipes from AI</button></div>');
+           '<div class="mpacts">'+
+             '<button type="button" class="linkbtn" data-recipe="'+id+'">Copy prompt</button>'+
+             '<button type="button" class="linkbtn" data-recipe-add="'+id+'">Add recipe</button>'+
+           '</div></div>');
     H.push(totalsRow(dayTotals({meals:[m]}), "sm"));
     H.push(mealItemsHTML(m));
     if(Array.isArray(m.recipes) && m.recipes.length){
       H.push('<div class="mprecipes"><div class="mprecipes-h"><span>Recipes ('+m.recipes.length+')</span>'+
-             '<button type="button" class="linkbtn danger" data-recipe-clear="'+id+'">Remove</button></div>');
+             '<button type="button" class="linkbtn danger" data-recipe-clear="'+id+'">Remove all</button></div>');
       m.recipes.forEach(function(r){
         H.push('<details class="mprecipe"><summary>'+esc(r.name||"Recipe")+
           (isFinite(r.minutes)&&r.minutes>0?' <span class="a">· '+Math.round(r.minutes)+' min</span>':'')+'</summary>');
@@ -1293,6 +1305,15 @@
         H.push('</details>');
       });
       H.push('</div>');
+    }
+    if(mealEditor===id){
+      H.push('<div class="mpadd"><div class="mpmeal-n">Add recipe</div>'+
+        '<p class="hint" style="margin:0 0 6px">Tap “Copy prompt”, paste it into your AI, then paste the recipe JSON it returns here.</p>'+
+        '<textarea class="mealta" id="recAdd-'+id+'" spellcheck="false" placeholder="Paste the recipe JSON here…"></textarea>'+
+        '<div class="mpadd-row">'+
+          '<button type="button" class="linkbtn" data-recipe-cancel="'+id+'">Cancel</button>'+
+          '<button type="button" class="save" data-recipe-save="'+id+'">Save recipes</button>'+
+        '</div></div>');
     }
     H.push('</div>');
     return H.join("");
@@ -1371,14 +1392,28 @@
   }
 
   // ---- import routing (plan + recipes), with friendly fix-up prompts ------
-  // Pull a JSON object out of pasted text: prefer a ```json fence, else the
-  // outermost {...}, so surrounding chat prose is tolerated.
+  // Pull JSON out of pasted text: prefer a ```json fence, else try the whole
+  // string, else the outermost {...} or [...] — so surrounding chat prose, and
+  // either an object or a bare array, are all tolerated.
   function extractJson(raw){
-    var txt=raw, fence=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if(fence){ txt=fence[1]; }
-    else { var a=raw.indexOf("{"), b=raw.lastIndexOf("}"); if(a>=0 && b>a) txt=raw.slice(a,b+1); }
-    try{ return {ok:true, value:JSON.parse(txt)}; }
-    catch(e){ return {ok:false}; }
+    var txt=String(raw).trim(), fence=txt.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if(fence) txt=fence[1].trim();
+    try{ return {ok:true, value:JSON.parse(txt)}; }catch(e){}
+    var first=-1, open="";
+    ["{","["].forEach(function(ch){ var i=txt.indexOf(ch); if(i>=0 && (first<0 || i<first)){ first=i; open=ch; } });
+    if(first>=0){
+      var last=txt.lastIndexOf(open==="{" ? "}" : "]");
+      if(last>first){ try{ return {ok:true, value:JSON.parse(txt.slice(first,last+1))}; }catch(e){} }
+    }
+    return {ok:false};
+  }
+  // Coerce whatever the user pasted into a recipes array: a {recipes:[...]}
+  // block, a bare array, or a single recipe object.
+  function recipesFrom(data){
+    if(Array.isArray(data)) return data;
+    if(data && Array.isArray(data.recipes)) return data.recipes;
+    if(data && (data.name || Array.isArray(data.steps))) return [data];
+    return null;
   }
   function normalizeRecipes(arr){
     if(!Array.isArray(arr)) return [];
@@ -1435,23 +1470,40 @@
     if(!raw){ showImportNotice("There's nothing to import yet — paste the JSON the AI gave you, then tap Import.", fixupGenericPrompt()); return; }
     var got=extractJson(raw);
     if(!got.ok){ showImportNotice("I couldn't find valid JSON in what you pasted. Copy the whole code block the AI printed (including the surrounding { } ) and try again.", fixupGenericPrompt()); return; }
-    var data=got.value, isRecipes = data && (data.type==="weeks-until-show-recipes" || Array.isArray(data.recipes));
+    var data=got.value, isRecipes = data && (data.type==="weeks-until-show-recipes" || Array.isArray(data) || Array.isArray(data.recipes));
     if(isRecipes){
       if(!mealPlan){ showImportNotice("Import a meal plan first, then add recipes to one of its meals.", fixupGenericPrompt()); return; }
-      var recipes=normalizeRecipes(data.recipes);
+      var recipes=normalizeRecipes(recipesFrom(data));
       if(!recipes.length){ showImportNotice("That looks like a recipe block, but it has no recipes I could read.", fixupRecipePrompt("The \"recipes\" array was missing or empty.")); return; }
       var hit=findMealForRecipes(data);
-      if(!hit){ showImportNotice("I couldn't match those recipes to a meal in your plan. The mealId, day and meal need to match the plan you imported.", fixupRecipePrompt("The mealId / day / meal didn't match any meal in the plan.")); return; }
-      hit.meal.recipes=recipes;
+      if(!hit){ showImportNotice("I couldn't match those recipes to a meal in your plan. Use the “Add recipe” button on the meal itself, or keep the mealId/day/meal the prompt gave you.", fixupRecipePrompt("The mealId / day / meal didn't match any meal in the plan.")); return; }
+      hit.meal.recipes=(hit.meal.recipes||[]).concat(recipes);
       persist(); renderMealPlan();
       ta.value=""; setImportOk("Added "+recipes.length+" recipe"+(recipes.length>1?"s":"")+" to "+hit.label+".");
       return;
     }
     var plan=normalizeMealPlan(data);
     if(!plan){ showImportNotice("That JSON loaded, but it has no \"days\" list, so there's no plan to show.", fixupPlanPrompt("The JSON had no non-empty \"days\" array.")); return; }
-    mealPlan=plan; mealDay=0;
+    mealPlan=plan; mealDay=0; mealEditor=null;
     persist(); renderMealPlan();
     ta.value=""; setImportOk("Plan imported and saved to this device.");
+  }
+
+  // Save recipes pasted into a specific meal's inline editor. We already know
+  // the meal (di-mi), so the JSON's mealId/day/meal are ignored — and the
+  // recipes are appended, not replaced, so several batches can be collected.
+  function addRecipesToMeal(di, mi){
+    var meal = mealPlan && mealPlan.days && mealPlan.days[di] && mealPlan.days[di].meals && mealPlan.days[di].meals[mi];
+    if(!meal) return;
+    var ta=$("recAdd-"+di+"-"+mi), raw=ta ? (ta.value||"").trim() : "";
+    if(!raw){ showImportNotice("Paste the recipe JSON the AI gave you first.", fixupRecipePrompt("Nothing was pasted.")); return; }
+    var got=extractJson(raw);
+    if(!got.ok){ showImportNotice("I couldn't read any JSON there. Copy the whole recipe code block the AI printed and try again.", fixupRecipePrompt("The pasted text wasn't valid JSON.")); return; }
+    var recipes=normalizeRecipes(recipesFrom(got.value));
+    if(!recipes.length){ showImportNotice("That didn't contain any recipes I could read.", fixupRecipePrompt("No usable recipes were found in the JSON.")); return; }
+    meal.recipes=(meal.recipes||[]).concat(recipes);
+    mealEditor=null; persist(); renderMealPlan();
+    setImportOk("Added "+recipes.length+" recipe"+(recipes.length>1?"s":"")+" to "+(meal.name||"the meal")+".");
   }
 
   // ---- actual progress from the daily log ---------------------------------
@@ -1908,23 +1960,35 @@
   // recipe-prompt copy, and per-meal recipe removal.
   $("mealPlanCard").addEventListener("click", function(e){
     if(e.target.closest("#mealClearBtn")){
-      mealPlan=null; mealDay=0; persist(); renderMealPlan();
+      mealPlan=null; mealDay=0; mealEditor=null; persist(); renderMealPlan();
       var msg=$("mealImportMsg"); if(msg) msg.hidden=true;
       return;
     }
     var dayBtn=e.target.closest("[data-day]");
-    if(dayBtn){ mealDay=+dayBtn.getAttribute("data-day"); renderMealPlan(); return; }
+    if(dayBtn){ mealDay=+dayBtn.getAttribute("data-day"); mealEditor=null; renderMealPlan(); return; }
     var recBtn=e.target.closest("[data-recipe]");
     if(recBtn){
       var ix=recBtn.getAttribute("data-recipe").split("-");
       var prompt=buildRecipePrompt(+ix[0], +ix[1]);
       copyText(prompt, function(ok){
         var old=recBtn.textContent;
-        recBtn.textContent = ok ? "Recipe prompt copied!" : "Press Ctrl/Cmd+C";
+        recBtn.textContent = ok ? "Copied!" : "Press Ctrl/Cmd+C";
         setTimeout(function(){ recBtn.textContent=old; }, 1600);
       });
       return;
     }
+    var addBtn=e.target.closest("[data-recipe-add]");
+    if(addBtn){
+      var aid=addBtn.getAttribute("data-recipe-add");
+      mealEditor = (mealEditor===aid) ? null : aid;   // toggle
+      renderMealPlan();
+      if(mealEditor){ var box=$("recAdd-"+mealEditor); if(box && box.focus) box.focus(); }
+      return;
+    }
+    var saveBtn=e.target.closest("[data-recipe-save]");
+    if(saveBtn){ var s=saveBtn.getAttribute("data-recipe-save").split("-"); addRecipesToMeal(+s[0], +s[1]); return; }
+    var cancelBtn=e.target.closest("[data-recipe-cancel]");
+    if(cancelBtn){ mealEditor=null; renderMealPlan(); return; }
     var clr=e.target.closest("[data-recipe-clear]");
     if(clr){
       var z=clr.getAttribute("data-recipe-clear").split("-");
