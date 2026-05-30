@@ -246,6 +246,25 @@
   .mptotal{display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:2px solid var(--line);font-weight:600}
   .linkbtn.danger{color:#a8472f}
   .linkbtn.danger:hover{background:#f7e9e3}
+  .mealdaytabs{margin-bottom:14px}
+  .mpmealhead .cardtitle{font-size:17px}
+  .mptot.sm{margin:0 0 6px;font-size:12px}
+  .mprecipes{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+  .mprecipes-h{display:flex;align-items:center;justify-content:space-between;font-size:11px;
+               letter-spacing:.05em;text-transform:uppercase;color:var(--inkSoft);font-weight:600}
+  .mprecipe{border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-top:8px;background:#fff}
+  .mprecipe summary{cursor:pointer;font-weight:600;font-size:14px;list-style:none}
+  .mprecipe summary::-webkit-details-marker{display:none}
+  .mprecipe summary .a{color:var(--inkSoft);font-weight:400;font-size:12px}
+  .mprecipe[open] summary{margin-bottom:6px}
+  .mprecipe ol{margin:4px 0 4px 18px;padding:0;font-size:14px;line-height:1.5}
+  .mprecipe li{margin:2px 0}
+  .modal .mbtn.go{background:var(--accent);border-color:var(--accent);color:#fff}
+  .modal .mbtn.go:hover{filter:brightness(.95)}
+  .modal .sheet.wide{max-width:440px}
+  .modal pre.fix{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+                 font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;max-height:160px;overflow:auto;
+                 white-space:pre-wrap;color:var(--inkSoft);margin:0 0 16px}
 </style>
 </head>
 <body>
@@ -373,8 +392,8 @@
     <p class="sub">Build a plan with the AI prompt from the Projection tab, then paste its JSON here to import and save it.</p>
 
     <div class="card">
-      <div class="cardtitle">Import a plan</div>
-      <p class="sub" style="margin:2px 0 10px">Paste the JSON block the AI produced (the whole code block is fine). It’s saved on this device and travels in your shareable link.</p>
+      <div class="cardtitle">Import from AI</div>
+      <p class="sub" style="margin:2px 0 10px">Paste a plan — or a recipe block from a meal's “Recipes from AI” button (the whole code block is fine). It’s saved on this device and travels in your shareable link.</p>
       <textarea id="mealJson" class="mealta" spellcheck="false" placeholder="Paste the AI’s JSON here…"></textarea>
       <button type="button" class="donebtn" id="mealImportBtn">Import plan</button>
       <span class="hint mealmsg" id="mealImportMsg" hidden></span>
@@ -391,6 +410,18 @@
     <div class="actions">
       <button type="button" class="mbtn cancel" id="confirmCancel">Cancel</button>
       <button type="button" class="mbtn confirm" id="confirmClear">Clear data</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="noticeModal" hidden>
+  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="noticeTitle">
+    <h2 id="noticeTitle">Couldn’t import that</h2>
+    <p id="noticeMsg"></p>
+    <pre class="fix" id="noticeFix"></pre>
+    <div class="actions">
+      <button type="button" class="mbtn cancel" id="noticeClose">Close</button>
+      <button type="button" class="mbtn go" id="noticeCopy">Copy fix-up prompt</button>
     </div>
   </div>
 </div>
@@ -708,20 +739,6 @@
     if(!Array.isArray(obj.days) || !obj.days.length) return null;
     return obj;
   }
-  // Pull a plan out of pasted text: prefer a ```json fenced block, else fall
-  // back to the outermost {...} so surrounding chat prose is tolerated.
-  function parsePastedPlan(raw){
-    if(!raw) return {ok:false, error:"Paste the JSON the AI produced first."};
-    var txt=raw, fence=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if(fence){ txt=fence[1]; }
-    else { var a=raw.indexOf("{"), b=raw.lastIndexOf("}"); if(a>=0 && b>a) txt=raw.slice(a,b+1); }
-    var obj;
-    try{ obj=JSON.parse(txt); }
-    catch(e){ return {ok:false, error:"That doesn’t look like valid JSON — copy the whole code block the AI gave you."}; }
-    var plan=normalizeMealPlan(obj);
-    if(!plan) return {ok:false, error:"JSON parsed, but it has no “days” list. Make sure you copied the plan block, not the questions."};
-    return {ok:true, plan:plan};
-  }
   // URL-safe base64 so the plan can ride in the shareable link without the
   // query string mangling +, / or = (and without unicode loss for food names).
   function encodeMealPlan(plan){
@@ -884,6 +901,7 @@
     if(urlData && urlData.meal){ var d=decodeMealPlan(urlData.meal); if(d) return d; }
     return null;
   })();
+  var mealDay = 0;                      // selected day-type tab in the meal view
 
   function todayEntry(){
     for(var i=logHistory.length-1;i>=0;i--){ if(logHistory[i].date===todayStr) return logHistory[i]; }
@@ -1037,6 +1055,46 @@
     return "Even (the same calories and macros every day)";
   }
 
+  // Shared JSON shapes — used both in the prompts and in the fix-up prompts
+  // shown when an import fails, so the model always sees one canonical schema.
+  var PLAN_SCHEMA = [
+    "{",
+    '  "type": "weeks-until-show-meal-plan",',
+    '  "version": 1,',
+    '  "country": "<my country>",',
+    '  "currency": "<ISO code, e.g. EUR>",',
+    '  "weeklyBudget": 0,',
+    '  "summary": "<one or two sentence overview>",',
+    '  "days": [',
+    '    {',
+    '      "label": "<e.g. Every day, or High day>",',
+    '      "perWeek": 7,',
+    '      "meals": [',
+    '        { "name": "<e.g. Breakfast>", "items": [',
+    '          { "food": "<product>", "amount": "<e.g. 80 g>", "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0 }',
+    '        ] }',
+    '      ],',
+    '      "totals": { "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0 }',
+    '    }',
+    '  ],',
+    '  "shoppingList": [',
+    '    { "retailer": "<store name>", "items": [ { "name": "<product>", "qty": "1", "price": 0 } ] }',
+    '  ],',
+    '  "micronutrients": "<note on coverage, any shortfalls, and how fibre hits the floor>"',
+    "}"
+  ].join("\n");
+  var RECIPE_SCHEMA = [
+    "{",
+    '  "type": "weeks-until-show-recipes",',
+    '  "mealId": "<the id I gave you, e.g. 0-1>",',
+    '  "day": "<day label>",',
+    '  "meal": "<meal name>",',
+    '  "recipes": [',
+    '    { "name": "<recipe name>", "minutes": 0, "steps": ["<step 1>", "<step 2>"], "notes": "<optional>" }',
+    '  ]',
+    "}"
+  ].join("\n");
+
   // Builds a portable, LLM-agnostic meal-plan prompt from everything we know.
   // It hands over the calculated targets as fixed inputs, states the hard
   // nutrition rules (micronutrient priority, fibre floor), tells the model
@@ -1089,41 +1147,79 @@
     L.push("2. **What is my weekly food budget?** (tell me the currency and amount). Build the plan to fit it — do NOT default to expensive staples like salmon and beef on a tight budget. Scale the protein and fat sources to what the budget realistically allows.");
     L.push("3. **What are my dietary preferences and restrictions?** For example: vegetarian, vegan, pescatarian, halal, kosher, any food allergies or intolerances, and foods I simply dislike.");
     L.push("   - IMPORTANT: these preferences are completely separate from the calorie / macro style above. I might (for example) be vegan *and* carb cycling — the two are independent. Do not infer my restrictions from my calorie plan, and do not change my calorie plan because of my restrictions.");
+    L.push("4. **How many meals per day do I want?** (e.g. 3 main meals, or 4–5 smaller ones). Split each day's calories and macros across exactly that many meals.");
     L.push("");
     L.push("## Then produce");
-    L.push("1. A meal plan that hits every target above"+(cycling?" for each day type":"")+", using products that actually exist in my country (cross-check against Open Food Facts).");
+    L.push("1. A meal plan that hits every target above"+(cycling?" for each day type":"")+", split into the number of meals I asked for, using products that actually exist in my country (cross-check against Open Food Facts).");
     L.push("2. A consolidated weekly shopping list. For each item, note which major retailer(s) in my country stock it, with rough prices, and keep the total within my stated budget.");
     L.push("3. A short summary of the micronutrient coverage and how the plan reaches at least "+e.fiber+" g of fibre per day.");
     L.push("");
     L.push("## Finally, output the plan as JSON so I can import it into my app");
-    L.push("Once I'm happy with the plan, print it once more as a single fenced ```json code block (nothing but JSON inside the fence) in exactly this shape. Use plain numbers for every kcal / macro / price field (no units inside the numbers — put units in the `amount` strings). Give per-day figures for each day type, and group the shopping list by retailer.");
+    L.push("Once I'm happy with the plan, print it once more as a single fenced ```json code block (nothing but JSON inside the fence) in exactly this shape. Use plain numbers for every kcal / macro / price field (no units inside the numbers — put units in the `amount` strings). Give per-day figures for each day type, one entry in `meals` per meal I asked for, and group the shopping list by retailer.");
     L.push("```json");
-    L.push("{");
-    L.push('  "type": "weeks-until-show-meal-plan",');
-    L.push('  "version": 1,');
-    L.push('  "country": "<my country>",');
-    L.push('  "currency": "<ISO code, e.g. EUR>",');
-    L.push('  "weeklyBudget": 0,');
-    L.push('  "summary": "<one or two sentence overview>",');
-    L.push('  "days": [');
-    L.push('    {');
-    L.push('      "label": "<e.g. Every day, or High day>",');
-    L.push('      "perWeek": 7,');
-    L.push('      "meals": [');
-    L.push('        { "name": "<e.g. Breakfast>", "items": [');
-    L.push('          { "food": "<product>", "amount": "<e.g. 80 g>", "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0 }');
-    L.push('        ] }');
-    L.push('      ],');
-    L.push('      "totals": { "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0 }');
-    L.push('    }');
-    L.push('  ],');
-    L.push('  "shoppingList": [');
-    L.push('    { "retailer": "<store name>", "items": [ { "name": "<product>", "qty": "1", "price": 0 } ] }');
-    L.push('  ],');
-    L.push('  "micronutrients": "<note on coverage, any shortfalls, and how fibre hits the floor>"');
-    L.push("}");
+    L.push(PLAN_SCHEMA);
     L.push("```");
     return L.join("\n");
+  }
+
+  // Per-meal prompt: asks for several different recipes that all use the exact
+  // same ingredients, amounts, calories and macros — only the method varies —
+  // then structured JSON (tagged with this meal's id) so they import back here.
+  function buildRecipePrompt(di, mi){
+    if(!mealPlan || !mealPlan.days) return "";
+    var d=mealPlan.days[di], m=d && d.meals && d.meals[mi];
+    if(!m) return "";
+    var t=dayTotals({meals:[m]}), L=[];
+    L.push("You are a recipe assistant. I have ONE fixed meal with set ingredients and macros. The ingredients, amounts, calories and macros must stay exactly the same — only the recipe (method, cuisine, flavour) may change, so I get variety without changing my nutrition.");
+    L.push("");
+    L.push("## The meal — do not change any of this");
+    L.push("- Meal: "+(m.name||"Meal")+" ("+(d.label||"day")+")");
+    if(t) L.push("- Goal for this meal: "+t.kcal+" kcal · "+t.protein+" g protein · "+t.fat+" g fat · "+t.carbs+" g carbs"+(t.fiber!=null?" · "+t.fiber+" g fibre":""));
+    L.push("- Ingredients (exact amounts):");
+    (m.items||[]).forEach(function(it){
+      var macro=[];
+      if(isFinite(it.kcal)) macro.push(Math.round(it.kcal)+" kcal");
+      var pf=[];
+      if(isFinite(it.protein)) pf.push("P"+Math.round(it.protein));
+      if(isFinite(it.fat))     pf.push("F"+Math.round(it.fat));
+      if(isFinite(it.carbs))   pf.push("C"+Math.round(it.carbs));
+      if(pf.length) macro.push(pf.join(" "));
+      L.push("    - "+(it.food||it.name||"")+(it.amount?" — "+it.amount:"")+(macro.length?" ("+macro.join(" · ")+")":""));
+    });
+    L.push("");
+    L.push("## Rules");
+    L.push("- Every recipe must use exactly these ingredients in these amounts — no additions, swaps or removals. Water, salt, pepper and basic spices are fine and don't count.");
+    L.push("- Calories and macros are identical for every recipe (they come from the ingredients above). Do not recalculate or change them.");
+    L.push("- Vary the cooking method, cuisine and flavour so each recipe feels like a genuinely different meal.");
+    L.push("- Respect any dietary preferences and restrictions I told you when we built the plan.");
+    L.push("");
+    L.push("## Give me 3–5 recipes, then output them as JSON so I can save them");
+    L.push("After listing the recipes for me to read, print a single fenced ```json code block (nothing but JSON inside) in exactly this shape. Keep the mealId, day and meal exactly as given so my app can file them against the right meal:");
+    L.push("```json");
+    L.push(RECIPE_SCHEMA.replace('"<the id I gave you, e.g. 0-1>"', JSON.stringify(di+"-"+mi))
+                        .replace('"<day label>"', JSON.stringify(d.label||""))
+                        .replace('"<meal name>"', JSON.stringify(m.name||"")));
+    L.push("```");
+    return L.join("\n");
+  }
+
+  // Friendly fix-up prompts shown when an import fails, so the user can paste a
+  // correction request straight back to the model instead of hitting a dead end.
+  function fixupPlanPrompt(reason){
+    return "The JSON I pasted into my meal-plan app couldn't be imported.\n\nProblem: "+reason+
+      "\n\nPlease output the FULL plan again as a single fenced ```json code block and nothing else — no prose inside the fence. "+
+      "Match this structure exactly, use plain numbers for every kcal/macro/price field (no units inside the numbers), and make sure \"days\" is a non-empty array:\n\n"+PLAN_SCHEMA;
+  }
+  function fixupRecipePrompt(reason){
+    return "The recipe JSON I pasted into my meal-plan app couldn't be imported.\n\nProblem: "+reason+
+      "\n\nPlease output the recipes again as a single fenced ```json code block and nothing else. "+
+      "Keep the same mealId, day and meal you were given, include a non-empty \"recipes\" array, and match this structure exactly:\n\n"+RECIPE_SCHEMA;
+  }
+  function fixupGenericPrompt(){
+    return "The text I pasted into my meal-plan app wasn't valid JSON it could read.\n\n"+
+      "Please print ONLY a single fenced ```json code block (including the surrounding { }), with no text inside the fence, "+
+      "matching the structure you used before. If it's a meal plan it must have a non-empty \"days\" array; "+
+      "if it's recipes it must have \"type\": \"weeks-until-show-recipes\" and a \"recipes\" array.";
   }
 
   // ---- meal plan rendering ------------------------------------------------
@@ -1152,10 +1248,59 @@
     }); });
     return any ? {kcal:Math.round(s.kcal),protein:Math.round(s.protein),fat:Math.round(s.fat),carbs:Math.round(s.carbs),fiber:Math.round(s.fiber)} : null;
   }
+  // Renders one row of macros (reused for day and meal totals).
+  function totalsRow(t, cls){
+    if(!t) return "";
+    var bits=['<span><b>'+t.kcal+'</b> kcal</span>','<span><b>'+t.protein+'</b> g protein</span>',
+              '<span><b>'+t.fat+'</b> g fat</span>','<span><b>'+t.carbs+'</b> g carbs</span>'];
+    if(t.fiber!=null) bits.push('<span><b>'+t.fiber+'</b> g fibre</span>');
+    return '<div class="mptot'+(cls?' '+cls:'')+'">'+bits.join("")+'</div>';
+  }
+  function mealItemsHTML(m){
+    var H=[];
+    (m.items||[]).forEach(function(it){
+      var macro=[];
+      if(isFinite(it.kcal)) macro.push(Math.round(it.kcal)+' kcal');
+      var pf=[];
+      if(isFinite(it.protein)) pf.push('P'+Math.round(it.protein));
+      if(isFinite(it.fat))     pf.push('F'+Math.round(it.fat));
+      if(isFinite(it.carbs))   pf.push('C'+Math.round(it.carbs));
+      if(pf.length) macro.push(pf.join(' '));
+      H.push('<div class="mpitem"><div class="f">'+esc(it.food||it.name||"")+
+        (it.amount?' <span class="a">'+esc(it.amount)+'</span>':'')+'</div>'+
+        (macro.length?'<div class="m">'+esc(macro.join(' · '))+'</div>':'')+'</div>');
+    });
+    return H.join("");
+  }
+  // One card per meal, with a "Recipes from AI" button and any saved recipes.
+  function mealCardHTML(m, di, mi){
+    var id=di+"-"+mi, H=[];
+    H.push('<div class="card mpmealhead">');
+    H.push('<div class="abouthead"><div class="cardtitle">'+esc(m.name||"Meal")+'</div>'+
+           '<button type="button" class="linkbtn" data-recipe="'+id+'">Recipes from AI</button></div>');
+    H.push(totalsRow(dayTotals({meals:[m]}), "sm"));
+    H.push(mealItemsHTML(m));
+    if(Array.isArray(m.recipes) && m.recipes.length){
+      H.push('<div class="mprecipes"><div class="mprecipes-h"><span>Recipes ('+m.recipes.length+')</span>'+
+             '<button type="button" class="linkbtn danger" data-recipe-clear="'+id+'">Remove</button></div>');
+      m.recipes.forEach(function(r){
+        H.push('<details class="mprecipe"><summary>'+esc(r.name||"Recipe")+
+          (isFinite(r.minutes)&&r.minutes>0?' <span class="a">· '+Math.round(r.minutes)+' min</span>':'')+'</summary>');
+        if(Array.isArray(r.steps)&&r.steps.length){
+          H.push('<ol>'); r.steps.forEach(function(s){ H.push('<li>'+esc(s)+'</li>'); }); H.push('</ol>');
+        }
+        if(r.notes) H.push('<p class="sub" style="white-space:pre-wrap">'+esc(r.notes)+'</p>');
+        H.push('</details>');
+      });
+      H.push('</div>');
+    }
+    H.push('</div>');
+    return H.join("");
+  }
   function renderMealPlan(){
     var host=$("mealPlanCard"); if(!host) return;
     if(!mealPlan){ host.innerHTML=""; return; }
-    var p=mealPlan, H=[];
+    var p=mealPlan, days=Array.isArray(p.days)?p.days:[], H=[];
 
     // overview + remove control
     H.push('<div class="card">');
@@ -1168,38 +1313,26 @@
     if(p.summary) H.push('<p class="sub" style="margin-top:10px;white-space:pre-wrap">'+esc(p.summary)+'</p>');
     H.push('</div>');
 
-    // one card per day type
-    (p.days||[]).forEach(function(d){
-      H.push('<div class="card">');
-      H.push('<div class="mpday-head"><span class="t">'+esc(d.label||"Day")+'</span>'+
-             (isFinite(d.perWeek)?'<span class="c">×'+esc(d.perWeek)+' / week</span>':'')+'</div>');
-      var t=dayTotals(d);
-      if(t){
-        var bits=['<span><b>'+t.kcal+'</b> kcal</span>','<span><b>'+t.protein+'</b> g protein</span>',
-                  '<span><b>'+t.fat+'</b> g fat</span>','<span><b>'+t.carbs+'</b> g carbs</span>'];
-        if(t.fiber!=null) bits.push('<span><b>'+t.fiber+'</b> g fibre</span>');
-        H.push('<div class="mptot">'+bits.join("")+'</div>');
-      }
-      (d.meals||[]).forEach(function(m){
-        H.push('<div class="mpmeal"><div class="mpmeal-n">'+esc(m.name||"Meal")+'</div>');
-        (m.items||[]).forEach(function(it){
-          var macro=[];
-          if(isFinite(it.kcal)) macro.push(Math.round(it.kcal)+' kcal');
-          var pf=[];
-          if(isFinite(it.protein)) pf.push('P'+Math.round(it.protein));
-          if(isFinite(it.fat))     pf.push('F'+Math.round(it.fat));
-          if(isFinite(it.carbs))   pf.push('C'+Math.round(it.carbs));
-          if(pf.length) macro.push(pf.join(' '));
-          H.push('<div class="mpitem"><div class="f">'+esc(it.food||it.name||"")+
-            (it.amount?' <span class="a">'+esc(it.amount)+'</span>':'')+'</div>'+
-            (macro.length?'<div class="m">'+esc(macro.join(' · '))+'</div>':'')+'</div>');
-        });
-        H.push('</div>');
+    // day-type tabs (only when there is more than one kind of day)
+    var sel=Math.min(Math.max(0, mealDay|0), days.length-1);
+    if(days.length>1){
+      var dt='<div class="tabs mealdaytabs" role="tablist">';
+      days.forEach(function(d,i){
+        dt+='<button type="button" data-day="'+i+'"'+(i===sel?' class="on"':'')+'>'+esc(d.label||("Day "+(i+1)))+'</button>';
       });
-      H.push('</div>');
-    });
+      H.push(dt+'</div>');
+    }
 
-    // shopping list grouped by retailer
+    // selected day: a small summary card, then one card per meal
+    var day=days[sel];
+    if(day){
+      H.push('<div class="card"><div class="mpday-head"><span class="t">'+esc(day.label||"Day")+'</span>'+
+             (isFinite(day.perWeek)?'<span class="c">×'+esc(day.perWeek)+' / week</span>':'')+'</div>'+
+             totalsRow(dayTotals(day))+'</div>');
+      (day.meals||[]).forEach(function(m,mi){ H.push(mealCardHTML(m, sel, mi)); });
+    }
+
+    // shopping list grouped by retailer — shared across all day tabs
     if(Array.isArray(p.shoppingList) && p.shoppingList.length){
       H.push('<div class="card mpshop"><div class="cardtitle">Shopping list</div>');
       var grand=0, haveGrand=false, cur=p.currency||"";
@@ -1235,6 +1368,90 @@
     var tp=$("tabProjection"), tm=$("tabMeal");
     if(tp){ tp.classList.toggle("on", !meal); tp.setAttribute("aria-selected", String(!meal)); }
     if(tm){ tm.classList.toggle("on", meal);  tm.setAttribute("aria-selected", String(meal)); }
+  }
+
+  // ---- import routing (plan + recipes), with friendly fix-up prompts ------
+  // Pull a JSON object out of pasted text: prefer a ```json fence, else the
+  // outermost {...}, so surrounding chat prose is tolerated.
+  function extractJson(raw){
+    var txt=raw, fence=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if(fence){ txt=fence[1]; }
+    else { var a=raw.indexOf("{"), b=raw.lastIndexOf("}"); if(a>=0 && b>a) txt=raw.slice(a,b+1); }
+    try{ return {ok:true, value:JSON.parse(txt)}; }
+    catch(e){ return {ok:false}; }
+  }
+  function normalizeRecipes(arr){
+    if(!Array.isArray(arr)) return [];
+    return arr.map(function(r){
+      if(!r || typeof r!=="object") return null;
+      var steps=Array.isArray(r.steps) ? r.steps.map(function(s){ return String(s); }).filter(Boolean) : [];
+      var out={ name:String(r.name||"Recipe"), steps:steps };
+      if(isFinite(r.minutes)) out.minutes=r.minutes;
+      if(r.notes) out.notes=String(r.notes);
+      return out;
+    }).filter(Boolean);
+  }
+  // Match a recipe block back to a meal: by mealId "di-mi" first, else by day
+  // label + meal name (case-insensitive). Returns {meal,label} or null.
+  function findMealForRecipes(data){
+    if(!mealPlan || !Array.isArray(mealPlan.days)) return null;
+    var days=mealPlan.days;
+    if(typeof data.mealId==="string" && /^\d+-\d+$/.test(data.mealId)){
+      var ix=data.mealId.split("-"), di=+ix[0], mi=+ix[1];
+      if(days[di] && days[di].meals && days[di].meals[mi]){
+        return {meal:days[di].meals[mi], label:(days[di].label||"day")+" · "+(days[di].meals[mi].name||"meal")};
+      }
+    }
+    var dn=String(data.day||"").toLowerCase(), mn=String(data.meal||"").toLowerCase();
+    if(dn||mn){
+      for(var i=0;i<days.length;i++){
+        if(dn && String(days[i].label||"").toLowerCase()!==dn) continue;
+        var meals=days[i].meals||[];
+        for(var j=0;j<meals.length;j++){
+          if(mn && String(meals[j].name||"").toLowerCase()!==mn) continue;
+          return {meal:meals[j], label:(days[i].label||"day")+" · "+(meals[j].name||"meal")};
+        }
+      }
+    }
+    return null;
+  }
+  var pendingFixup="";
+  function showImportNotice(message, fixup){
+    pendingFixup=fixup||"";
+    var msgEl=$("noticeMsg"), fixEl=$("noticeFix");
+    if(msgEl) msgEl.textContent=message;
+    if(fixEl) fixEl.textContent=pendingFixup;
+    $("noticeModal").hidden=false;
+  }
+  function setImportOk(text){
+    var msg=$("mealImportMsg");
+    if(msg){ msg.hidden=false; msg.className="hint mealmsg ok"; msg.textContent=text; }
+  }
+  // The single paste box accepts either a full plan or a recipe block; route by
+  // `type` / shape. Any failure surfaces a copyable fix-up prompt, never a dead
+  // red error.
+  function handleImport(){
+    var ta=$("mealJson"), raw=(ta.value||"").trim();
+    if(!raw){ showImportNotice("There's nothing to import yet — paste the JSON the AI gave you, then tap Import.", fixupGenericPrompt()); return; }
+    var got=extractJson(raw);
+    if(!got.ok){ showImportNotice("I couldn't find valid JSON in what you pasted. Copy the whole code block the AI printed (including the surrounding { } ) and try again.", fixupGenericPrompt()); return; }
+    var data=got.value, isRecipes = data && (data.type==="weeks-until-show-recipes" || Array.isArray(data.recipes));
+    if(isRecipes){
+      if(!mealPlan){ showImportNotice("Import a meal plan first, then add recipes to one of its meals.", fixupGenericPrompt()); return; }
+      var recipes=normalizeRecipes(data.recipes);
+      if(!recipes.length){ showImportNotice("That looks like a recipe block, but it has no recipes I could read.", fixupRecipePrompt("The \"recipes\" array was missing or empty.")); return; }
+      var hit=findMealForRecipes(data);
+      if(!hit){ showImportNotice("I couldn't match those recipes to a meal in your plan. The mealId, day and meal need to match the plan you imported.", fixupRecipePrompt("The mealId / day / meal didn't match any meal in the plan.")); return; }
+      hit.meal.recipes=recipes;
+      persist(); renderMealPlan();
+      ta.value=""; setImportOk("Added "+recipes.length+" recipe"+(recipes.length>1?"s":"")+" to "+hit.label+".");
+      return;
+    }
+    var plan=normalizeMealPlan(data);
+    if(!plan){ showImportNotice("That JSON loaded, but it has no \"days\" list, so there's no plan to show.", fixupPlanPrompt("The JSON had no non-empty \"days\" array.")); return; }
+    mealPlan=plan; mealDay=0;
+    persist(); renderMealPlan();
+    ta.value=""; setImportOk("Plan imported and saved to this device.");
   }
 
   // ---- actual progress from the daily log ---------------------------------
@@ -1685,23 +1902,48 @@
   $("mainTabs").addEventListener("click", function(e){
     var b=e.target.closest("[data-view]"); if(b) setView(b.dataset.view);
   });
-  $("mealImportBtn").addEventListener("click", function(){
-    var ta=$("mealJson"), msg=$("mealImportMsg");
-    var res=parsePastedPlan(ta.value.trim());
-    if(!res.ok){
-      msg.hidden=false; msg.className="hint mealmsg err"; msg.textContent=res.error; return;
-    }
-    mealPlan=res.plan; persist(); renderMealPlan();
-    ta.value="";
-    msg.hidden=false; msg.className="hint mealmsg ok"; msg.textContent="Plan imported and saved to this device.";
-  });
-  // The plan card is re-rendered as innerHTML, so the remove button is bound
-  // by delegation on the stable container.
+  $("mealImportBtn").addEventListener("click", handleImport);
+  // The plan card is re-rendered as innerHTML, so its controls are bound by
+  // delegation on the stable container: remove plan, day-tab switch, per-meal
+  // recipe-prompt copy, and per-meal recipe removal.
   $("mealPlanCard").addEventListener("click", function(e){
     if(e.target.closest("#mealClearBtn")){
-      mealPlan=null; persist(); renderMealPlan();
+      mealPlan=null; mealDay=0; persist(); renderMealPlan();
       var msg=$("mealImportMsg"); if(msg) msg.hidden=true;
+      return;
     }
+    var dayBtn=e.target.closest("[data-day]");
+    if(dayBtn){ mealDay=+dayBtn.getAttribute("data-day"); renderMealPlan(); return; }
+    var recBtn=e.target.closest("[data-recipe]");
+    if(recBtn){
+      var ix=recBtn.getAttribute("data-recipe").split("-");
+      var prompt=buildRecipePrompt(+ix[0], +ix[1]);
+      copyText(prompt, function(ok){
+        var old=recBtn.textContent;
+        recBtn.textContent = ok ? "Recipe prompt copied!" : "Press Ctrl/Cmd+C";
+        setTimeout(function(){ recBtn.textContent=old; }, 1600);
+      });
+      return;
+    }
+    var clr=e.target.closest("[data-recipe-clear]");
+    if(clr){
+      var z=clr.getAttribute("data-recipe-clear").split("-");
+      var d=mealPlan && mealPlan.days && mealPlan.days[+z[0]];
+      if(d && d.meals && d.meals[+z[1]]){ delete d.meals[+z[1]].recipes; persist(); renderMealPlan(); }
+      return;
+    }
+  });
+  // Import-failure notice: copy the tailored fix-up prompt, or dismiss.
+  var noticeModal=$("noticeModal");
+  function closeNotice(){ noticeModal.hidden=true; }
+  $("noticeClose").addEventListener("click", closeNotice);
+  noticeModal.addEventListener("click", function(e){ if(e.target===noticeModal) closeNotice(); });
+  $("noticeCopy").addEventListener("click", function(){
+    var btn=$("noticeCopy");
+    copyText(pendingFixup, function(ok){
+      btn.textContent = ok ? "Copied!" : "Press Ctrl/Cmd+C";
+      setTimeout(function(){ btn.textContent="Copy fix-up prompt"; }, 1600);
+    });
   });
 
   // ---- menu + clear-data confirm ------------------------------------------
