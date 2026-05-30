@@ -77,6 +77,12 @@
            border-radius:12px;padding:12px;font-size:15px;font-weight:600;font-family:var(--sans);cursor:pointer}
   .donebtn:disabled{opacity:.5;cursor:not-allowed}
   .donebtn:not(:disabled):hover{filter:brightness(.95)}
+  .promptbtn{margin-top:16px;width:100%;border:1px solid var(--accent);background:#fff;color:var(--accentDeep);
+             border-radius:12px;padding:12px;font-size:15px;font-weight:600;font-family:var(--sans);cursor:pointer;
+             display:flex;align-items:center;justify-content:center;gap:8px}
+  .promptbtn svg{width:17px;height:17px;flex:none}
+  .promptbtn:hover{background:var(--accentSoft)}
+  .promptbtn.done{background:var(--accent);color:#fff;border-color:var(--accent)}
   .seg{margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:6px}
   .seg button{flex:1;border:1px solid var(--line);background:#fff;color:var(--inkSoft);border-radius:12px;
               padding:11px 0;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
@@ -897,6 +903,80 @@
     return out;
   }
 
+  // ---- meal-plan prompt for an LLM ----------------------------------------
+  // Describes the calorie/macro *style* (even / high-low / cycle) the plan
+  // uses. This is deliberately kept separate from a person's dietary
+  // preferences (vegan, halal, allergies…): those are independent of how the
+  // calories are distributed and are gathered by the LLM, not encoded here.
+  function dietStyleLabel(){
+    if(state.pattern==="highlow"){
+      var hd=parseInt(state.highDays,10)===1?1:2;
+      return "High / low carb ("+hd+" high-carb day"+(hd>1?"s":"")+" per week, protein held constant)";
+    }
+    if(state.pattern==="cycle") return "Carb cycling (high / medium / low carb days)";
+    return "Even (the same calories and macros every day)";
+  }
+
+  // Builds a portable, LLM-agnostic meal-plan prompt from everything we know.
+  // It hands over the calculated targets as fixed inputs, states the hard
+  // nutrition rules (micronutrient priority, fibre floor), tells the model
+  // which questions to ask the user before planning (country, budget, dietary
+  // preferences) and what to deliver (plan + shopping list mapped to local
+  // retailers via Open Food Facts).
+  function buildMealPlanPrompt(){
+    var e=energyPlan(); if(!e.valid) return "";
+    var c=compute(), bm=e.bm;
+    var wU=state.unit, hU=state.unit==="lb"?"in":"cm";
+    var hasGoal=isFinite(e.intake), cycling=hasGoal && e.macrosOk && state.pattern!=="even";
+    var wl=weeksLeft(), L=[];
+
+    L.push("You are an expert nutritionist and meal-planning assistant. Help me build a meal plan around the targets below. These targets are already calculated — treat them as fixed inputs, not something to recompute.");
+    L.push("");
+    L.push("## My stats and targets");
+    L.push("- Plan length: "+e.days+" days"+(wl!=null?" (~"+wl+" weeks)":"")+", ending "+prettyDate(state.endDate));
+    if(isFinite(c.W))                      L.push("- Current weight: "+fmt(c.W)+" "+wU);
+    if(hasGoal && isFinite(c.final))       L.push("- Goal weight by the end date: "+fmt(c.final)+" "+wU);
+    if(state.height!=="")                  L.push("- Height: "+state.height+" "+hU);
+    L.push("- Maintenance energy: "+fmt0(bm.maint)+" kcal/day");
+    if(hasGoal) L.push("- Daily calorie goal: "+fmt0(e.intake)+" kcal/day (a "+fmt0(e.foodDeficit)+" kcal/day deficit from food)");
+    L.push("- Daily macro targets:");
+    L.push("    - Protein: "+fmt0(e.protein)+" g (minimum — hit every day)");
+    L.push("    - Fat: "+fmt0(e.fat)+" g (minimum — hit every day)");
+    if(hasGoal && e.macrosOk) L.push("    - Carbs: ~"+fmt0(e.carbs)+" g");
+    L.push("    - Fibre: at least "+e.fiber+" g per day");
+    L.push("");
+    if(cycling){
+      var hd=parseInt(state.highDays,10)===1?1:2;
+      var cp=cyclePlan({protein:e.protein, weightKg:bm.weightKg, intake:e.intake, maint:bm.maint,
+                        pattern:state.pattern, highDays:hd, carbFloor:e.fiber, fatMin:e.fat,
+                        stepDeficit:e.stepDeficit, kcalPerStep:e.kcalPerStep});
+      L.push("### Calorie / macro style: "+dietStyleLabel());
+      L.push("This is a cycling plan — match each day type's macros. The daily figures above are the weekly average.");
+      cp.days.forEach(function(d){
+        L.push("- "+d.label+" day ×"+d.count+"/week: "+fmt0(d.kcal)+" kcal · "+fmt0(d.protein)+" g protein · "+fmt0(d.fat)+" g fat · "+fmt0(d.carbs)+" g carbs");
+      });
+    } else {
+      L.push("Calorie / macro style: "+dietStyleLabel()+".");
+    }
+    L.push("");
+    L.push("## Non-negotiable nutrition rules");
+    L.push("1. Micronutrient density is a TOP priority. Pick whole foods that maximise vitamins and minerals — pay special attention to iron, calcium, magnesium, potassium, zinc, iodine, B12, folate, vitamin D and omega-3. Call out any micronutrient likely to fall short and suggest a fix.");
+    L.push("2. Fibre must be at least "+e.fiber+" g per day.");
+    L.push("3. Hit the protein and fat minimums every day and stay within the calorie goal.");
+    L.push("");
+    L.push("## Before building anything, ASK ME these questions and wait for my answers");
+    L.push("1. **Which country / region do I live in?** Use this to pull realistic, locally available products from the Open Food Facts database (openfoodfacts.org), and to know which major supermarket chains I can actually shop at.");
+    L.push("2. **What is my weekly food budget?** (tell me the currency and amount). Build the plan to fit it — do NOT default to expensive staples like salmon and beef on a tight budget. Scale the protein and fat sources to what the budget realistically allows.");
+    L.push("3. **What are my dietary preferences and restrictions?** For example: vegetarian, vegan, pescatarian, halal, kosher, any food allergies or intolerances, and foods I simply dislike.");
+    L.push("   - IMPORTANT: these preferences are completely separate from the calorie / macro style above. I might (for example) be vegan *and* carb cycling — the two are independent. Do not infer my restrictions from my calorie plan, and do not change my calorie plan because of my restrictions.");
+    L.push("");
+    L.push("## Then produce");
+    L.push("1. A meal plan that hits every target above"+(cycling?" for each day type":"")+", using products that actually exist in my country (cross-check against Open Food Facts).");
+    L.push("2. A consolidated weekly shopping list. For each item, note which major retailer(s) in my country stock it, with rough prices, and keep the total within my stated budget.");
+    L.push("3. A short summary of the micronutrient coverage and how the plan reaches at least "+e.fiber+" g of fibre per day.");
+    return L.join("\n");
+  }
+
   // ---- actual progress from the daily log ---------------------------------
   function progress(){
     if(logHistory.length===0) return {has:false};
@@ -1200,7 +1280,11 @@
       'protein &amp; fat targets come from your height. Goal calories = maintenance − the deficit to hit your date '+
       '(food deficit capped at '+MAX_FOOD_DEFICIT+' kcal, steps cover any more; ~'+KCAL_PER_KG.toLocaleString()+
       ' kcal per kg). These are estimates, not medical advice.</p>';
-    ec.innerHTML=head+'<div class="card">'+body+note+'</div>';
+    var promptBtn='<button type="button" id="mealPromptBtn" class="promptbtn">'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
+      '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>'+
+      '<span id="mealPromptLabel">Copy meal-plan prompt for AI</span></button>';
+    ec.innerHTML=head+'<div class="card">'+body+note+promptBtn+'</div>';
   }
 
   function render(){
@@ -1304,7 +1388,22 @@
     if(p){ state.pattern = p.dataset.pattern; persist(); render(); return; }
     var h = e.target.closest("[data-highdays]");
     if(h){ state.highDays = h.dataset.highdays; persist(); render(); return; }
+    var mp = e.target.closest("#mealPromptBtn");
+    if(mp){
+      var label=$("mealPromptLabel");
+      copyText(buildMealPlanPrompt(), function(ok){
+        mp.classList.add("done");
+        label.textContent = ok ? "Prompt copied — paste into any AI" : "Press Ctrl/Cmd+C to copy";
+        clearTimeout(promptTimer);
+        promptTimer = setTimeout(function(){
+          mp.classList.remove("done");
+          label.textContent = "Copy meal-plan prompt for AI";
+        }, 2200);
+      });
+      return;
+    }
   });
+  var promptTimer;
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
   copyBtn.addEventListener("click", function(){
