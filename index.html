@@ -210,6 +210,42 @@
   .modal .mbtn.cancel:hover{background:var(--accentSoft)}
   .modal .mbtn.confirm{background:#a8472f;border-color:#a8472f;color:#fff}
   .modal .mbtn.confirm:hover{filter:brightness(.94)}
+
+  /* main view tabs (projection / meal plan) */
+  .maintabs{display:flex;gap:4px;margin:0 0 18px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:5px}
+  .maintabs button{flex:1;border:none;background:transparent;color:var(--inkSoft);font-family:var(--sans);
+                   font-size:15px;font-weight:600;padding:11px 6px;border-radius:10px;cursor:pointer;transition:background .12s,color .12s}
+  .maintabs button:hover:not(.on){background:var(--bg)}
+  .maintabs button.on{background:var(--accentSoft);color:var(--accentDeep)}
+
+  /* meal plan import + render */
+  .mealta{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;border:1px solid var(--line);
+          border-radius:12px;padding:11px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;
+          font-size:13px;line-height:1.45;color:var(--ink);background:#fff}
+  .mealta:focus{outline:none;border-color:var(--accent)}
+  .mealmsg.err{color:#a8472f}
+  .mealmsg.ok{color:var(--accentDeep)}
+  .mpmeta{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .mpmeta .chip{background:var(--accentSoft);border:1px solid var(--line);border-radius:999px;
+                padding:6px 13px;font-weight:600;color:var(--accentDeep);font-size:13px}
+  .mpday-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  .mpday-head .t{font-family:var(--serif);font-size:19px;font-weight:600}
+  .mpday-head .c{font-size:12px;color:var(--inkSoft);font-weight:600;white-space:nowrap}
+  .mptot{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0 4px;font-size:12.5px;color:var(--inkSoft)}
+  .mptot b{color:var(--ink);font-weight:600}
+  .mpmeal{margin-top:10px}
+  .mpmeal-n{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--inkSoft);font-weight:600;margin-bottom:2px}
+  .mpitem{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid var(--line);font-size:14px}
+  .mpmeal .mpitem:first-of-type{border-top:none}
+  .mpitem .f{flex:1}
+  .mpitem .f .a{color:var(--inkSoft);font-size:12px}
+  .mpitem .m{color:var(--inkSoft);font-size:12px;white-space:nowrap;text-align:right}
+  .mpshop .ret{font-family:var(--serif);font-size:16px;font-weight:600;margin-top:12px}
+  .mprow{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid var(--line);font-size:14px}
+  .mprow .p{color:var(--inkSoft);white-space:nowrap}
+  .mptotal{display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:2px solid var(--line);font-weight:600}
+  .linkbtn.danger{color:#a8472f}
+  .linkbtn.danger:hover{background:#f7e9e3}
 </style>
 </head>
 <body>
@@ -226,6 +262,12 @@
     </div>
   </div>
 
+  <div class="maintabs" id="mainTabs" role="tablist">
+    <button type="button" data-view="projection" id="tabProjection" role="tab" aria-selected="true">Projection</button>
+    <button type="button" data-view="meal" id="tabMeal" role="tab" aria-selected="false">Meal plan</button>
+  </div>
+
+  <div id="projectionView">
   <div class="eyebrow">Projection</div>
   <h1>Weight Over Time</h1>
   <p class="sub">Losing the set % each week, compounding on your current weight.</p>
@@ -323,6 +365,23 @@
     device and you're asked again the next day. The shareable link carries your settings and full weight
     history — bookmark or share it to keep or move your data.
   </p>
+  </div><!-- /projectionView -->
+
+  <div id="mealView" hidden>
+    <div class="eyebrow">Meal plan</div>
+    <h1>Your Meal Plan</h1>
+    <p class="sub">Build a plan with the AI prompt from the Projection tab, then paste its JSON here to import and save it.</p>
+
+    <div class="card">
+      <div class="cardtitle">Import a plan</div>
+      <p class="sub" style="margin:2px 0 10px">Paste the JSON block the AI produced (the whole code block is fine). It’s saved on this device and travels in your shareable link.</p>
+      <textarea id="mealJson" class="mealta" spellcheck="false" placeholder="Paste the AI’s JSON here…"></textarea>
+      <button type="button" class="donebtn" id="mealImportBtn">Import plan</button>
+      <span class="hint mealmsg" id="mealImportMsg" hidden></span>
+    </div>
+
+    <div id="mealPlanCard"></div>
+  </div>
 </div>
 
 <div class="modal" id="confirmModal" hidden>
@@ -638,6 +697,52 @@
 
   // ---- settings (localStorage) + shareable link (URL incl. full history) --
   var LS_SETTINGS = "wp:settings";
+  var LS_MEAL     = "wp:mealplan";
+
+  // ---- meal plan: parse / validate / (de)serialise ------------------------
+  // A plan is whatever the LLM produced from the meal-plan prompt, parsed from
+  // its JSON. Rendering is defensive, so we only insist on a non-empty `days`
+  // list; everything else degrades gracefully.
+  function normalizeMealPlan(obj){
+    if(!obj || typeof obj!=="object" || Array.isArray(obj)) return null;
+    if(!Array.isArray(obj.days) || !obj.days.length) return null;
+    return obj;
+  }
+  // Pull a plan out of pasted text: prefer a ```json fenced block, else fall
+  // back to the outermost {...} so surrounding chat prose is tolerated.
+  function parsePastedPlan(raw){
+    if(!raw) return {ok:false, error:"Paste the JSON the AI produced first."};
+    var txt=raw, fence=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if(fence){ txt=fence[1]; }
+    else { var a=raw.indexOf("{"), b=raw.lastIndexOf("}"); if(a>=0 && b>a) txt=raw.slice(a,b+1); }
+    var obj;
+    try{ obj=JSON.parse(txt); }
+    catch(e){ return {ok:false, error:"That doesn’t look like valid JSON — copy the whole code block the AI gave you."}; }
+    var plan=normalizeMealPlan(obj);
+    if(!plan) return {ok:false, error:"JSON parsed, but it has no “days” list. Make sure you copied the plan block, not the questions."};
+    return {ok:true, plan:plan};
+  }
+  // URL-safe base64 so the plan can ride in the shareable link without the
+  // query string mangling +, / or = (and without unicode loss for food names).
+  function encodeMealPlan(plan){
+    try{
+      var b=btoa(unescape(encodeURIComponent(JSON.stringify(plan))));
+      return b.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+    }catch(e){ return ""; }
+  }
+  function decodeMealPlan(s){
+    try{
+      var b=String(s).replace(/-/g,"+").replace(/_/g,"/");
+      while(b.length%4) b+="=";
+      return normalizeMealPlan(JSON.parse(decodeURIComponent(escape(atob(b)))));
+    }catch(e){ return null; }
+  }
+  function saveMealPlan(){
+    try{
+      if(mealPlan) localStorage.setItem(LS_MEAL, JSON.stringify(mealPlan));
+      else localStorage.removeItem(LS_MEAL);
+    }catch(e){}
+  }
 
   function loadSettings(){
     try{ return JSON.parse(localStorage.getItem(LS_SETTINGS)||"null"); }catch(e){ return null; }
@@ -667,7 +772,7 @@
       if(!p.toString()) return null;
       return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
                sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"), highDays:p.get("highDays"),
-               curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log") };
+               curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log"), meal:p.get("meal") };
     }catch(e){ return null; }
   }
   // Add the body-metric params, omitting any that are empty to keep links tidy.
@@ -677,12 +782,17 @@
     if(s.curSteps) p.set("steps", s.curSteps);
     if(s.pattern && s.pattern!=="even"){ p.set("pattern", s.pattern); p.set("highDays", s.highDays); }
   }
+  // The imported meal plan, if any, rides along base64-encoded.
+  function addMealParam(p){
+    if(mealPlan){ var m=encodeMealPlan(mealPlan); if(m) p.set("meal", m); }
+  }
   function writeURL(s, hist){
     try{
       var p=new URLSearchParams();
       p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
       addBodyParams(p, s);
       if(hist && hist.length) p.set("log", encodeLog(hist));
+      addMealParam(p);
       history.replaceState(null, "", location.pathname + "?" + p.toString() + location.hash);
     }catch(e){}
   }
@@ -691,6 +801,7 @@
     p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
     addBodyParams(p, s);
     if(hist && hist.length) p.set("log", encodeLog(hist));
+    addMealParam(p);
     var base;
     try{
       base = (location.origin && location.origin !== "null")
@@ -765,6 +876,15 @@
   };
 
   var logHistory = [];                  // cached daily log [{date,weight}] ascending
+
+  // Imported meal plan. Like settings, a local copy wins; a shared link only
+  // seeds a device that has none yet.
+  var mealPlan = (function(){
+    try{ var ls=localStorage.getItem(LS_MEAL); if(ls){ var p=normalizeMealPlan(JSON.parse(ls)); if(p) return p; } }catch(e){}
+    if(urlData && urlData.meal){ var d=decodeMealPlan(urlData.meal); if(d) return d; }
+    return null;
+  })();
+
   function todayEntry(){
     for(var i=logHistory.length-1;i>=0;i--){ if(logHistory[i].date===todayStr) return logHistory[i]; }
     return null;
@@ -974,7 +1094,147 @@
     L.push("1. A meal plan that hits every target above"+(cycling?" for each day type":"")+", using products that actually exist in my country (cross-check against Open Food Facts).");
     L.push("2. A consolidated weekly shopping list. For each item, note which major retailer(s) in my country stock it, with rough prices, and keep the total within my stated budget.");
     L.push("3. A short summary of the micronutrient coverage and how the plan reaches at least "+e.fiber+" g of fibre per day.");
+    L.push("");
+    L.push("## Finally, output the plan as JSON so I can import it into my app");
+    L.push("Once I'm happy with the plan, print it once more as a single fenced ```json code block (nothing but JSON inside the fence) in exactly this shape. Use plain numbers for every kcal / macro / price field (no units inside the numbers — put units in the `amount` strings). Give per-day figures for each day type, and group the shopping list by retailer.");
+    L.push("```json");
+    L.push("{");
+    L.push('  "type": "weeks-until-show-meal-plan",');
+    L.push('  "version": 1,');
+    L.push('  "country": "<my country>",');
+    L.push('  "currency": "<ISO code, e.g. EUR>",');
+    L.push('  "weeklyBudget": 0,');
+    L.push('  "summary": "<one or two sentence overview>",');
+    L.push('  "days": [');
+    L.push('    {');
+    L.push('      "label": "<e.g. Every day, or High day>",');
+    L.push('      "perWeek": 7,');
+    L.push('      "meals": [');
+    L.push('        { "name": "<e.g. Breakfast>", "items": [');
+    L.push('          { "food": "<product>", "amount": "<e.g. 80 g>", "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0 }');
+    L.push('        ] }');
+    L.push('      ],');
+    L.push('      "totals": { "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0 }');
+    L.push('    }');
+    L.push('  ],');
+    L.push('  "shoppingList": [');
+    L.push('    { "retailer": "<store name>", "items": [ { "name": "<product>", "qty": "1", "price": 0 } ] }');
+    L.push('  ],');
+    L.push('  "micronutrients": "<note on coverage, any shortfalls, and how fibre hits the floor>"');
+    L.push("}");
+    L.push("```");
     return L.join("\n");
+  }
+
+  // ---- meal plan rendering ------------------------------------------------
+  // Everything here treats the plan as untrusted external data: all strings are
+  // HTML-escaped and every number is bounds-checked before display.
+  function esc(s){
+    return String(s==null?"":s).replace(/[&<>"]/g, function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c];
+    });
+  }
+  function mpInt(n){ return (typeof n==="number" && isFinite(n)) ? Math.round(n) : null; }
+  function fmtMoney(n, cur){
+    if(!isFinite(n)) return "";
+    var v=(Math.round(n*100)/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    return cur ? (esc(cur)+" "+v) : v;
+  }
+  // Prefer the plan's stated day totals; otherwise sum the meal items.
+  function dayTotals(day){
+    var keys=["kcal","protein","fat","carbs","fiber"], t=day.totals;
+    if(t && keys.some(function(k){ return isFinite(t[k]); })){
+      return {kcal:mpInt(t.kcal),protein:mpInt(t.protein),fat:mpInt(t.fat),carbs:mpInt(t.carbs),fiber:mpInt(t.fiber)};
+    }
+    var s={kcal:0,protein:0,fat:0,carbs:0,fiber:0}, any=false;
+    (day.meals||[]).forEach(function(m){ (m.items||[]).forEach(function(it){
+      keys.forEach(function(k){ if(isFinite(it[k])){ s[k]+=it[k]; any=true; } });
+    }); });
+    return any ? {kcal:Math.round(s.kcal),protein:Math.round(s.protein),fat:Math.round(s.fat),carbs:Math.round(s.carbs),fiber:Math.round(s.fiber)} : null;
+  }
+  function renderMealPlan(){
+    var host=$("mealPlanCard"); if(!host) return;
+    if(!mealPlan){ host.innerHTML=""; return; }
+    var p=mealPlan, H=[];
+
+    // overview + remove control
+    H.push('<div class="card">');
+    H.push('<div class="abouthead"><div class="cardtitle">Imported plan</div>'+
+           '<button type="button" class="linkbtn danger" id="mealClearBtn">Remove</button></div>');
+    var meta=[];
+    if(p.country) meta.push('<span class="chip">'+esc(p.country)+'</span>');
+    if(isFinite(p.weeklyBudget) && p.weeklyBudget>0) meta.push('<span class="chip">Budget '+fmtMoney(p.weeklyBudget,p.currency||"")+'/wk</span>');
+    if(meta.length) H.push('<div class="mpmeta">'+meta.join("")+'</div>');
+    if(p.summary) H.push('<p class="sub" style="margin-top:10px;white-space:pre-wrap">'+esc(p.summary)+'</p>');
+    H.push('</div>');
+
+    // one card per day type
+    (p.days||[]).forEach(function(d){
+      H.push('<div class="card">');
+      H.push('<div class="mpday-head"><span class="t">'+esc(d.label||"Day")+'</span>'+
+             (isFinite(d.perWeek)?'<span class="c">×'+esc(d.perWeek)+' / week</span>':'')+'</div>');
+      var t=dayTotals(d);
+      if(t){
+        var bits=['<span><b>'+t.kcal+'</b> kcal</span>','<span><b>'+t.protein+'</b> g protein</span>',
+                  '<span><b>'+t.fat+'</b> g fat</span>','<span><b>'+t.carbs+'</b> g carbs</span>'];
+        if(t.fiber!=null) bits.push('<span><b>'+t.fiber+'</b> g fibre</span>');
+        H.push('<div class="mptot">'+bits.join("")+'</div>');
+      }
+      (d.meals||[]).forEach(function(m){
+        H.push('<div class="mpmeal"><div class="mpmeal-n">'+esc(m.name||"Meal")+'</div>');
+        (m.items||[]).forEach(function(it){
+          var macro=[];
+          if(isFinite(it.kcal)) macro.push(Math.round(it.kcal)+' kcal');
+          var pf=[];
+          if(isFinite(it.protein)) pf.push('P'+Math.round(it.protein));
+          if(isFinite(it.fat))     pf.push('F'+Math.round(it.fat));
+          if(isFinite(it.carbs))   pf.push('C'+Math.round(it.carbs));
+          if(pf.length) macro.push(pf.join(' '));
+          H.push('<div class="mpitem"><div class="f">'+esc(it.food||it.name||"")+
+            (it.amount?' <span class="a">'+esc(it.amount)+'</span>':'')+'</div>'+
+            (macro.length?'<div class="m">'+esc(macro.join(' · '))+'</div>':'')+'</div>');
+        });
+        H.push('</div>');
+      });
+      H.push('</div>');
+    });
+
+    // shopping list grouped by retailer
+    if(Array.isArray(p.shoppingList) && p.shoppingList.length){
+      H.push('<div class="card mpshop"><div class="cardtitle">Shopping list</div>');
+      var grand=0, haveGrand=false, cur=p.currency||"";
+      p.shoppingList.forEach(function(g){
+        H.push('<div class="ret">'+esc(g.retailer||"Store")+'</div>');
+        (g.items||[]).forEach(function(it){
+          var priceTxt="";
+          if(isFinite(it.price)){ priceTxt=fmtMoney(it.price,cur); grand+=it.price; haveGrand=true; }
+          else if(it.price){ priceTxt=esc(it.price); }
+          H.push('<div class="mprow"><span>'+esc(it.name||"")+
+            (it.qty?' <span class="a" style="color:var(--inkSoft);font-size:12px">×'+esc(it.qty)+'</span>':'')+
+            '</span>'+(priceTxt?'<span class="p">'+priceTxt+'</span>':'')+'</div>');
+        });
+      });
+      if(haveGrand) H.push('<div class="mptotal"><span>Estimated total</span><span>'+fmtMoney(grand,cur)+'</span></div>');
+      H.push('</div>');
+    }
+
+    // micronutrient note
+    if(p.micronutrients){
+      H.push('<div class="card"><div class="cardtitle">Micronutrients &amp; fibre</div>'+
+             '<p class="sub" style="margin-top:6px;white-space:pre-wrap">'+esc(p.micronutrients)+'</p></div>');
+    }
+    host.innerHTML=H.join("");
+  }
+
+  // ---- main view tabs (projection / meal plan) ----------------------------
+  function setView(v){
+    var meal = v==="meal";
+    var pv=$("projectionView"), mv=$("mealView");
+    if(pv) pv.hidden=meal;
+    if(mv) mv.hidden=!meal;
+    var tp=$("tabProjection"), tm=$("tabMeal");
+    if(tp){ tp.classList.toggle("on", !meal); tp.setAttribute("aria-selected", String(!meal)); }
+    if(tm){ tm.classList.toggle("on", meal);  tm.setAttribute("aria-selected", String(meal)); }
   }
 
   // ---- actual progress from the daily log ---------------------------------
@@ -1320,14 +1580,17 @@
   // ---- persistence (settings + shareable URL) -----------------------------
   function persist(){
     saveSettings(state);
+    saveMealPlan();
     writeURL(state, logHistory);
   }
 
   // Wipe everything stored on this device and reset to a clean default state.
   function clearAllData(){
     return WeightLog.clear().then(function(){
-      try{ localStorage.removeItem(LS_SETTINGS); }catch(e){}
+      try{ localStorage.removeItem(LS_SETTINGS); localStorage.removeItem(LS_MEAL); }catch(e){}
       logHistory = [];
+      mealPlan = null;
+      renderMealPlan();
       state.weight  = "";
       state.pct     = "1";
       state.endDate = toDateStr(addDays(today,84));
@@ -1418,6 +1681,29 @@
     });
   });
 
+  // ---- meal plan tab: switch views, import, remove ------------------------
+  $("mainTabs").addEventListener("click", function(e){
+    var b=e.target.closest("[data-view]"); if(b) setView(b.dataset.view);
+  });
+  $("mealImportBtn").addEventListener("click", function(){
+    var ta=$("mealJson"), msg=$("mealImportMsg");
+    var res=parsePastedPlan(ta.value.trim());
+    if(!res.ok){
+      msg.hidden=false; msg.className="hint mealmsg err"; msg.textContent=res.error; return;
+    }
+    mealPlan=res.plan; persist(); renderMealPlan();
+    ta.value="";
+    msg.hidden=false; msg.className="hint mealmsg ok"; msg.textContent="Plan imported and saved to this device.";
+  });
+  // The plan card is re-rendered as innerHTML, so the remove button is bound
+  // by delegation on the stable container.
+  $("mealPlanCard").addEventListener("click", function(e){
+    if(e.target.closest("#mealClearBtn")){
+      mealPlan=null; persist(); renderMealPlan();
+      var msg=$("mealImportMsg"); if(msg) msg.hidden=true;
+    }
+  });
+
   // ---- menu + clear-data confirm ------------------------------------------
   var menuBtn=$("menuBtn"), menu=$("menu"), modal=$("confirmModal");
   function openMenu(){ menu.hidden=false; menuBtn.setAttribute("aria-expanded","true"); }
@@ -1445,6 +1731,8 @@
   // ---- init ---------------------------------------------------------------
   function init(){
     setInputs();
+    setView("projection");
+    renderMealPlan();                  // restore any saved / shared meal plan
     render();                          // settings + countdown visible immediately
 
     // Local history is the source of truth. A shared link only seeds a device
