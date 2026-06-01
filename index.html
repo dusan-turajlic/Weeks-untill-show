@@ -272,6 +272,13 @@
   .modal pre.fix{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
                  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;max-height:160px;overflow:auto;
                  white-space:pre-wrap;color:var(--inkSoft);margin:0 0 16px}
+  /* On-device build progress + WebGPU gating for the Path A button. */
+  .bld-bar{height:8px;background:var(--bg);border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:6px}
+  .bld-fill{height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .35s ease}
+  .bld-fill.indet{width:35%;animation:bldslide 1.2s ease-in-out infinite}
+  @keyframes bldslide{0%{margin-left:-35%}100%{margin-left:100%}}
+  #mealLocalBtn{display:none}
+  html[data-webgpu="1"] #mealLocalBtn{display:flex}
 </style>
 </head>
 <body>
@@ -449,6 +456,59 @@
     </div>
   </div>
 </div>
+
+<!-- On-device meal-plan wizard (Path A). Shown only when WebGPU is available. -->
+<div class="modal" id="wizModal" hidden>
+  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
+    <h2 id="wizTitle">Build a plan on this device</h2>
+    <p class="sub" style="margin:0 0 4px">Private — a small AI runs in your browser and picks foods; all the maths is done on-device. The model downloads the first time (a few hundred MB) and is cached after.</p>
+    <div id="wizForm">
+      <label class="field"><span class="flabel">Country</span>
+        <div class="ibox"><select id="wizCountry" style="flex:1;border:none;outline:none;background:transparent;font-size:18px;font-family:var(--serif);color:var(--ink);padding:11px 0"></select></div>
+      </label>
+      <label class="field"><span class="flabel">Weekly food budget</span>
+        <div class="ibox"><input id="wizBudget" type="number" inputmode="decimal" min="0" placeholder="70"><span class="suffix" id="wizCurr">EUR</span></div>
+      </label>
+      <label class="field"><span class="flabel">Dietary preferences / restrictions</span>
+        <div class="ibox"><input id="wizPrefs" type="text" placeholder="e.g. vegetarian, halal, no nuts (optional)"></div>
+      </label>
+      <label class="field"><span class="flabel">Meals per day</span>
+        <div class="seg" id="wizMeals" role="group">
+          <button type="button" data-meals="3" class="on">3 meals</button>
+          <button type="button" data-meals="4">4 meals</button>
+          <button type="button" data-meals="5">5 meals</button>
+          <button type="button" data-meals="2">2 meals</button>
+        </div>
+      </label>
+      <p class="hint" id="wizNote">Needs the country catalog to be reachable online the first time.</p>
+    </div>
+    <div class="actions">
+      <button type="button" class="mbtn cancel" id="wizCancel">Cancel</button>
+      <button type="button" class="mbtn go" id="wizStart">Build my plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- Build progress / result for the on-device path. -->
+<div class="modal" id="buildModal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="buildTitle">
+    <h2 id="buildTitle">Building your plan…</h2>
+    <div class="bld-bar"><div class="bld-fill" id="buildFill"></div></div>
+    <p id="buildStage" class="sub" style="margin:10px 0 0">Starting…</p>
+    <pre class="fix" id="buildErr" hidden></pre>
+    <div class="actions">
+      <button type="button" class="mbtn cancel" id="buildClose">Close</button>
+      <button type="button" class="mbtn go" id="buildRetry" hidden>Try again</button>
+    </div>
+  </div>
+</div>
+
+<!-- Meal-plan shared core (Phases 0–4): solver + catalog + on-device planner.
+     Classic scripts that expose window.YdinSolver / YdinFoodLookup / YdinPlanner.
+     Load before the app so the energy card can offer the on-device path. -->
+<script src="meal-plan/solver.js"></script>
+<script src="meal-plan/food-lookup.js"></script>
+<script src="meal-plan/planner.js"></script>
 
 <script>
 (function(){
@@ -1870,7 +1930,12 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
       '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>'+
       '<span id="mealPromptLabel">Copy meal-plan prompt for AI</span></button>';
-    ec.innerHTML=head+'<div class="card">'+body+note+promptBtn+'</div>';
+    // On-device path (Phase A). Hidden by CSS unless WebGPU was detected on init.
+    var localBtn='<button type="button" id="mealLocalBtn" class="promptbtn" style="margin-top:10px">'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
+      '<path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg>'+
+      '<span>Build a plan on this device (private)</span></button>';
+    ec.innerHTML=head+'<div class="card">'+body+note+promptBtn+localBtn+'</div>';
   }
 
   function render(){
@@ -2025,8 +2090,149 @@
       });
       return;
     }
+    if(e.target.closest("#mealLocalBtn")){ openWizard(); return; }
   });
   var promptTimer;
+
+  // ---- on-device meal plan (Path A) ---------------------------------------
+  // The on-device path reuses the exact same targets as the copy-prompt: the
+  // model only chooses foods; meal-plan/solver.js sizes every portion. Gated on
+  // WebGPU (see CSS html[data-webgpu]).
+  if(window.YdinFoodLookup && YdinFoodLookup.detectWebGPU){
+    YdinFoodLookup.detectWebGPU().then(function(has){
+      if(has) document.documentElement.dataset.webgpu = "1";
+    });
+  }
+
+  // Per-day-type targets for the solver — same maths as buildMealPlanPrompt().
+  function buildDayTargets(){
+    var e=energyPlan(); if(!e.valid) return null;
+    var bm=e.bm, hasGoal=isFinite(e.intake);
+    var cycling=hasGoal && e.macrosOk && state.pattern!=="even";
+    if(cycling){
+      var hd=parseInt(state.highDays,10)===1?1:2;
+      var cp=cyclePlan({protein:e.protein, weightKg:bm.weightKg, intake:e.intake, maint:bm.maint,
+                        pattern:state.pattern, highDays:hd, carbFloor:e.fiber, fatMin:e.fat,
+                        stepDeficit:e.stepDeficit, kcalPerStep:e.kcalPerStep});
+      return cp.days.map(function(d){
+        return {key:d.key, label:d.label+" day", count:d.count, perWeek:d.count,
+                kcal:Math.round(d.kcal), protein:Math.round(d.protein), fat:Math.round(d.fat),
+                carbs:Math.round(d.carbs), fiber:e.fiber};
+      });
+    }
+    return [{key:"even", label:"Every day", count:7, perWeek:7,
+             kcal:Math.round(isFinite(e.intake)?e.intake:bm.maint),
+             protein:Math.round(e.protein), fat:Math.round(e.fat),
+             carbs:Math.round(isFinite(e.carbs)?e.carbs:0), fiber:e.fiber}];
+  }
+
+  // A small, curated country list (catalog code + display name + currency).
+  var WIZ_COUNTRIES=[
+    ["fi","Finland","EUR"],["se","Sweden","SEK"],["no","Norway","NOK"],["dk","Denmark","DKK"],
+    ["gb","United Kingdom","GBP"],["ie","Ireland","EUR"],["de","Germany","EUR"],["fr","France","EUR"],
+    ["es","Spain","EUR"],["it","Italy","EUR"],["nl","Netherlands","EUR"],["be","Belgium","EUR"],
+    ["pl","Poland","PLN"],["pt","Portugal","EUR"],["us","United States","USD"],["ca","Canada","CAD"],
+    ["au","Australia","AUD"],["nz","New Zealand","NZD"]
+  ];
+  var wizMeals=3;
+  function openWizard(){
+    if(!buildDayTargets()){ alert("Add your details on the Projection tab first, so I have your targets."); return; }
+    var sel=$("wizCountry");
+    if(sel && !sel.options.length){
+      WIZ_COUNTRIES.forEach(function(c){
+        var o=document.createElement("option"); o.value=c[0]; o.textContent=c[1]; o.dataset.curr=c[2];
+        sel.appendChild(o);
+      });
+    }
+    syncCurrency();
+    $("wizModal").hidden=false;
+  }
+  function syncCurrency(){
+    var sel=$("wizCountry"), opt=sel && sel.options[sel.selectedIndex];
+    $("wizCurr").textContent = (opt && opt.dataset.curr) || "EUR";
+  }
+  $("wizCountry").addEventListener("change", syncCurrency);
+  $("wizMeals").addEventListener("click", function(e){
+    var b=e.target.closest("[data-meals]"); if(!b) return;
+    wizMeals=parseInt(b.getAttribute("data-meals"),10)||3;
+    [].forEach.call(this.querySelectorAll("button"), function(x){ x.classList.toggle("on", x===b); });
+  });
+  $("wizCancel").addEventListener("click", function(){ $("wizModal").hidden=true; });
+  $("wizModal").addEventListener("click", function(e){ if(e.target===this) this.hidden=true; });
+
+  // Session cache so repeat builds don't refetch the catalog/products.
+  var mpCache={_c:{}, get:function(k){return this._c[k];}, set:function(k,v){this._c[k]=v;}};
+
+  function setBuildProgress(stage, detail, pct){
+    var fill=$("buildFill"), st=$("buildStage");
+    if(st) st.textContent = detail || stage;
+    if(fill){
+      if(pct==null){ fill.classList.add("indet"); }
+      else { fill.classList.remove("indet"); fill.style.width=Math.max(2,Math.min(100,pct))+"%"; }
+    }
+  }
+  function showBuildError(msg){
+    var err=$("buildErr");
+    $("buildTitle").textContent="Couldn’t finish on-device";
+    setBuildProgress("error", "Stopped.", 0);
+    if(err){ err.hidden=false; err.textContent=msg; }
+    $("buildRetry").hidden=false;
+  }
+  $("buildClose").addEventListener("click", function(){ $("buildModal").hidden=true; });
+  var lastWizAnswers=null;
+  $("buildRetry").addEventListener("click", function(){ if(lastWizAnswers) runBuild(lastWizAnswers); });
+
+  $("wizStart").addEventListener("click", function(){
+    var sel=$("wizCountry"), opt=sel.options[sel.selectedIndex];
+    lastWizAnswers={
+      cc: sel.value, country: opt?opt.textContent:sel.value,
+      currency: (opt&&opt.dataset.curr)||"EUR",
+      weeklyBudget: parseFloat($("wizBudget").value)||0,
+      prefs: ($("wizPrefs").value||"").trim(),
+      mealsPerDay: wizMeals
+    };
+    $("wizModal").hidden=true;
+    runBuild(lastWizAnswers);
+  });
+
+  function runBuild(ans){
+    var dayTargets=buildDayTargets();
+    if(!dayTargets){ return; }
+    // reset modal
+    $("buildErr").hidden=true; $("buildRetry").hidden=true;
+    $("buildTitle").textContent="Building your plan…";
+    $("buildModal").hidden=false;
+    setBuildProgress("start","Starting…",null);
+
+    var io={ base:YdinFoodLookup.DEFAULT_BASE, cache:mpCache };
+    // Create the on-device model engine (WebGPU present at this point). If the
+    // model or its CDN can't load, the planner falls back to staple foods.
+    var engine=null;
+    try{ engine=YdinPlanner.createWebLLMEngine({ onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); } }); }
+    catch(err){ engine=null; }
+
+    YdinPlanner.buildPlan({
+      dayTargets:dayTargets, cc:ans.cc, country:ans.country, currency:ans.currency,
+      weeklyBudget:ans.weeklyBudget, prefs:ans.prefs, mealsPerDay:ans.mealsPerDay,
+      io:io, engine:engine,
+      onProgress:function(stage,detail){
+        var pctMap={catalog:15,choose:35,fetch:55,solve:75,assemble:90,done:100};
+        setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
+      }
+    }).then(function(plan){
+      var norm=normalizeMealPlan(plan);
+      if(!norm){ showBuildError("The plan came back without any days. Try again, or use the copy-prompt path."); return; }
+      mealPlan=norm; mealDay=0; mealEditor=null;
+      persist(); renderMealPlan();
+      setBuildProgress("done","Done — opening your plan.",100);
+      $("buildModal").hidden=true;
+      setView("meal");
+      setImportOk("On-device plan built and saved to this device.");
+    }).catch(function(err){
+      showBuildError((err && err.message) ? err.message :
+        "Something went wrong building on-device. The country catalog may be unreachable — the copy-prompt path always works.");
+    });
+  }
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
   copyBtn.addEventListener("click", function(){

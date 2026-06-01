@@ -62,6 +62,7 @@ Then open `http://localhost:8000`.
 | `sw.js` | Service worker — network-first for HTML, cache-first for assets |
 | `meal-plan/food-lookup.js` | Catalog module — WebGPU gate, country catalog load/search, product fetch, deterministic `buildMealTotals`, WebLLM tool surface |
 | `meal-plan/solver.js` | Deterministic portion solver — sizes grams to hit macro targets, verifies, reports failing constraints for the repair loop |
+| `meal-plan/planner.js` | On-device (Path A) orchestration — catalog → solver → import JSON, plus the optional in-browser WebLLM engine |
 | `docs/meal-plan-prompt.md` | Canonical meal-plan prompt, import JSON shape, and verified catalog/product data contracts |
 | `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` | App icons |
 | `apple-touch-icon.png` | iOS home-screen icon |
@@ -167,6 +168,7 @@ node test/offtrack.test.js     # on/off-track indicator
 node test/energy.test.js       # maintenance, macros, deficit cap & steps
 node test/solver.test.js       # deterministic meal-plan portion solver
 node test/foodlookup.test.js   # country catalog parse/search + buildMealTotals
+node test/planner.test.js      # on-device planner: catalog -> solver -> import JSON
 ```
 
 ## Meal planning
@@ -176,3 +178,13 @@ targets. The targets are fixed inputs — the model only **chooses foods and
 narrates**; all arithmetic and constraint-solving is deterministic code in
 `meal-plan/`. See [`docs/meal-plan-prompt.md`](docs/meal-plan-prompt.md) for the
 prompt, the import JSON shape, and the catalog/product data contracts.
+
+Two paths, offered from the **Calories & macros** section on the Projection tab:
+
+- **Copy prompt** — export the prompt (with your targets filled in) and run it in
+  any frontier LLM, then paste the JSON back. Always available; best quality.
+- **Build on this device** — when your browser has WebGPU, a small LLM runs
+  locally and privately: a short wizard asks for country, budget, dietary
+  preferences and meals/day, then the on-device planner picks foods from the
+  country catalog and the solver sizes every portion. Needs the country catalog
+  (`catalog.ydin.app`) reachable online the first time.

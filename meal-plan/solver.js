@@ -84,6 +84,7 @@
       AtA.push(new Array(m).fill(0));
       Atb.push(0);
     }
+    var maxDiag = 0;
     for (i = 0; i < m; i++) {
       var ci = activeCols[i];
       for (r = 0; r < rows; r++) Atb[i] += T[r][ci] * t[r];
@@ -93,7 +94,14 @@
         for (r = 0; r < rows; r++) s += T[r][ci] * T[r][cj];
         AtA[i][j] = s;
       }
+      if (AtA[i][i] > maxDiag) maxDiag = AtA[i][i];
     }
+    // Tikhonov (ridge) regularization: when there are more foods than targets the
+    // normal matrix is rank-deficient (many gram combos fit equally). A tiny λ on
+    // the diagonal makes it solvable and drives redundant foods toward 0 without
+    // perturbing a feasible solution (λ ≪ the real eigenvalues).
+    var lambda = (maxDiag > 0 ? maxDiag : 1) * 1e-6;
+    for (i = 0; i < m; i++) AtA[i][i] += lambda;
     return solveLinear(AtA, Atb);
   }
 

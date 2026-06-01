@@ -145,9 +145,12 @@
       totals.protein += num(m.proteins) * s;
       totals.fat += num(m.fat) * s;
       totals.carbs += num(m.carbohydrates) * s;
-      // fibre lives under minerals/macros in OFF? It's tracked in the catalog
-      // line; the product breakdown may carry it under macros or not at all.
-      if (m.fiber != null) { totals.fiber += num(m.fiber) * s; line.fiber = round(num(m.fiber) * s); }
+      // Fibre is tracked in the catalog index, not always in the product
+      // breakdown — use the product's macros.fiber if present, else the
+      // per-100 g fibre the caller passes through on the item (it.fiber100).
+      var fiber100 = m.fiber != null ? num(m.fiber)
+                   : (it.fiber100 != null ? num(it.fiber100) : 0);
+      if (fiber100) { totals.fiber += fiber100 * s; line.fiber = round(fiber100 * s); }
 
       MICRO_GROUPS.forEach(function (g) {
         var src = b[g] || {};

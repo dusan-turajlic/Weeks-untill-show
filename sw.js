@@ -10,7 +10,8 @@ const ASSETS = [
   "./icon-512.png",
   "./icon-maskable-512.png",
   "./meal-plan/food-lookup.js",
-  "./meal-plan/solver.js"
+  "./meal-plan/solver.js",
+  "./meal-plan/planner.js"
 ];
 
 self.addEventListener("install", (event) => {
