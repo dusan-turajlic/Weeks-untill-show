@@ -483,7 +483,7 @@
       <label class="field" style="display:flex;align-items:flex-start;gap:10px;margin-top:16px">
         <input type="checkbox" id="wizUseAI" style="margin-top:3px;width:18px;height:18px;flex:none">
         <span><span class="flabel" style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)">Use on-device AI to choose foods</span>
-        <span class="hint" style="margin-top:2px">Downloads a small model the first time (a few hundred MB), then runs privately in your browser. Leave off for an instant, reliable plan built from staple foods.</span></span>
+        <span class="hint" style="margin-top:2px">Picks and downloads a model that matches your device's GPU (a few hundred MB), then runs privately in your browser. If it can't start, your plan is still built from staple foods. Leave off for an instant plan. <span id="wizMobileWarn" hidden>On phones this often runs out of memory — leaving it off is recommended.</span></span></span>
       </label>
       <p class="hint" id="wizNote">Needs the country catalog to be reachable online the first time.</p>
     </div>
@@ -2150,6 +2150,7 @@
       });
     }
     syncCurrency();
+    try{ var env=YdinPlanner.browserEnv(); var w=$("wizMobileWarn"); if(w) w.hidden=!env.isMobile; }catch(e){}
     $("wizModal").hidden=false;
   }
   function syncCurrency(){
@@ -2167,6 +2168,12 @@
 
   // Session cache so repeat builds don't refetch the catalog/products.
   var mpCache={_c:{}, get:function(k){return this._c[k];}, set:function(k,v){this._c[k]=v;}};
+
+  // Models that stalled/failed on this device, persisted so "Try again" skips
+  // them and the selector walks to the next candidate (e.g. f16 -> f32 -> smaller).
+  var LS_BADMODELS="wp:mp:badmodels";
+  function loadBadModels(){ try{ var a=JSON.parse(localStorage.getItem(LS_BADMODELS)||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+  function blockModel(id){ if(!id) return; var a=loadBadModels(); if(a.indexOf(id)<0){ a.push(id); try{ localStorage.setItem(LS_BADMODELS, JSON.stringify(a)); }catch(e){} } }
 
   // True while an on-device build is running, so the global error handler below
   // can surface otherwise-uncaught failures (e.g. errors thrown inside the WebLLM
@@ -2232,10 +2239,18 @@
     // The on-device model is opt-in (it's a large download). Without it the plan
     // is built deterministically from staple foods + the solver. With it, the
     // model only chooses foods and the planner still falls back on any failure.
-    var engine=null;
+    // createWebLLMEngine picks a model that matches this device's WebGPU
+    // capabilities (shader-f16 / memory) from WebLLM's official list; currentModel
+    // records the pick so a stall can blocklist exactly that one before retry.
+    var engine=null, currentModel=null;
     if(ans.useAI){
-      try{ engine=YdinPlanner.createWebLLMEngine({ onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); } }); }
-      catch(err){ engine=null; }
+      try{
+        engine=YdinPlanner.createWebLLMEngine({
+          blocklist: loadBadModels(),
+          onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); },
+          onPick:function(id){ currentModel=id; }
+        });
+      }catch(err){ engine=null; }
     }
 
     YdinPlanner.buildPlan({
@@ -2243,7 +2258,7 @@
       weeklyBudget:ans.weeklyBudget, prefs:ans.prefs, mealsPerDay:ans.mealsPerDay,
       io:io, engine:engine,
       onProgress:function(stage,detail){
-        if(stage==="aiskip") aiSkipped=true;
+        if(stage==="aiskip"){ aiSkipped=true; blockModel(currentModel); } // skip this model next time
         var pctMap={catalog:15,choose:35,aiskip:40,fetch:55,solve:75,assemble:90,done:100};
         setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
       }
@@ -2257,8 +2272,8 @@
       $("buildModal").hidden=true;
       setView("meal");
       setImportOk(aiSkipped
-        ? "Plan built from staple foods — on-device AI couldn’t start on this device. You can retry, untick the AI option, or use the copy-prompt path."
-        : "On-device plan built and saved to this device.");
+        ? "Plan built from staple foods — on-device AI couldn’t start. Tap “Build a plan on this device” → Build again to try a different model for your device, or use the copy-prompt path."
+        : "On-device plan built and saved to this device"+(currentModel?" with "+currentModel+".":"."));
     }).catch(function(err){
       showBuildError((err && err.message) ? err.message :
         "Something went wrong building on-device. The country catalog may be unreachable — the copy-prompt path always works.");

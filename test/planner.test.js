@@ -120,6 +120,38 @@ planner.buildPlan({
     ok("fallback still builds a plan", plan2 && plan2.days && plan2.days.length === 2);
     ok("emits aiskip when engine fails", stages2.indexOf("aiskip") >= 0, stages2.join(","));
     ok("fallback plan hits protein", plan2.days[0].totals.protein >= 132, "got " + plan2.days[0].totals.protein);
+
+    // ---- device-aware model selection (pure) ----
+    console.log("\n== selectModel (device mapping) ==");
+    // Minimal stand-in for webllm.prebuiltAppConfig.model_list.
+    var ML = [
+      { model_id: "Llama-3.2-1B-Instruct-q4f16_1-MLC", vram_required_MB: 879, required_features: ["shader-f16"] },
+      { model_id: "Llama-3.2-1B-Instruct-q4f32_1-MLC", vram_required_MB: 1129 },
+      { model_id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", vram_required_MB: 1630, required_features: ["shader-f16"] },
+      { model_id: "Qwen2.5-1.5B-Instruct-q4f32_1-MLC", vram_required_MB: 1889 },
+      { model_id: "Qwen2.5-0.5B-Instruct-q4f32_1-MLC", vram_required_MB: 1060 },
+      { model_id: "Llama-3.2-3B-Instruct-q4f16_1-MLC", vram_required_MB: 2264, required_features: ["shader-f16"],
+        buffer_size_required_bytes: 600000000 },
+      { model_id: "Llama-3.2-3B-Instruct-q4f32_1-MLC", vram_required_MB: 2951 }
+    ];
+    var f16 = { shaderF16: true, features: ["shader-f16"], maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 30 };
+    var nof16 = { shaderF16: false, features: [], maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 30 };
+
+    ok("shader-f16 device -> f16 model",
+       planner.selectModel(ML, f16, { budgetMB: 6000 }) === "Llama-3.2-1B-Instruct-q4f16_1-MLC");
+    ok("no shader-f16 -> f32 model (the Apple/Arc fix)",
+       planner.selectModel(ML, nof16, { budgetMB: 6000 }) === "Llama-3.2-1B-Instruct-q4f32_1-MLC");
+    ok("blocklisting the f16 pick walks to f32 of same base",
+       planner.selectModel(ML, f16, { budgetMB: 6000, blocklist: ["Llama-3.2-1B-Instruct-q4f16_1-MLC"] }) === "Llama-3.2-1B-Instruct-q4f32_1-MLC");
+    ok("tiny VRAM budget skips bigger models, picks the smallest that fits",
+       planner.selectModel(ML, nof16, { budgetMB: 1100 }) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
+    ok("buffer limit excludes a model that needs a bigger binding",
+       planner.selectModel(ML, { shaderF16: true, features: ["shader-f16"], maxStorageBufferBindingSize: 500000000, maxBufferSize: 1 << 30 },
+         { budgetMB: 6000, preference: ["Llama-3.2-3B-Instruct"] }) === "Llama-3.2-3B-Instruct-q4f32_1-MLC");
+    ok("returns null when nothing fits",
+       planner.selectModel(ML, nof16, { budgetMB: 100 }) === null);
+    ok("budget is tighter on mobile than desktop",
+       planner.computeBudgetMB({ isMobile: true }) < planner.computeBudgetMB({ isMobile: false, deviceMemory: 8 }));
   });
 }).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");

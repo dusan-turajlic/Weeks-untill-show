@@ -134,5 +134,26 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
   foods)` sizes grams to hit the four macro targets, `verify` reports failing
   constraints for the repair loop, `mealTotals` sums them. The model is
   forbidden from doing this arithmetic.
+- **`planner.js`** — Path A orchestration (catalog → solver → import JSON) plus
+  the optional in-browser WebLLM engine.
+
+## On-device model selection (Path A)
+
+The on-device model only *names foods* — a trivial task — so the planner favours
+small, fast, reliable models and maps them to the device's actual WebGPU
+capabilities instead of hardcoding one model:
+
+- `detectGpuCaps()` reads the WebGPU adapter: the `shader-f16` feature, the
+  storage-buffer limits, and the feature list.
+- `selectModel(modelList, caps, opts)` walks a smallest-first preference list
+  over WebLLM's official `prebuiltAppConfig.model_list`, trying `q4f16_1` then
+  `q4f32_1` — **or only `q4f32_1` when the GPU lacks `shader-f16`** (common on
+  Apple GPUs in Chromium, and the root cause of the "Cannot pass non-string to
+  std::string" failure with f16 models). It also rejects any model whose
+  `buffer_size_required_bytes` exceeds the adapter limits or whose
+  `vram_required_MB` exceeds a device budget (tighter on mobile).
+- A 40s stall watchdog aborts a hung/failed load to the deterministic staple
+  plan, and a persisted blocklist makes a model that stalled get skipped on the
+  next attempt — so retrying walks f16 → f32 → smaller automatically.
 
 Tests: `node test/foodlookup.test.js`, `node test/solver.test.js`.

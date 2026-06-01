@@ -306,18 +306,103 @@
   // loads when the user starts an on-device build. Returns an engine with the
   // minimal, structured calls buildPlan needs.
   var WEBLLM_CDN = "https://esm.run/@mlc-ai/web-llm";
-  var DEFAULT_MODEL = "Llama-3.2-3B-Instruct-q4f16_1-MLC";
-  var FALLBACK_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
   // If model init makes no progress for this long, treat it as stuck and bail to
   // the deterministic staple plan. WebLLM can hang on some GPUs (e.g. Apple) with
   // an internal "Cannot pass non-string to std::string" while its load promise
   // never settles — the watchdog is the escape hatch.
   var STALL_MS = 40000;
 
+  // Preferred model bases, smallest-first. The model only NAMES foods (a trivial
+  // task), so a 1B is plenty — favour fast, low-memory, reliable downloads, and
+  // let the adaptive blocklist walk down to even smaller ones. Each base exists in
+  // both q4f16_1 (needs shader-f16) and q4f32_1 (no shader-f16) variants.
+  var MODEL_PREFERENCE = [
+    "Llama-3.2-1B-Instruct",
+    "Qwen2.5-1.5B-Instruct",
+    "Qwen2.5-0.5B-Instruct",
+    "Llama-3.2-3B-Instruct",
+    "Qwen2.5-3B-Instruct",
+    "SmolLM2-360M-Instruct",
+    "TinyLlama-1.1B-Chat-v1.0"
+  ];
+
+  // Detect what this device's WebGPU adapter actually supports. The decisive
+  // signal is the `shader-f16` feature: q4f16 models REQUIRE it (Apple GPUs in
+  // Chromium often lack it — the likely root of the std::string failure). Also
+  // surface the storage-buffer limits so we never pick a model the GPU can't bind.
+  function detectGpuCaps() {
+    if (typeof navigator === "undefined" || !navigator.gpu) return Promise.resolve(null);
+    return navigator.gpu.requestAdapter().then(function (adapter) {
+      if (!adapter) return null;
+      var feats = [];
+      try { adapter.features.forEach(function (f) { feats.push(f); }); } catch (e) {}
+      var lim = adapter.limits || {};
+      var info = adapter.info || {};
+      return {
+        shaderF16: feats.indexOf("shader-f16") >= 0,
+        features: feats,
+        maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize || 0,
+        maxBufferSize: lim.maxBufferSize || 0,
+        vendor: (info.vendor || "") + "", architecture: (info.architecture || "") + ""
+      };
+    }).catch(function () { return null; });
+  }
+
+  // Rough VRAM budget (MB). WebGPU exposes no VRAM figure, so use system memory as
+  // a proxy (spec-capped at 8 GB) and a tight cap on mobile, where big models OOM
+  // and crash the tab.
+  function browserEnv() {
+    var nav = typeof navigator !== "undefined" ? navigator : {};
+    var ua = nav.userAgent || "";
+    var isMobile = /Mobi|Android|iPhone|iPod/i.test(ua) || /iPad/i.test(ua) ||
+                   (/Macintosh/.test(ua) && (nav.maxTouchPoints || 0) > 1);
+    return { isMobile: isMobile, deviceMemory: nav.deviceMemory || 0 };
+  }
+  function computeBudgetMB(env) {
+    env = env || {};
+    if (env.isMobile) return 1300;
+    var dm = env.deviceMemory || 4; // GB
+    return Math.max(1500, Math.min(dm, 8) * 700);
+  }
+
+  // Pure, testable: choose the best model_id from WebLLM's prebuilt list for a
+  // device's capabilities. Walks MODEL_PREFERENCE, trying f16 then f32 (or only
+  // f32 without shader-f16), and applies the feature / buffer / VRAM / blocklist
+  // gates. Returns null if nothing fits.
+  function selectModel(modelList, caps, opts) {
+    opts = opts || {}; caps = caps || {};
+    var prefs = opts.preference || MODEL_PREFERENCE;
+    var blocklist = opts.blocklist || [];
+    var budget = opts.budgetMB || 0;
+    var feats = caps.features || [];
+    var quants = (caps.shaderF16 && !opts.preferF32) ? ["q4f16_1", "q4f32_1"] : ["q4f32_1"];
+    var byId = {};
+    (modelList || []).forEach(function (m) { byId[m.model_id] = m; });
+
+    for (var i = 0; i < prefs.length; i++) {
+      for (var j = 0; j < quants.length; j++) {
+        var id = prefs[i] + "-" + quants[j] + "-MLC";
+        var rec = byId[id];
+        if (!rec || blocklist.indexOf(id) >= 0) continue;
+        if (/q4f16/.test(id) && !caps.shaderF16) continue;             // f16 needs shader-f16
+        if (rec.required_features && !rec.required_features.every(function (f) {
+              return f === "shader-f16" ? caps.shaderF16 : feats.indexOf(f) >= 0;
+            })) continue;
+        if (rec.buffer_size_required_bytes) {                          // GPU must be able to bind it
+          if (caps.maxStorageBufferBindingSize && rec.buffer_size_required_bytes > caps.maxStorageBufferBindingSize) continue;
+          if (caps.maxBufferSize && rec.buffer_size_required_bytes > caps.maxBufferSize) continue;
+        }
+        if (budget && rec.vram_required_MB && rec.vram_required_MB > budget) continue;
+        return id;
+      }
+    }
+    return null;
+  }
+
   function createWebLLMEngine(options) {
     options = options || {};
     var onProgress = options.onProgress || function () {};
-    var model = options.model || DEFAULT_MODEL;
+    var chosenModel = null;
 
     // Lazy: the heavy WebLLM code + model only download when a method is first
     // called (i.e. after the catalog has loaded), never on Path B / no-WebGPU.
@@ -343,11 +428,21 @@
             Math.round((p && p.progress || 0) * 100) + "%"));
         }
         import(/* webpackIgnore: true */ WEBLLM_CDN).then(function (webllm) {
-          function start(m) { return webllm.CreateMLCEngine(m, { initProgressCallback: progress }); }
-          return start(model).catch(function () {
-            onProgress("download", "Falling back to a smaller model…");
+          return detectGpuCaps().then(function (caps) {
+            var budgetMB = computeBudgetMB(browserEnv());
+            var list = webllm.prebuiltAppConfig && webllm.prebuiltAppConfig.model_list;
+            var picked = options.model || selectModel(list, caps, {
+              blocklist: options.blocklist || [], preferF32: options.preferF32, budgetMB: budgetMB
+            });
+            if (!picked) {
+              throw new Error("No on-device model fits this device" +
+                (caps && !caps.shaderF16 ? " (no shader-f16 support; tried 32-bit models)" : "") + ".");
+            }
+            chosenModel = picked;
             lastTick = Date.now();
-            return start(FALLBACK_MODEL);
+            if (options.onPick) { try { options.onPick(picked, caps); } catch (e) {} }
+            onProgress("download", "Preparing " + picked + "…");
+            return webllm.CreateMLCEngine(picked, { initProgressCallback: progress });
           });
         }).then(function (engine) { finish(true, engine); },
                 function (err) { finish(false, err); });
@@ -401,6 +496,7 @@
         }).catch(function () { return ""; });
       },
       warm: function () { return load().then(function () { return true; }); },
+      getModel: function () { return chosenModel; },
       dispose: function () { return load().then(function (e) { return e.unload && e.unload(); }).catch(function(){}); }
     };
   }
@@ -408,12 +504,16 @@
   var api = {
     buildPlan: buildPlan,
     createWebLLMEngine: createWebLLMEngine,
+    selectModel: selectModel,
+    detectGpuCaps: detectGpuCaps,
+    computeBudgetMB: computeBudgetMB,
+    browserEnv: browserEnv,
+    MODEL_PREFERENCE: MODEL_PREFERENCE,
     browserBrotli: browserBrotli,
     DEFAULT_STAPLES: DEFAULT_STAPLES,
     macroRow: macroRow,
     splitIntoMeals: splitIntoMeals,
-    gatherFoods: gatherFoods,
-    DEFAULT_MODEL: DEFAULT_MODEL
+    gatherFoods: gatherFoods
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
