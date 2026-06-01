@@ -86,17 +86,34 @@
                  : String(s == null ? "" : s).toLowerCase();
   }
 
+  // Cooking methods / quality adjectives a model adds to a food name that aren't
+  // in the catalog entry — dropped before matching so "grilled chicken breast"
+  // still finds "Chicken breast" instead of scoring zero.
+  var MATCH_STOP = {
+    grilled: 1, cooked: 1, raw: 1, fresh: 1, steamed: 1, boiled: 1, baked: 1, roasted: 1,
+    fried: 1, "pan-fried": 1, sauteed: 1, sautéed: 1, poached: 1, smoked: 1,
+    organic: 1, skinless: 1, boneless: 1, chopped: 1, sliced: 1, diced: 1, minced: 1,
+    a: 1, an: 1, of: 1, the: 1, with: 1, and: 1, "in": 1, or: 1
+  };
+
   function scoreMatch(rec, q) {
     var hay = normalize(rec.name) + " " + normalize(rec.brand);
     if (!q) return 0;
-    var terms = q.split(/\s+/).filter(Boolean), score = 0;
+    var all = q.split(/\s+/).filter(Boolean);
+    var terms = all.filter(function (t) { return !MATCH_STOP[t]; });
+    if (!terms.length) terms = all;          // query was all filler — keep it
+    var score = 0, matched = 0;
     for (var i = 0; i < terms.length; i++) {
       var t = terms[i], idx = hay.indexOf(t);
-      if (idx < 0) return 0;                 // every term must appear
+      if (idx < 0) continue;                 // partial match allowed (not every term)
+      matched++;
       score += 10;
       if (idx === 0) score += 6;             // prefix bonus
       else if (hay[idx - 1] === " ") score += 4; // word-start bonus
     }
+    if (!matched) return 0;                  // but at least one content term must hit
+    score += matched * 4;                    // prefer matching more of the query
+    if (terms.length >= 2 && matched / terms.length < 0.5) score -= 6; // weak 1-of-many hit
     score -= Math.min(8, hay.length / 40);   // gently prefer shorter names
     return score;
   }

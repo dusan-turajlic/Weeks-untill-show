@@ -130,7 +130,7 @@ function run() {
       var designEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: mealJSON }) }, fast));
       return planner.buildPlan({
         dayTargets: [{ key: "low", label: "Low day", count: 7, kcal: 1444, protein: 135, fat: 68, carbs: 74, fiber: 35 }],
-        country: "Finland", prefs: "", tastes: "Mediterranean", breakfast: "savory", mealsPerDay: 3,
+        country: "Finland", prefs: "", breakfast: "savory", mealsPerDay: 3,
         io: { catalog: catalog, fetch: fakeFetch }, engine: designEngine
       }).then(function (mp) {
         var d0 = mp.days[0];
@@ -147,6 +147,46 @@ function run() {
         ok("layout: day still hits protein target", d0.totals.protein >= 130, "got " + d0.totals.protein);
         ok("layout: per-meal totals sum to the day total",
            Math.abs(d0.meals.reduce(function (a, m) { return a + m.totals.protein; }, 0) - d0.totals.protein) <= 2);
+      }).then(function () {
+        // 5) Diet-aware repair: a vegetarian whose meals are protein-short must get
+        //    a PLANT protein bolted on, NEVER chicken — even though chicken is the
+        //    richest protein in the catalog.
+        var VC = [
+          ["t1", "Tofu", "B", "fi", 100, "g", 1.5, 1.9, 8, 15],
+          ["t2", "Chicken breast", "F", "fi", 100, "g", 0, 0, 3.6, 31],
+          ["t3", "Spinach", "G", "fi", 100, "g", 2.2, 3.6, 0.4, 2.9],
+          ["t4", "Oats", "M", "fi", 100, "g", 10, 66, 7, 13],
+          ["t5", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0]
+        ].map(function (a) { return JSON.stringify(a); }).join("\n");
+        var VP = {
+          t1: { product_name: "Tofu", breakdown: { macros: { energy_kcal: 144, proteins: 15, fat: 8, carbohydrates: 1.9 } } },
+          t2: { product_name: "Chicken breast", breakdown: { macros: { energy_kcal: 165, proteins: 31, fat: 3.6, carbohydrates: 0 } } },
+          t3: { product_name: "Spinach", breakdown: { macros: { energy_kcal: 23, proteins: 2.9, fat: 0.4, carbohydrates: 3.6 } } },
+          t4: { product_name: "Oats", breakdown: { macros: { energy_kcal: 389, proteins: 13, fat: 7, carbohydrates: 66 } } },
+          t5: { product_name: "Olive oil", breakdown: { macros: { energy_kcal: 884, proteins: 0, fat: 100, carbohydrates: 0 } } }
+        };
+        function vfetch(url) {
+          var m = url.match(/products\/(\w+)\.json$/);
+          return Promise.resolve(m && VP[m[1]] ? { ok: true, status: 200, json: function () { return Promise.resolve(VP[m[1]]); } } : { ok: false, status: 404 });
+        }
+        var vegJSON = ['{"meals":[',
+          '{"name":"Breakfast","foods":["oats","spinach"]},',
+          '{"name":"Lunch","foods":["spinach","olive oil"]},',
+          '{"name":"Dinner","foods":["oats","spinach","olive oil"]}',
+          ']}'];
+        var vegEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: vegJSON }) }, fast));
+        return planner.buildPlan({
+          dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 110, fat: 55, carbs: 150, fiber: 35 }],
+          country: "Finland", prefs: "vegetarian", breakfast: "savory", mealsPerDay: 3,
+          io: { catalog: fl.parseCatalog(VC), fetch: vfetch }, engine: vegEngine
+        }).then(function (vp) {
+          var foods = [];
+          vp.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { foods.push(it.food); }); });
+          ok("veg: no chicken anywhere (diet-aware repair)",
+             foods.every(function (f) { return !/chicken/i.test(f); }), foods.join("|"));
+          ok("veg: a plant protein (tofu) was used instead",
+             foods.some(function (f) { return /tofu/i.test(f); }), foods.join("|"));
+        });
       });
     });
   });

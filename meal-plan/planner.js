@@ -146,7 +146,7 @@
   // (protein + carbs + fat + fibre), never one tiny food. `mealCodes[mi]` is the
   // list of catalog codes the model put in meal mi. Snacks get a lighter share.
   // Returns { meals, totals, estimated, unmet, gramsByCode }.
-  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds) {
+  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs) {
     var weights = names.map(function (nm) { return /snack/i.test(nm) ? 0.6 : 1; });
     var totalW = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
     var outMeals = [], unmet = [], estimated = false, gramsByCode = {};
@@ -158,16 +158,21 @@
         fat: (dayTarget.fat || 0) * w, carbs: (dayTarget.carbs || 0) * w,
         fiber: (dayTarget.fiber || 35) * w
       };
-      var codes = (mealCodes[mi] || []).slice();
-      if (!codes.length) return;
-      var foods = codes.map(function (c) { return macroRow(recsByCode[c], products[c]); });
+      // Drop foods with no usable macros (blank catalog line + failed product
+      // fetch) — they'd otherwise show as a 0-kcal "food" the solver inflates.
+      var codes = [], foods = [];
+      (mealCodes[mi] || []).forEach(function (c) {
+        var f = macroRow(recsByCode[c], products[c]);
+        if (num(f.protein) + num(f.fat) + num(f.carbs) > 0.5) { codes.push(c); foods.push(f); }
+      });
+      if (!foods.length) return;
 
-      // Solve this meal; if a macro is short, add a macro-rich food to THIS meal.
+      // Solve this meal; if a macro is short, add a DIET-APPROPRIATE food to it.
       var res = SOLVER.solvePortions(sub, foods);
       for (var r = 0; r < repairRounds && !res.ok; r++) {
         var added = false;
         res.failed.forEach(function (fc) {
-          var q = REPAIR_QUERY[fc.constraint]; if (!q) return;
+          var q = repairQueries(fc.constraint, prefs); if (!q.length) return;
           var extra = gatherFoods(catalog, q).filter(function (rec) { return codes.indexOf(rec.code) < 0; });
           extra.forEach(function (rec) {
             codes.push(rec.code);
@@ -296,7 +301,7 @@
       var selectP;
       if (opts.engine && opts.engine.suggestMeals) {
         selectP = Promise.resolve(opts.engine.suggestMeals({
-            dayTargets: opts.dayTargets, prefs: opts.prefs, tastes: opts.tastes,
+            dayTargets: opts.dayTargets, prefs: opts.prefs,
             breakfast: opts.breakfast, country: opts.country,
             mealsPerDay: nMeals, mealNames: mealNames
           })).then(function (design) {
@@ -349,7 +354,7 @@
           var days = opts.dayTargets.map(function (target) {
             if (layout) {
               var d = assembleLayoutDay(target, layout.names, layout.mealCodes, products,
-                                        catalog, recsByCode, repairRounds);
+                                        catalog, recsByCode, repairRounds, opts.prefs);
               if (d.unmet.length) unmet.push.apply(unmet, d.unmet);
               return {
                 label: target.label || "Every day",
@@ -360,13 +365,14 @@
             }
 
             // Flat fallback (engine-less / suggestFoods): solve the whole day.
-            var foods = recs.map(function (r) { return macroRow(r, products[r.code]); });
+            var foods = recs.map(function (r) { return macroRow(r, products[r.code]); })
+              .filter(function (f) { return num(f.protein) + num(f.fat) + num(f.carbs) > 0.5; });
             var res = SOLVER.solvePortions(target, foods);
             for (var round = 0; round < repairRounds && !res.ok; round++) {
               var added = false;
               res.failed.forEach(function (fc) {
-                var q = REPAIR_QUERY[fc.constraint];
-                if (!q) return;
+                var q = repairQueries(fc.constraint, opts.prefs);
+                if (!q.length) return;
                 var extra = gatherFoods(catalog, q).filter(function (r) { return !foodHas(foods, r.code); });
                 extra.forEach(function (r) { foods.push(macroRow(r, products[r.code])); });
                 if (extra.length) added = true;
@@ -439,13 +445,42 @@
     return false;
   }
 
-  // Foods to search for when a given constraint can't be met with the current pool.
-  var REPAIR_QUERY = {
-    protein: ["chicken breast", "whey protein", "egg whites", "tuna", "tofu"],
-    fat: ["olive oil", "almonds", "peanut butter"],
-    carbs: ["white rice", "potato", "banana", "pasta"],
-    fiber: ["psyllium husk", "wheat bran", "lentils", "chia seeds", "black beans"]
+  // Foods to search for when a constraint can't be met. Each is tagged so repair
+  // can RESPECT the diet — never bolt chicken/fish/dairy onto a vegetarian/vegan
+  // meal. Plant options are listed first so even unrestricted plans lean healthy
+  // rather than defaulting to meat.
+  var REPAIR_FOODS = {
+    protein: [
+      { q: "tofu", tags: ["soy"] }, { q: "lentils", tags: [] }, { q: "chickpeas", tags: [] },
+      { q: "greek yogurt", tags: ["dairy"] }, { q: "whey protein", tags: ["dairy"] },
+      { q: "eggs", tags: ["egg"] }, { q: "tuna", tags: ["fish"] }, { q: "chicken breast", tags: ["meat"] }
+    ],
+    fat: [ { q: "olive oil", tags: [] }, { q: "almonds", tags: ["nut"] }, { q: "peanut butter", tags: ["nut"] } ],
+    carbs: [ { q: "brown rice", tags: [] }, { q: "oats", tags: [] }, { q: "potato", tags: [] }, { q: "banana", tags: [] } ],
+    fiber: [ { q: "lentils", tags: [] }, { q: "black beans", tags: [] }, { q: "chia seeds", tags: [] },
+             { q: "psyllium husk", tags: [] }, { q: "wheat bran", tags: [] } ]
   };
+  // Which food tags a free-text preferences string forbids.
+  function dietBans(prefs) {
+    var p = (prefs || "").toLowerCase(), b = {};
+    if (/\bvegan\b/.test(p)) { b.meat = b.fish = b.dairy = b.egg = 1; }
+    else if (/\bvegetarian\b/.test(p)) { b.meat = b.fish = 1; }
+    else if (/\bpescatarian\b/.test(p)) { b.meat = 1; }
+    if (/no\s+(meat|chicken|poultry)/.test(p)) b.meat = 1; // (specific meats like "no pork" still allow poultry)
+    if (/no\s+(fish|seafood|shellfish)/.test(p)) b.fish = 1;
+    if (/no\s+dairy|dairy[- ]?free|lactose/.test(p)) b.dairy = 1;
+    if (/no\s+egg|egg[- ]?free/.test(p)) b.egg = 1;
+    if (/no\s+(nut|peanut|almond)|nut[- ]?free/.test(p)) b.nut = 1;
+    if (/no\s+soy|soy[- ]?free/.test(p)) b.soy = 1;
+    return b;
+  }
+  // Repair queries for a constraint, filtered to what the diet allows.
+  function repairQueries(constraint, prefs) {
+    var bans = dietBans(prefs);
+    return (REPAIR_FOODS[constraint] || []).filter(function (f) {
+      return !f.tags.some(function (t) { return bans[t]; });
+    }).map(function (f) { return f.q; });
+  }
 
   // ---- browser-only: WebLLM engine ----------------------------------------
   // Dynamically imports @mlc-ai/web-llm (CDN ESM) so the heavy model code only
@@ -693,9 +728,9 @@
     }
 
     return {
-      // Design DISTINCT meals (which foods go in each meal), honouring the user's
-      // cuisines/tastes/breakfast style. The model only names foods per meal — the
-      // solver sizes portions afterwards.
+      // Design balanced meals (which foods go in each meal), honouring the user's
+      // breakfast style and dietary restrictions. The model only names foods per
+      // meal — the solver sizes portions afterwards.
       suggestMeals: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var names = (ctx.mealNames && ctx.mealNames.length) ? ctx.mealNames : [];
@@ -708,14 +743,13 @@
           "ingredient or a lone nibble (no meal that is just 'almonds'). A snack may be smaller but " +
           "still combines 2–3 foods. (2) Maximise MICRONUTRIENT density and health: lean on leafy " +
           "greens, colourful vegetables, legumes, whole grains, fish, eggs and dairy, and VARY the " +
-          "foods across meals for broad vitamin/mineral coverage. (3) Make each meal a coherent dish " +
-          "in the user's cuisines/tastes — foods that genuinely go together. (4) Respect dietary " +
-          "restrictions strictly. (5) Use 3–5 whole-food ingredients per meal. (6) You ONLY name " +
-          "foods — no amounts, no numbers, no arithmetic (portions are computed separately). " +
+          "foods across meals for broad vitamin/mineral coverage. (3) Make each meal a coherent dish — " +
+          "foods that genuinely go together. (4) Respect dietary restrictions strictly. (5) Use 3–5 " +
+          "whole-food ingredients per meal. (6) You ONLY name foods — no amounts, no numbers, no " +
+          "arithmetic (portions are computed separately). " +
           "Output ONLY JSON, no prose or code fences: " +
           "{\"meals\":[{\"name\":\"" + (names[0] || "Breakfast") + "\",\"foods\":[\"food\",\"food\",\"food\"]}, …]}";
         var usr = "Country: " + (ctx.country || "unknown") + "\n" +
-          "Cuisines / foods I love: " + (ctx.tastes || "no strong preference") + "\n" +
           "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" +
           "Dietary restrictions / allergies (strict): " + (ctx.prefs || "none") + "\n" +
           "Meals to design: " + (names.length ? names.join(", ") : (n + " meals")) + "\n" +

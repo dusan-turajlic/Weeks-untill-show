@@ -44,7 +44,9 @@ console.log("\n== search ==");
 var milk = fl.searchFoods(cat, "milk", 10);
 ok("'milk' returns candidates", milk.length === 2, "len=" + milk.length);
 ok("'milk' candidates are milks", milk.every(function (r) { return /milk/i.test(r.name); }));
-ok("multi-term 'whole milk' narrows to one", fl.searchFoods(cat, "whole milk").length === 1);
+ok("multi-term 'whole milk' ranks the exact one first", fl.searchFoods(cat, "whole milk")[0].name === "Whole milk");
+ok("descriptive 'grilled whole milk' still finds it (cooking words ignored)",
+   (fl.searchFoods(cat, "grilled whole milk")[0] || {}).name === "Whole milk");
 ok("no match returns empty", fl.searchFoods(cat, "zzzz").length === 0);
 
 // ---- buildMealTotals ----

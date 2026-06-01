@@ -469,9 +469,6 @@
       <label class="field"><span class="flabel">Dietary preferences / restrictions</span>
         <div class="ibox"><input id="wizPrefs" type="text" placeholder="e.g. vegetarian, halal, no nuts (optional)"></div>
       </label>
-      <label class="field"><span class="flabel">Cuisines &amp; foods you love</span>
-        <div class="ibox"><input id="wizTastes" type="text" placeholder="e.g. Thai &amp; Italian, love eggs and oats, not into fish"></div>
-      </label>
       <label class="field"><span class="flabel">Breakfast style</span>
         <div class="seg" id="wizBreakfast" role="group">
           <button type="button" data-bf="savory" class="on">Savory</button>
@@ -2222,7 +2219,6 @@
     lastWizAnswers={
       cc: sel.value, country: opt?opt.textContent:sel.value,
       prefs: ($("wizPrefs").value||"").trim(),
-      tastes: ($("wizTastes").value||"").trim(),
       breakfast: wizBreakfast,
       mealsPerDay: wizMeals
     };
@@ -2261,7 +2257,7 @@
 
       YdinPlanner.buildPlan({
         dayTargets:dayTargets, cc:ans.cc, country:ans.country,
-        prefs:ans.prefs, tastes:ans.tastes, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
+        prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
         io:io, engine:engine,
         onProgress:function(stage,detail){
           var pctMap={catalog:12,choose:30,fetch:60,solve:80,assemble:92,done:100};
