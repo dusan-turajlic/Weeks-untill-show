@@ -301,10 +301,10 @@
   <div class="hero">
     <div class="hero-main">
       <span class="num" id="weeksLeft">—</span>
-      <span class="lbl">weeks left</span>
+      <span class="lbl" id="weeksLbl">weeks left</span>
     </div>
     <div class="hero-date">
-      <span class="cap">until</span>
+      <span class="cap" id="heroCap">until</span>
       <span class="dval" id="targetDate">—</span>
     </div>
   </div>
@@ -1882,8 +1882,21 @@
     var phaseT=(endD && !isNaN(endD)) ? (endD-startD)/WEEK_MS : NaN;
     var phaseN=(isFinite(phaseT) && phaseT>=0) ? Math.floor(phaseT) : null;
 
-    $("weeksLeft").textContent  = wl!=null ? wl : "—";
-    $("targetDate").textContent = wl!=null ? prettyDate(state.endDate) : "—";
+    // Before the phase begins the deficit hasn't started, so the hero counts
+    // down to the start date instead of the end date.
+    var notStarted = startD.getTime() > today.getTime();
+    var weeksToStart = Math.floor((startD - today)/WEEK_MS);
+    if(notStarted){
+      $("weeksLeft").textContent  = weeksToStart;
+      $("weeksLbl").textContent   = weeksToStart===1 ? "week until diet starts" : "weeks until diet starts";
+      $("heroCap").textContent    = "starts";
+      $("targetDate").textContent = prettyDate(state.startDate);
+    } else {
+      $("weeksLeft").textContent  = wl!=null ? wl : "—";
+      $("weeksLbl").textContent   = wl===1 ? "week left" : "weeks left";
+      $("heroCap").textContent    = "until";
+      $("targetDate").textContent = wl!=null ? prettyDate(state.endDate) : "—";
+    }
     $("resDate").textContent    = prettyDate(state.endDate);
     $("finalW").textContent   = c.valid ? fmt(c.final)   : "—";
     $("lostW").textContent    = c.valid ? fmt(c.lost)    : "—";

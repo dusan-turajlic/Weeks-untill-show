@@ -8,7 +8,8 @@ dependencies.
 ## What it does
 
 - **Weeks-left countdown** — pick an end date and see how many whole weeks remain
-  from today.
+  from today. If your start date is in the future, the headline instead counts
+  down to it ("X weeks until diet starts") so you know the deficit hasn't begun.
 - **Your plan, set once** — pick your weekly loss percentage, a **start date**
   (when the phase begins, defaulting to today) and an end date. Like "About you",
   the plan collapses to a summary chip after you confirm it the first time, so
