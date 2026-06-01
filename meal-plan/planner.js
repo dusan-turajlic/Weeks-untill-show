@@ -311,6 +311,13 @@
   // an internal "Cannot pass non-string to std::string" while its load promise
   // never settles — the watchdog is the escape hatch.
   var STALL_MS = 40000;
+  // Once the model has loaded, generation must also make progress. WebLLM can
+  // finish loading ("Finish loading on WebGPU - …") and then hang on the very
+  // first generation on some GPUs (notably Apple) — emitting no tokens and never
+  // settling. We stream the reply so each token is a heartbeat; if none arrives
+  // for this long we interrupt and reject, which drops to the staple plan and
+  // blocklists this model so "Build again" walks to the next one.
+  var GEN_STALL_MS = 25000;
 
   // Preferred model bases, smallest-first. The model only NAMES foods (a trivial
   // task), so a 1B is plenty — favour fast, low-memory, reliable downloads, and
@@ -403,6 +410,15 @@
     options = options || {};
     var onProgress = options.onProgress || function () {};
     var chosenModel = null;
+    // Overridable timeouts + a WebLLM injection seam, so the streaming/watchdog
+    // logic is unit-testable in Node without the real CDN import or a GPU.
+    var loadStallMs = options.stallMs || STALL_MS;
+    var genStallMs = options.genStallMs || GEN_STALL_MS;
+    var pollMs = options.pollMs || 2000;
+    function importWebLLM() {
+      if (options.webllm) return Promise.resolve(options.webllm);
+      return import(/* webpackIgnore: true */ WEBLLM_CDN);
+    }
 
     // Lazy: the heavy WebLLM code + model only download when a method is first
     // called (i.e. after the catalog has loaded), never on Path B / no-WebGPU.
@@ -418,16 +434,16 @@
           ok ? resolve(val) : reject(val);
         }
         watch = setInterval(function () {
-          if (Date.now() - lastTick > STALL_MS) {
+          if (Date.now() - lastTick > loadStallMs) {
             finish(false, new Error("On-device AI stalled while loading the model on this device."));
           }
-        }, 2000);
+        }, pollMs);
         function progress(p) {
           lastTick = Date.now();
           onProgress("download", p && p.text ? p.text : ("Downloading model… " +
             Math.round((p && p.progress || 0) * 100) + "%"));
         }
-        import(/* webpackIgnore: true */ WEBLLM_CDN).then(function (webllm) {
+        importWebLLM().then(function (webllm) {
           return detectGpuCaps().then(function (caps) {
             var budgetMB = computeBudgetMB(browserEnv());
             var list = webllm.prebuiltAppConfig && webllm.prebuiltAppConfig.model_list;
@@ -450,17 +466,66 @@
       return loadP;
     }
 
-    function chatJSON(system, user, schema) {
+    // Stream a chat completion with a no-token stall watchdog. We deliberately do
+    // NOT pass response_format:{type:"json_object"}: the grammar-constrained path
+    // is what hangs on some GPUs after load. Streaming gives a per-token heartbeat
+    // so a truly stuck generation rejects (and is interrupted) instead of spinning
+    // forever; callers parse JSON leniently from the returned text.
+    function streamChat(engine, messages, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve, reject) {
+        var text = "", settled = false, lastTok = Date.now(), watch;
+        function finish(err) {
+          if (settled) return;
+          settled = true;
+          clearInterval(watch);
+          try { if (engine.interruptGenerate) engine.interruptGenerate(); } catch (e) {}
+          err ? reject(err) : resolve(text);
+        }
+        watch = setInterval(function () {
+          if (Date.now() - lastTok > genStallMs) {
+            finish(new Error("On-device AI produced no output (stalled after loading)."));
+          }
+        }, pollMs);
+        Promise.resolve().then(function () {
+          return engine.chat.completions.create({
+            messages: messages,
+            temperature: opts.temperature == null ? 0.4 : opts.temperature,
+            max_tokens: opts.max_tokens || 600,
+            stream: true
+          });
+        }).then(function (stream) {
+          var it = stream[Symbol.asyncIterator] ? stream[Symbol.asyncIterator]() : stream;
+          (function pump() {
+            it.next().then(function (res) {
+              if (settled) return;
+              if (res.done) { finish(null); return; }
+              lastTok = Date.now();
+              var d = res.value && res.value.choices && res.value.choices[0] && res.value.choices[0].delta;
+              if (d && d.content) text += d.content;
+              pump();
+            }, finish);
+          })();
+        }, finish);
+      });
+    }
+
+    // Lenient JSON: small models often wrap the object in prose or a code fence,
+    // so fall back to the first {...} span before giving up.
+    function parseLooseJSON(txt) {
+      if (!txt) return {};
+      try { return JSON.parse(txt); } catch (e) {}
+      var a = txt.indexOf("{"), b = txt.lastIndexOf("}");
+      if (a >= 0 && b > a) { try { return JSON.parse(txt.slice(a, b + 1)); } catch (e) {} }
+      return {};
+    }
+
+    function chatJSON(system, user) {
       return load().then(function (engine) {
-        return engine.chat.completions.create({
-          messages: [{ role: "system", content: system }, { role: "user", content: user }],
-          temperature: 0.4,
-          response_format: { type: "json_object" },
-          max_tokens: 600
-        }).then(function (r) {
-          var txt = r.choices && r.choices[0] && r.choices[0].message.content || "{}";
-          try { return JSON.parse(txt); } catch (e) { return {}; }
-        });
+        return streamChat(engine, [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ], { temperature: 0.4, max_tokens: 600 }).then(parseLooseJSON);
       });
     }
 
@@ -469,7 +534,8 @@
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var sys = "You are a nutritionist choosing real, locally available whole foods. " +
           "Respect the user's dietary preferences strictly. You DO NOT do any arithmetic — " +
-          "only name foods. Reply as JSON: {\"foods\": [\"food name\", ...]} with 10–16 foods " +
+          "only name foods. Output ONLY a JSON object, no prose or code fences: " +
+          "{\"foods\": [\"food name\", ...]} with 10–16 foods " +
           "spanning protein, healthy fats, slow carbs and high-fibre items.";
         var usr = "Country: " + (ctx.country || "unknown") + "\n" +
           "Dietary preferences/restrictions: " + (ctx.prefs || "none") + "\n" +
@@ -487,11 +553,10 @@
         var usr = "Country: " + (meta.country || "") + ". Preferences: " + (meta.prefs || "none") +
           ". Day types: " + (meta.dayTargets || []).map(function (d) { return d.label; }).join(", ") + ".";
         return load().then(function (engine) {
-          return engine.chat.completions.create({
-            messages: [{ role: "system", content: sys }, { role: "user", content: usr }],
-            temperature: 0.6, max_tokens: 80
-          }).then(function (r) {
-            return (r.choices && r.choices[0] && r.choices[0].message.content || "").trim();
+          return streamChat(engine, [
+            { role: "system", content: sys }, { role: "user", content: usr }
+          ], { temperature: 0.6, max_tokens: 80 }).then(function (txt) {
+            return (txt || "").trim();
           });
         }).catch(function () { return ""; });
       },
