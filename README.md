@@ -60,6 +60,9 @@ Then open `http://localhost:8000`.
 | `index.html` | The entire app — markup, styles, and logic |
 | `manifest.webmanifest` | PWA metadata (name, icons, theme, display mode) |
 | `sw.js` | Service worker — network-first for HTML, cache-first for assets |
+| `meal-plan/food-lookup.js` | Catalog module — WebGPU gate, country catalog load/search, product fetch, deterministic `buildMealTotals`, WebLLM tool surface |
+| `meal-plan/solver.js` | Deterministic portion solver — sizes grams to hit macro targets, verifies, reports failing constraints for the repair loop |
+| `docs/meal-plan-prompt.md` | Canonical meal-plan prompt, import JSON shape, and verified catalog/product data contracts |
 | `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` | App icons |
 | `apple-touch-icon.png` | iOS home-screen icon |
 
@@ -160,6 +163,16 @@ push the end date out for a gentler plan.
 Pure logic is covered by dependency-free Node tests:
 
 ```bash
-node test/offtrack.test.js   # on/off-track indicator
-node test/energy.test.js     # maintenance, macros, deficit cap & steps
+node test/offtrack.test.js     # on/off-track indicator
+node test/energy.test.js       # maintenance, macros, deficit cap & steps
+node test/solver.test.js       # deterministic meal-plan portion solver
+node test/foodlookup.test.js   # country catalog parse/search + buildMealTotals
 ```
+
+## Meal planning
+
+The app can build an LLM-assisted meal plan around your computed calorie/macro
+targets. The targets are fixed inputs — the model only **chooses foods and
+narrates**; all arithmetic and constraint-solving is deterministic code in
+`meal-plan/`. See [`docs/meal-plan-prompt.md`](docs/meal-plan-prompt.md) for the
+prompt, the import JSON shape, and the catalog/product data contracts.

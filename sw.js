@@ -1,6 +1,6 @@
 // Weight Projection — service worker
 // Bump CACHE_VERSION when you change any cached asset.
-const CACHE_VERSION = "wp-v3";
+const CACHE_VERSION = "wp-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -8,7 +8,9 @@ const ASSETS = [
   "./apple-touch-icon.png",
   "./icon-192.png",
   "./icon-512.png",
-  "./icon-maskable-512.png"
+  "./icon-maskable-512.png",
+  "./meal-plan/food-lookup.js",
+  "./meal-plan/solver.js"
 ];
 
 self.addEventListener("install", (event) => {
