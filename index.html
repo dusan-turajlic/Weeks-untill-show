@@ -455,6 +455,7 @@
   "use strict";
   var WEEK_MS = 7*24*60*60*1000;
   var DAY_MS  = 24*60*60*1000;
+  var DEFAULT_PHASE_WEEKS = 16;       // default phase length; end date follows the start by this much
 
   // ---- energy / macro constants & formulas --------------------------------
   var LB_TO_KG = 0.45359237, KG_TO_LB = 1/LB_TO_KG, IN_TO_CM = 2.54;
@@ -911,7 +912,7 @@
     weight: "",                          // today's logged weight (filled on init)
     pct:    pick("pct",  "1"),
     startDate:pick("start", todayStr),   // when the dieting phase begins (defaults to today)
-    endDate:pick("end",  toDateStr(addDays(today,84))),
+    endDate:pick("end",  toDateStr(addDays(today,DEFAULT_PHASE_WEEKS*7))),
     unit:   pick("unit", "kg"),
     sex:    pick("sex", ""),             // "male" | "female" | "neutral"
     height: pick("height", ""),          // cm (kg unit) or in (lb unit), like weight
@@ -1925,7 +1926,7 @@
       state.weight  = "";
       state.pct     = "1";
       state.startDate = todayStr;
-      state.endDate = toDateStr(addDays(today,84));
+      state.endDate = toDateStr(addDays(today,DEFAULT_PHASE_WEEKS*7));
       state.unit    = "kg";
       state.sex     = "";
       state.height  = "";
@@ -1965,7 +1966,14 @@
     if(cleaned !== elCurSteps.value) elCurSteps.value = cleaned;
     state.curSteps = cleaned; persist(); render();
   });
-  elStart.addEventListener("input", function(){ state.startDate = elStart.value; setInputs(); persist(); render(); });
+  elStart.addEventListener("input", function(){
+    state.startDate = elStart.value;
+    // Moving the start date carries the end date with it, keeping the default
+    // 16-week phase length.
+    var s = state.startDate ? new Date(state.startDate+"T00:00:00") : null;
+    if(s && !isNaN(s)) state.endDate = toDateStr(addDays(s, DEFAULT_PHASE_WEEKS*7));
+    setInputs(); persist(); render();
+  });
   elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; persist(); render(); });
   elPlanEdit.addEventListener("click", function(){ planOpen=true; setPlan(); });
   elPlanDone.addEventListener("click", function(){
