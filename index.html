@@ -461,13 +461,10 @@
 <div class="modal" id="wizModal" hidden>
   <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
     <h2 id="wizTitle">Build a plan on this device</h2>
-    <p class="sub" style="margin:0 0 4px">Private — a small in-browser AI picks foods from your country's food catalog and the on-device solver sizes every portion. Nothing leaves this device. The model (a few hundred MB) downloads once, then runs locally; the first build can take a minute or so.</p>
+    <p class="sub" style="margin:0 0 4px">Private — an in-browser AI picks foods from your country's catalog and the on-device solver sizes every portion to hit your macro &amp; fibre targets. Nothing leaves this device. This plan is <strong>nutrition-only — it is not price-aware</strong> (an offline model can't know current prices); for a budget- and price-based plan, use <strong>Copy prompt</strong> instead. The model downloads once (up to a few GB) and runs locally, so the first build can take several minutes.</p>
     <div id="wizForm">
       <label class="field"><span class="flabel">Country</span>
         <div class="ibox"><select id="wizCountry" style="flex:1;border:none;outline:none;background:transparent;font-size:18px;font-family:var(--serif);color:var(--ink);padding:11px 0"></select></div>
-      </label>
-      <label class="field"><span class="flabel">Weekly food budget</span>
-        <div class="ibox"><input id="wizBudget" type="number" inputmode="decimal" min="0" placeholder="70"><span class="suffix" id="wizCurr">EUR</span></div>
       </label>
       <label class="field"><span class="flabel">Dietary preferences / restrictions</span>
         <div class="ibox"><input id="wizPrefs" type="text" placeholder="e.g. vegetarian, halal, no nuts (optional)"></div>
@@ -480,7 +477,7 @@
           <button type="button" data-meals="2">2 meals</button>
         </div>
       </label>
-      <p class="hint" id="wizNote">Needs the catalog and the model to be reachable online the first time. <span id="wizMobileWarn" hidden>Heads up: on phones the model can run out of memory — a laptop/desktop is more reliable.</span></p>
+      <p class="hint" id="wizNote">Needs the catalog and the model to be reachable online the first time. The plan hits your nutrition targets but does not price the shopping list. <span id="wizMobileWarn" hidden>Heads up: the bigger model can run out of memory on phones — a laptop/desktop is more reliable.</span></p>
     </div>
     <div class="actions">
       <button type="button" class="mbtn cancel" id="wizCancel">Cancel</button>
@@ -1268,14 +1265,14 @@
     L.push("");
     L.push("## Before building anything, ASK ME these questions and wait for my answers");
     L.push("1. **Which country / region do I live in?** Use this to pull realistic, locally available products from the Open Food Facts database (openfoodfacts.org), and to know which major supermarket chains I can actually shop at.");
-    L.push("2. **What is my weekly food budget?** (tell me the currency and amount). Build the plan to fit it — do NOT default to expensive staples like salmon and beef on a tight budget. Scale the protein and fat sources to what the budget realistically allows.");
+    L.push("2. **What is my weekly food budget?** (tell me the currency and amount). Build the plan to fit it, and base costs on CURRENT, real local prices — look them up (web search / the retailers' present pricing); do NOT guess from memory or use outdated figures. Do NOT default to expensive staples like salmon and beef on a tight budget; scale the protein and fat sources to what the budget realistically allows today.");
     L.push("3. **What are my dietary preferences and restrictions?** For example: vegetarian, vegan, pescatarian, halal, kosher, any food allergies or intolerances, and foods I simply dislike.");
     L.push("   - IMPORTANT: these preferences are completely separate from the calorie / macro style above. I might (for example) be vegan *and* carb cycling — the two are independent. Do not infer my restrictions from my calorie plan, and do not change my calorie plan because of my restrictions.");
     L.push("4. **How many meals per day do I want?** (e.g. 3 main meals, or 4–5 smaller ones). Split each day's calories and macros across exactly that many meals.");
     L.push("");
     L.push("## Then produce");
     L.push("1. A meal plan that hits every target above"+(cycling?" for each day type":"")+", split into the number of meals I asked for, using products that actually exist in my country (cross-check against Open Food Facts).");
-    L.push("2. A consolidated weekly shopping list. For each item, note which major retailer(s) in my country stock it, with rough prices, and keep the total within my stated budget.");
+    L.push("2. A consolidated weekly shopping list. For each item, note which major retailer(s) in my country stock it, with current real prices (look them up — don't estimate from old knowledge), and keep the total within my stated budget.");
     L.push("3. A short summary of the micronutrient coverage and how the plan reaches at least "+e.fiber+" g of fibre per day.");
     L.push("");
     L.push("## Finally, output the plan as JSON so I can import it into my app");
@@ -2144,15 +2141,9 @@
         sel.appendChild(o);
       });
     }
-    syncCurrency();
     try{ var env=YdinPlanner.browserEnv(); var w=$("wizMobileWarn"); if(w) w.hidden=!env.isMobile; }catch(e){}
     $("wizModal").hidden=false;
   }
-  function syncCurrency(){
-    var sel=$("wizCountry"), opt=sel && sel.options[sel.selectedIndex];
-    $("wizCurr").textContent = (opt && opt.dataset.curr) || "EUR";
-  }
-  $("wizCountry").addEventListener("change", syncCurrency);
   $("wizMeals").addEventListener("click", function(e){
     var b=e.target.closest("[data-meals]"); if(!b) return;
     wizMeals=parseInt(b.getAttribute("data-meals"),10)||3;
@@ -2211,10 +2202,10 @@
 
   $("wizStart").addEventListener("click", function(){
     var sel=$("wizCountry"), opt=sel.options[sel.selectedIndex];
+    // On-device is nutrition-only: no budget/currency (an offline model can't
+    // know prices — that lives in the copy-prompt path).
     lastWizAnswers={
       cc: sel.value, country: opt?opt.textContent:sel.value,
-      currency: (opt&&opt.dataset.curr)||"EUR",
-      weeklyBudget: parseFloat($("wizBudget").value)||0,
       prefs: ($("wizPrefs").value||"").trim(),
       mealsPerDay: wizMeals
     };
@@ -2252,8 +2243,8 @@
       }catch(err){ showBuildError(aiErr); return; }
 
       YdinPlanner.buildPlan({
-        dayTargets:dayTargets, cc:ans.cc, country:ans.country, currency:ans.currency,
-        weeklyBudget:ans.weeklyBudget, prefs:ans.prefs, mealsPerDay:ans.mealsPerDay,
+        dayTargets:dayTargets, cc:ans.cc, country:ans.country,
+        prefs:ans.prefs, mealsPerDay:ans.mealsPerDay,
         io:io, engine:engine,
         onProgress:function(stage,detail){
           var pctMap={catalog:12,choose:30,fetch:60,solve:80,assemble:92,done:100};

@@ -147,12 +147,15 @@ planner.buildPlan({
     var f16 = { shaderF16: true, features: ["shader-f16"], maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 30 };
     var nof16 = { shaderF16: false, features: [], maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 30 };
 
-    ok("shader-f16 device -> f16 model",
-       planner.selectModel(ML, f16, { budgetMB: 6000 }) === "Llama-3.2-1B-Instruct-q4f16_1-MLC");
-    ok("no shader-f16 -> f32 model (the Apple/Arc fix)",
-       planner.selectModel(ML, nof16, { budgetMB: 6000 }) === "Llama-3.2-1B-Instruct-q4f32_1-MLC");
+    ok("shader-f16 device -> biggest model that fits, in f16",
+       planner.selectModel(ML, f16, { budgetMB: 6000 }) === "Llama-3.2-3B-Instruct-q4f16_1-MLC");
+    ok("no shader-f16 -> biggest that fits, in f32 (the Apple/Arc fix)",
+       planner.selectModel(ML, nof16, { budgetMB: 6000 }) === "Llama-3.2-3B-Instruct-q4f32_1-MLC");
+    ok("snug budget degrades to a smaller base",
+       planner.selectModel(ML, nof16, { budgetMB: 2000 }) === "Qwen2.5-1.5B-Instruct-q4f32_1-MLC");
     ok("blocklisting the f16 pick walks to f32 of same base",
-       planner.selectModel(ML, f16, { budgetMB: 6000, blocklist: ["Llama-3.2-1B-Instruct-q4f16_1-MLC"] }) === "Llama-3.2-1B-Instruct-q4f32_1-MLC");
+       planner.selectModel(ML, f16, { budgetMB: 6000, preference: ["Llama-3.2-3B-Instruct"],
+         blocklist: ["Llama-3.2-3B-Instruct-q4f16_1-MLC"] }) === "Llama-3.2-3B-Instruct-q4f32_1-MLC");
     ok("tiny VRAM budget skips bigger models, picks the smallest that fits",
        planner.selectModel(ML, nof16, { budgetMB: 1100 }) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
     ok("buffer limit excludes a model that needs a bigger binding",
@@ -162,6 +165,17 @@ planner.buildPlan({
        planner.selectModel(ML, nof16, { budgetMB: 100 }) === null);
     ok("budget is tighter on mobile than desktop",
        planner.computeBudgetMB({ isMobile: true }) < planner.computeBudgetMB({ isMobile: false, deviceMemory: 8 }));
+    ok("desktop budget is generous enough for a ~7B in f16 (>=5200 MB)",
+       planner.computeBudgetMB({ isMobile: false, deviceMemory: 8 }) >= 5200);
+
+    // MODEL_PREFERENCE must be biggest-first (capable models before tiny ones) and
+    // free of the variants that break a short JSON reply.
+    var P = planner.MODEL_PREFERENCE;
+    ok("preference leads with a capable model (7B/8B)", /-(7|8)B/i.test(P[0]) || /7B|8B/.test(P[0]), P[0]);
+    ok("preference is biggest-first (7B before any 1B)",
+       P.findIndex(function (m) { return /7B|8B/.test(m); }) < P.findIndex(function (m) { return /(^|[^.])1B/.test(m) || /0\.5B/.test(m); }));
+    ok("preference excludes Coder/Math/Vision/Base/R1 variants",
+       P.every(function (m) { return !/Coder|Math|Vision|[-_]Base|R1|Distill/i.test(m); }), P.join(","));
   });
 }).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");

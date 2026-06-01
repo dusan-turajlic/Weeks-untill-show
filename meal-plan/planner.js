@@ -133,14 +133,15 @@
 
   // Build a shopping list grouped by brand (a stand-in "retailer" — real
   // retailer names + prices are Phase 5's web-search layer; here prices are
-  // left at 0 and flagged in the summary).
+  // not priced — on-device has no price data, so we omit price entirely rather
+  // than show a misleading 0 (the UI then renders no price and no total).
   function shoppingList(solvedFoods, recsByCode) {
     var groups = {};
     solvedFoods.filter(function (f) { return f.grams >= 5; }).forEach(function (f) {
       var rec = recsByCode[f.code] || {};
       var retailer = rec.brand || "Local supermarket";
       (groups[retailer] = groups[retailer] || []).push({
-        name: f.name, qty: Math.round(f.grams) + " g", price: 0
+        name: f.name, qty: Math.round(f.grams) + " g", price: null
       });
     });
     return Object.keys(groups).map(function (r) { return { retailer: r, items: groups[r] }; });
@@ -334,18 +335,23 @@
   // and try the next one.
   var GEN_STALL_MS = 60000;
 
-  // Preferred model bases, smallest-first. The model only NAMES foods (a trivial
-  // task), so a 1B is plenty — favour fast, low-memory, reliable downloads, and
-  // let the adaptive blocklist walk down to even smaller ones. Each base exists in
-  // both q4f16_1 (needs shader-f16) and q4f32_1 (no shader-f16) variants.
+  // Preferred model bases, BIGGEST-capable-first. Tiny models choose foods
+  // incoherently, so we pick the most capable model that fits the device's VRAM
+  // budget and walk DOWN only as needed (selectModel + the runtime blocklist do
+  // the degrading). Only clean general instruct chat models — deliberately NOT
+  // the Coder/Math/Vision/Base variants or the R1 distills (those emit long
+  // <think> traces that wreck our short JSON reply). Each base exists in both
+  // q4f16_1 (needs shader-f16) and q4f32_1 (no shader-f16); VRAM figures below are
+  // the f16 / f32 requirements from WebLLM's prebuiltAppConfig.
   var MODEL_PREFERENCE = [
-    "Llama-3.2-1B-Instruct",
-    "Qwen2.5-1.5B-Instruct",
-    "Qwen2.5-0.5B-Instruct",
-    "Llama-3.2-3B-Instruct",
-    "Qwen2.5-3B-Instruct",
-    "SmolLM2-360M-Instruct",
-    "TinyLlama-1.1B-Chat-v1.0"
+    "Qwen2.5-7B-Instruct",    // 5107 / 5900 MB — best quality that still fits ~6 GB
+    "Llama-3.1-8B-Instruct",  // 5001 / 6101 MB
+    "Phi-3.5-mini-instruct",  // 3672 / 5483 MB (3.8B)
+    "Qwen2.5-3B-Instruct",    // 2505 / 2894 MB
+    "Llama-3.2-3B-Instruct",  // 2264 / 2952 MB
+    "Qwen2.5-1.5B-Instruct",  // 1630 / 1889 MB
+    "Llama-3.2-1B-Instruct",  //  879 / 1129 MB
+    "Qwen2.5-0.5B-Instruct"   //  945 / 1060 MB — last resort
   ];
 
   // Detect what this device's WebGPU adapter actually supports. The decisive
@@ -383,8 +389,12 @@
   function computeBudgetMB(env) {
     env = env || {};
     if (env.isMobile) return 1300;
-    var dm = env.deviceMemory || 4; // GB
-    return Math.max(1500, Math.min(dm, 8) * 700);
+    // Desktop/laptop: be generous so the biggest coherent model is reachable
+    // (~6 GB lets a 7B run in f16). navigator.deviceMemory is spec-capped at 8 and
+    // unreported on Safari — assume capable (8) when unknown rather than blocking
+    // big models; the load watchdog + model walk recover if we over-reach.
+    var dm = env.deviceMemory || 8; // GB
+    return Math.max(3000, Math.min(dm, 8) * 750);
   }
 
   // Pure, testable: choose the best model_id from WebLLM's prebuilt list for a
