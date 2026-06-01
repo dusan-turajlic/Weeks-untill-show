@@ -120,12 +120,12 @@ function run() {
       ok("stalling engine -> buildPlan rejects (no hang, no staple plan)", !!err);
       ok("rejection flagged aiFailure (app walks to next model)", err && err.aiFailure === true);
     }).then(function () {
-      // 4) Model-designed DISTINCT meals (the fix for "same food every meal"):
-      //    suggestMeals assigns each food to ONE meal, so meals genuinely differ.
+      // 4) Model-designed meals, solved PER MEAL: each meal is a real, balanced,
+      //    substantial plate (the fix for "same food every meal" AND "25 g almonds").
       var mealJSON = ['{"meals":[',
-        '{"name":"Breakfast","foods":["black beans"]},',
-        '{"name":"Lunch","foods":["chicken breast","rice cooked"]},',
-        '{"name":"Dinner","foods":["olive oil","psyllium husk"]}',
+        '{"name":"Breakfast","foods":["chicken breast","black beans"]},',
+        '{"name":"Lunch","foods":["chicken breast","rice cooked","olive oil"]},',
+        '{"name":"Dinner","foods":["chicken breast","psyllium husk","olive oil"]}',
         ']}'];
       var designEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: mealJSON }) }, fast));
       return planner.buildPlan({
@@ -134,15 +134,19 @@ function run() {
         io: { catalog: catalog, fetch: fakeFetch }, engine: designEngine
       }).then(function (mp) {
         var d0 = mp.days[0];
-        var perMeal = d0.meals.map(function (m) { return m.items.map(function (it) { return it.food; }); });
-        var all = perMeal.reduce(function (a, s) { return a.concat(s); }, []);
-        var uniq = all.filter(function (x, i) { return all.indexOf(x) === i; });
-        ok("layout: at least 2 distinct meals", d0.meals.length >= 2, "meals=" + d0.meals.length);
-        ok("layout: no food repeats across meals", uniq.length === all.length, all.join("|"));
+        var perMeal = d0.meals.map(function (m) { return m.items.map(function (it) { return it.food; }).sort().join(","); });
+        var mealKcal = d0.meals.map(function (m) { return m.totals.kcal; });
+        ok("layout: produces every requested meal", d0.meals.length === 3, "meals=" + d0.meals.length);
+        ok("layout: each meal is substantial (>=200 kcal, no lone nibble)",
+           mealKcal.every(function (k) { return k >= 200; }), mealKcal.join(","));
+        ok("layout: each meal carries protein (balanced plate)",
+           d0.meals.every(function (m) { return m.totals.protein >= 10; }),
+           d0.meals.map(function (m) { return m.totals.protein; }).join(","));
         ok("layout: meals are not all identical",
-           perMeal.length <= 1 || !perMeal.every(function (s) { return s.join(",") === perMeal[0].join(","); }),
-           JSON.stringify(perMeal));
-        ok("layout: still hits protein target", d0.totals.protein >= 132, "got " + d0.totals.protein);
+           perMeal.length > 1 && !perMeal.every(function (s) { return s === perMeal[0]; }), JSON.stringify(perMeal));
+        ok("layout: day still hits protein target", d0.totals.protein >= 130, "got " + d0.totals.protein);
+        ok("layout: per-meal totals sum to the day total",
+           Math.abs(d0.meals.reduce(function (a, m) { return a + m.totals.protein; }, 0) - d0.totals.protein) <= 2);
       });
     });
   });

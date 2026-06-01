@@ -141,31 +141,82 @@
     return meals;
   }
 
-  // Build per-meal items from a model-designed layout: each food belongs to ONE
-  // meal and shows its FULL solved grams (not divided), so meals are genuinely
-  // distinct. `mealOf[i]` is the meal index for foods[i]; `solved[i]` carries the
-  // grams. Empty meals (e.g. all their foods zeroed on a low day) are dropped.
-  function buildMealsFromLayout(names, mealOf, solved, products) {
-    var meals = names.map(function (nm) { return { name: nm, items: [] }; });
-    solved.forEach(function (s, i) {
-      if (s.grams < 5) return;
-      var mi = mealOf[i]; if (mi == null || mi < 0 || mi >= meals.length) mi = 0;
-      var t = FL.buildMealTotals([{ code: s.code, grams: s.grams, fiber100: s.fiber100 }], products).totals;
-      meals[mi].items.push({
-        food: s.name, amount: Math.round(s.grams) + " g",
-        kcal: Math.round(t.kcal), protein: round(t.protein),
-        fat: round(t.fat), carbs: round(t.carbs), fiber: round(t.fiber)
+  // Build a real, balanced day from a model-designed layout by solving EACH meal
+  // to its own share of the day's targets — so every meal is a proper plate
+  // (protein + carbs + fat + fibre), never one tiny food. `mealCodes[mi]` is the
+  // list of catalog codes the model put in meal mi. Snacks get a lighter share.
+  // Returns { meals, totals, estimated, unmet, gramsByCode }.
+  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds) {
+    var weights = names.map(function (nm) { return /snack/i.test(nm) ? 0.6 : 1; });
+    var totalW = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
+    var outMeals = [], unmet = [], estimated = false, gramsByCode = {};
+
+    names.forEach(function (nm, mi) {
+      var w = weights[mi] / totalW;
+      var sub = {
+        label: nm, kcal: (dayTarget.kcal || 0) * w, protein: (dayTarget.protein || 0) * w,
+        fat: (dayTarget.fat || 0) * w, carbs: (dayTarget.carbs || 0) * w,
+        fiber: (dayTarget.fiber || 35) * w
+      };
+      var codes = (mealCodes[mi] || []).slice();
+      if (!codes.length) return;
+      var foods = codes.map(function (c) { return macroRow(recsByCode[c], products[c]); });
+
+      // Solve this meal; if a macro is short, add a macro-rich food to THIS meal.
+      var res = SOLVER.solvePortions(sub, foods);
+      for (var r = 0; r < repairRounds && !res.ok; r++) {
+        var added = false;
+        res.failed.forEach(function (fc) {
+          var q = REPAIR_QUERY[fc.constraint]; if (!q) return;
+          var extra = gatherFoods(catalog, q).filter(function (rec) { return codes.indexOf(rec.code) < 0; });
+          extra.forEach(function (rec) {
+            codes.push(rec.code);
+            if (!recsByCode[rec.code]) recsByCode[rec.code] = rec;
+            foods.push(macroRow(rec, products[rec.code]));
+          });
+          if (extra.length) added = true;
+        });
+        if (!added) break;
+        res = SOLVER.solvePortions(sub, foods);
+      }
+      if (!res.ok) {
+        unmet.push((dayTarget.label || "a day") + " · " + nm + ": " +
+          res.failed.map(function (fc) { return fc.constraint + " " + fc.actual + "/" + fc.target; }).join(", "));
+      }
+
+      var items = [];
+      foods.forEach(function (f, i) {
+        var g = res.grams[i];
+        if (g < 5) return;
+        gramsByCode[f.code] = (gramsByCode[f.code] || 0) + g;
+        var t = FL.buildMealTotals([{ code: f.code, grams: g, fiber100: f.fiber }], products);
+        if (t.estimated) estimated = true;
+        items.push({
+          food: f.name, amount: Math.round(g) + " g",
+          kcal: Math.round(t.totals.kcal), protein: round(t.totals.protein),
+          fat: round(t.totals.fat), carbs: round(t.totals.carbs), fiber: round(t.totals.fiber)
+        });
       });
+      if (items.length) {
+        var mt = items.reduce(function (a, it) {
+          a.kcal += it.kcal; a.protein += it.protein; a.fat += it.fat; a.carbs += it.carbs; a.fiber += it.fiber; return a;
+        }, { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 });
+        outMeals.push({ name: nm, items: items, totals: {
+          kcal: Math.round(mt.kcal), protein: round(mt.protein), fat: round(mt.fat), carbs: round(mt.carbs), fiber: round(mt.fiber)
+        } });
+      }
     });
-    return meals.filter(function (m) { return m.items.length; });
-  }
-  // Meal index that currently holds the fewest foods — where a repair food goes,
-  // so additions spread out instead of piling into one meal.
-  function smallestMeal(mealOf, nMeals) {
-    var counts = []; for (var k = 0; k < nMeals; k++) counts[k] = 0;
-    mealOf.forEach(function (mi) { if (mi >= 0 && mi < nMeals) counts[mi]++; });
-    var best = 0; for (var i = 1; i < nMeals; i++) if (counts[i] < counts[best]) best = i;
-    return best;
+
+    var dayItems = Object.keys(gramsByCode).map(function (c) {
+      return { code: c, grams: gramsByCode[c], fiber100: (recsByCode[c] && num(recsByCode[c].fiber)) || 0 };
+    });
+    var dayTot = FL.buildMealTotals(dayItems, products);
+    return {
+      meals: outMeals,
+      totals: { kcal: dayTot.totals.kcal, protein: dayTot.totals.protein, fat: dayTot.totals.fat,
+                carbs: dayTot.totals.carbs, fiber: dayTot.totals.fiber },
+      estimated: estimated || dayTot.estimated, unmet: unmet, gramsByCode: gramsByCode
+    };
   }
 
   // Build a shopping list grouped by brand (a stand-in "retailer" — real
@@ -251,22 +302,25 @@
           })).then(function (design) {
             var dm = design && design.meals;
             if (!Array.isArray(dm) || !dm.length) aiReject(new Error("The model returned no meals."));
-            // Resolve each meal's food names against the catalog; each code belongs
-            // to the FIRST meal that names it (so meals stay distinct).
-            var names = [], ofCode = {}, recsByCode = {}, recs = [];
+            // Resolve each meal's food names against the catalog, keeping a
+            // per-meal code list so each meal can be solved on its own.
+            var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
             dm.forEach(function (m, mi) {
               names.push((m && typeof m.name === "string" && m.name.trim()) ? m.name.trim()
                          : (mealNames[mi] || ("Meal " + (mi + 1))));
+              var codes = [];
               ((m && m.foods) || []).forEach(function (nm) {
                 if (typeof nm !== "string" || !nm.trim()) return;
                 var hit = FL.searchFoods(catalog, nm, 1)[0];
-                if (hit && hit.code && ofCode[hit.code] == null) {
-                  ofCode[hit.code] = mi; recsByCode[hit.code] = hit; recs.push(hit);
+                if (hit && hit.code) {
+                  if (codes.indexOf(hit.code) < 0) codes.push(hit.code);
+                  if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
                 }
               });
+              mealCodes.push(codes);
             });
             if (!recs.length) aiReject(new Error("None of the model's foods matched the catalog."));
-            return { recs: recs, recsByCode: recsByCode, layout: { names: names, ofCode: ofCode } };
+            return { recs: recs, recsByCode: recsByCode, layout: { names: names, mealCodes: mealCodes } };
           }, aiReject);
       } else if (opts.engine && opts.engine.suggestFoods) {
         selectP = Promise.resolve(opts.engine.suggestFoods({
@@ -286,14 +340,27 @@
 
         report("fetch", "Fetching nutrition for " + recs.length + " foods…");
         return FL.fetchProducts(recs.map(function (r) { return r.code; }), io).then(function (products) {
-          var foods = recs.map(function (r) { return macroRow(r, products[r.code]); });
-          // Meal index per food, parallel to `foods` and grown alongside repairs.
-          var mealOf = layout ? foods.map(function (f) { return layout.ofCode[f.code]; }) : null;
 
-          // 2) Solve each day type; repair by adding a macro-rich food if needed.
+          // 2) Size portions. The model-meal path solves EACH meal to its share of
+          // the day's targets (so every meal is a balanced plate); the flat path
+          // solves the day as a whole and splits it.
           report("solve", "Sizing portions to hit every target…");
           var unmet = [];
           var days = opts.dayTargets.map(function (target) {
+            if (layout) {
+              var d = assembleLayoutDay(target, layout.names, layout.mealCodes, products,
+                                        catalog, recsByCode, repairRounds);
+              if (d.unmet.length) unmet.push.apply(unmet, d.unmet);
+              return {
+                label: target.label || "Every day",
+                perWeek: target.perWeek || target.count || 7,
+                meals: d.meals, totals: d.totals,
+                _gramsByCode: d.gramsByCode, _estimated: d.estimated
+              };
+            }
+
+            // Flat fallback (engine-less / suggestFoods): solve the whole day.
+            var foods = recs.map(function (r) { return macroRow(r, products[r.code]); });
             var res = SOLVER.solvePortions(target, foods);
             for (var round = 0; round < repairRounds && !res.ok; round++) {
               var added = false;
@@ -301,18 +368,12 @@
                 var q = REPAIR_QUERY[fc.constraint];
                 if (!q) return;
                 var extra = gatherFoods(catalog, q).filter(function (r) { return !foodHas(foods, r.code); });
-                extra.forEach(function (r) {
-                  foods.push(macroRow(r, products[r.code]));
-                  if (mealOf) mealOf.push(smallestMeal(mealOf, layout.names.length));
-                });
+                extra.forEach(function (r) { foods.push(macroRow(r, products[r.code])); });
                 if (extra.length) added = true;
               });
               if (!added) break;
-              // products for any newly added foods may be missing macros; that's fine —
-              // macroRow already fell back to catalog macros.
               res = SOLVER.solvePortions(target, foods);
             }
-
             var solved = foods.map(function (f, i) {
               return { code: f.code, name: f.name, grams: res.grams[i], fiber100: f.fiber };
             });
@@ -326,8 +387,7 @@
             return {
               label: target.label || "Every day",
               perWeek: target.perWeek || target.count || 7,
-              meals: layout ? buildMealsFromLayout(layout.names, mealOf, solved, products)
-                            : splitIntoMeals(solved, products, nMeals),
+              meals: splitIntoMeals(solved, products, nMeals),
               totals: {
                 kcal: dayTot.totals.kcal, protein: dayTot.totals.protein,
                 fat: dayTot.totals.fat, carbs: dayTot.totals.carbs, fiber: dayTot.totals.fiber
@@ -338,7 +398,10 @@
 
           // 3) Assemble the import JSON.
           report("assemble", "Writing up your plan…");
-          var allSolved = days[0]._solved; // food set is shared across day types
+          var allSolved = days[0]._solved ||
+            Object.keys(days[0]._gramsByCode || {}).map(function (c) {
+              return { code: c, name: (recsByCode[c] && recsByCode[c].name) || c, grams: days[0]._gramsByCode[c] };
+            });
           var estimated = days.some(function (d) { return d._estimated; });
           var summaryP = opts.engine && opts.engine.summarize
             ? Promise.resolve(opts.engine.summarize({
@@ -640,12 +703,17 @@
         var sys = "You are a chef and nutritionist designing ONE day of meals from real, " +
           "locally available whole foods. Design EXACTLY " + n + " meals" +
           (names.length ? " named: " + names.join(", ") : "") + ". Rules: " +
-          "(1) every meal must use DIFFERENT foods — never repeat a food across meals; " +
-          "(2) match the user's cuisines and tastes; (3) respect dietary restrictions strictly; " +
-          "(4) 2–5 simple whole-food ingredients per meal; (5) you ONLY name foods — no amounts, " +
-          "no numbers, no arithmetic (portions are computed separately). " +
+          "(1) EVERY meal must be a complete, balanced plate — a protein source, at least one " +
+          "vegetable or fruit, a slow/whole-food carbohydrate, and a healthy fat. NEVER a single " +
+          "ingredient or a lone nibble (no meal that is just 'almonds'). A snack may be smaller but " +
+          "still combines 2–3 foods. (2) Maximise MICRONUTRIENT density and health: lean on leafy " +
+          "greens, colourful vegetables, legumes, whole grains, fish, eggs and dairy, and VARY the " +
+          "foods across meals for broad vitamin/mineral coverage. (3) Make each meal a coherent dish " +
+          "in the user's cuisines/tastes — foods that genuinely go together. (4) Respect dietary " +
+          "restrictions strictly. (5) Use 3–5 whole-food ingredients per meal. (6) You ONLY name " +
+          "foods — no amounts, no numbers, no arithmetic (portions are computed separately). " +
           "Output ONLY JSON, no prose or code fences: " +
-          "{\"meals\":[{\"name\":\"" + (names[0] || "Breakfast") + "\",\"foods\":[\"food\",\"food\"]}, …]}";
+          "{\"meals\":[{\"name\":\"" + (names[0] || "Breakfast") + "\",\"foods\":[\"food\",\"food\",\"food\"]}, …]}";
         var usr = "Country: " + (ctx.country || "unknown") + "\n" +
           "Cuisines / foods I love: " + (ctx.tastes || "no strong preference") + "\n" +
           "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" +
@@ -654,7 +722,7 @@
           "The whole day must be high in protein (~" + Math.round(t.protein || 0) +
           " g) and fibre (≥ " + Math.round(t.fiber || 35) +
           " g), so spread enough protein- and fibre-rich foods across the meals.";
-        return chatJSON(sys, usr, "The model is designing your meals", 800).then(function (o) {
+        return chatJSON(sys, usr, "The model is designing your meals", 1000).then(function (o) {
           var meals = Array.isArray(o.meals) ? o.meals : [];
           return { meals: meals.map(function (m) {
             return { name: (m && m.name) || "", foods: (m && Array.isArray(m.foods)) ? m.foods : [] };
