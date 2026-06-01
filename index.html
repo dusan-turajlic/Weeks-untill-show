@@ -350,15 +350,32 @@
       <div class="ibox"><input id="weight" inputmode="decimal" placeholder="0.00" /><span class="suffix" data-unit-suffix>kg</span></div>
       <span class="hint" id="weightHint">Log today's weight to see your projection.</span>
     </label>
-    <label class="field">
-      <span class="flabel">Weekly loss</span>
-      <div class="ibox"><input id="pct" inputmode="decimal" placeholder="0.00" /><span class="suffix">%</span></div>
-    </label>
-    <label class="field">
-      <span class="flabel">End date</span>
-      <div class="ibox"><input id="endDate" type="date" /></div>
-      <span class="hint" id="endHint">Pick a date on or after today</span>
-    </label>
+  </div>
+
+  <div class="card" id="planCard">
+    <div class="abouthead">
+      <div class="cardtitle">Your plan</div>
+      <button type="button" class="linkbtn" id="planEdit" hidden>Edit</button>
+    </div>
+    <div class="aboutsum" id="planSummary" hidden></div>
+    <div id="planForm">
+      <p class="sub" style="margin:2px 0 4px">Set your rate of fat loss and the dates once — afterwards you just log today's weight.</p>
+      <label class="field">
+        <span class="flabel">Weekly loss</span>
+        <div class="ibox"><input id="pct" inputmode="decimal" placeholder="0.00" /><span class="suffix">%</span></div>
+      </label>
+      <label class="field">
+        <span class="flabel">Start date</span>
+        <div class="ibox"><input id="startDate" type="date" /></div>
+        <span class="hint">When your dieting phase begins — defaults to today.</span>
+      </label>
+      <label class="field">
+        <span class="flabel">End date</span>
+        <div class="ibox"><input id="endDate" type="date" /></div>
+        <span class="hint" id="endHint">Pick a date on or after your start date</span>
+      </label>
+      <button type="button" class="donebtn" id="planDone">Done</button>
+    </div>
   </div>
 
   <div id="energyCard"></div>
@@ -386,7 +403,7 @@
   </div>
 
   <p class="note">
-    Week 0 is your end date; higher week numbers count back toward today (week <span id="noteN">—</span>).
+    Week 0 is your end date; higher week numbers count back toward your start date (week <span id="noteN">—</span>).
     Each step compounds the loss %, and only whole weeks are shown. Each day's weight is stored on your
     device and you're asked again the next day. The shareable link carries your settings and full weight
     history — bookmark or share it to keep or move your data.
@@ -444,6 +461,7 @@
   var KCAL_PER_KG = 7700;            // ~energy in 1 kg of body weight (mostly fat)
   var KCAL_FAT = 9, KCAL_PROTEIN = 4, KCAL_CARB = 4;
   var MAX_FOOD_DEFICIT = 700;        // never cut more than this from food; steps cover the rest
+  var MIN_PHASE_STEPS = 2000;        // a dieting phase always adds at least this many daily steps
   var FIBER_MIN = 35;                // g/day of fibre to aim for (counted within carbs)
 
   // Maintenance calories = bodyweight(lb) × a multiplier that tapers as weight
@@ -773,8 +791,8 @@
   }
   function saveSettings(s){
     try{ localStorage.setItem(LS_SETTINGS, JSON.stringify({
-      pct:s.pct, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height,
-      pattern:s.pattern, highDays:s.highDays, curSteps:s.curSteps
+      pct:s.pct, startDate:s.startDate, endDate:s.endDate, unit:s.unit, sex:s.sex, height:s.height,
+      pattern:s.pattern, highDays:s.highDays, curSteps:s.curSteps, planConfirmed:s.planConfirmed
     })); }catch(e){}
   }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
@@ -794,7 +812,7 @@
     try{
       var p=new URLSearchParams(location.search);
       if(!p.toString()) return null;
-      return { pct:p.get("pct"), endDate:p.get("end"), unit:p.get("unit"),
+      return { pct:p.get("pct"), startDate:p.get("start"), endDate:p.get("end"), unit:p.get("unit"),
                sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"), highDays:p.get("highDays"),
                curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log"), meal:p.get("meal") };
     }catch(e){ return null; }
@@ -814,6 +832,7 @@
     try{
       var p=new URLSearchParams();
       p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
+      if(s.startDate) p.set("start", s.startDate);
       addBodyParams(p, s);
       if(hist && hist.length) p.set("log", encodeLog(hist));
       addMealParam(p);
@@ -823,6 +842,7 @@
   function buildShareUrl(s, hist){
     var p=new URLSearchParams();
     p.set("pct", s.pct); p.set("end", s.endDate); p.set("unit", s.unit);
+    if(s.startDate) p.set("start", s.startDate);
     addBodyParams(p, s);
     if(hist && hist.length) p.set("log", encodeLog(hist));
     addMealParam(p);
@@ -881,7 +901,7 @@
   // Local settings win once the device has been used; a shared link only seeds
   // settings on a device that has none yet (mirrors the history rule below).
   function pick(key, dflt){
-    var sk = key==="end" ? "endDate" : key;
+    var sk = key==="end" ? "endDate" : key==="start" ? "startDate" : key;
     if(lsSettings && lsSettings[sk]!=null && lsSettings[sk]!=="") return lsSettings[sk];
     if(urlData && urlData[sk]!=null && urlData[sk]!=="") return urlData[sk];
     return dflt;
@@ -890,6 +910,7 @@
   var state = {
     weight: "",                          // today's logged weight (filled on init)
     pct:    pick("pct",  "1"),
+    startDate:pick("start", todayStr),   // when the dieting phase begins (defaults to today)
     endDate:pick("end",  toDateStr(addDays(today,84))),
     unit:   pick("unit", "kg"),
     sex:    pick("sex", ""),             // "male" | "female" | "neutral"
@@ -926,11 +947,29 @@
 
   // ---- elements -----------------------------------------------------------
   var $ = function(id){ return document.getElementById(id); };
-  var elWeight=$("weight"), elPct=$("pct"), elEnd=$("endDate");
+  var elWeight=$("weight"), elPct=$("pct"), elStart=$("startDate"), elEnd=$("endDate");
   var elHeight=$("height"), elSexSeg=$("sexSeg"), elSexHint=$("sexHint"), elCurSteps=$("curSteps");
   var elAboutForm=$("aboutForm"), elAboutSummary=$("aboutSummary"),
       elAboutEdit=$("aboutEdit"), elAboutDone=$("aboutDone");
-  elEnd.min = todayStr;
+  var elPlanForm=$("planForm"), elPlanSummary=$("planSummary"),
+      elPlanEdit=$("planEdit"), elPlanDone=$("planDone");
+
+  // "Your plan" (rate of loss + dates) is also set once. After the first time
+  // it's confirmed it collapses to a summary, so return visits only need to log
+  // today's weight. Existing devices (saved settings without the flag) start
+  // collapsed; a brand-new device opens the form so the rate is chosen first.
+  state.planConfirmed = !!(lsSettings && lsSettings.planConfirmed !== false);
+  var planOpen = !state.planConfirmed;
+  function setPlan(){
+    elPlanForm.hidden    = !planOpen;
+    elPlanSummary.hidden = planOpen;
+    elPlanEdit.hidden    = planOpen;
+    if(!planOpen){
+      elPlanSummary.innerHTML =
+        '<span class="chip">'+(state.pct!==""?state.pct:"—")+' %/week</span>'+
+        '<span class="chip">'+prettyDate(state.startDate)+' → '+prettyDate(state.endDate)+'</span>';
+    }
+  }
 
   var SEX_LABEL = {male:"Male", female:"Female", neutral:"Prefer not to say"};
   // "About you" is set once: when both sex & height are filled it collapses to a
@@ -955,7 +994,9 @@
   function setInputs(){
     elWeight.value = state.weight;
     elPct.value = state.pct;
+    elStart.value = state.startDate;
     elEnd.value = state.endDate;
+    elEnd.min = state.startDate || todayStr;   // the end date can't precede the start
     elHeight.value = state.height;
     elCurSteps.value = state.curSteps;
     document.querySelectorAll("[data-unit-suffix]").forEach(function(s){ s.textContent = state.unit; });
@@ -975,14 +1016,22 @@
       elSexHint.hidden = true;
     }
     setAbout();
+    setPlan();
   }
 
   // ---- compute ------------------------------------------------------------
+  // The phase runs from the start date (defaults to today) to the end date, and
+  // the projection compounds the weekly loss across that window.
+  function phaseStart(){
+    var d = state.startDate ? new Date(state.startDate+"T00:00:00") : null;
+    return (d && !isNaN(d)) ? d : today;
+  }
   function compute(){
     var W = parseFloat(state.weight);
     var r = parseFloat(state.pct)/100;
+    var start = phaseStart();
     var end = state.endDate ? new Date(state.endDate+"T00:00:00") : null;
-    var T = end ? (end - today)/WEEK_MS : NaN;
+    var T = end ? (end - start)/WEEK_MS : NaN;
     var valid = isFinite(W) && isFinite(r) && isFinite(T) && T>=0;
     var N = valid ? Math.floor(T) : 0;
     var at = function(t){ return Math.max(0, W*Math.pow(1-r,t)); };
@@ -1031,15 +1080,21 @@
              fiber:FIBER_MIN, macrosOk:true};
     if(c.valid){
       out.lostKg = state.unit==="lb" ? c.lost*LB_TO_KG : c.lost;
-      var end=new Date(state.endDate+"T00:00:00");
-      out.days=Math.max(1, Math.round((end-today)/DAY_MS));
+      var start=phaseStart(), end=new Date(state.endDate+"T00:00:00");
+      out.days=Math.max(1, Math.round((end-start)/DAY_MS));    // length of the phase
       out.totalDeficit = out.lostKg*KCAL_PER_KG;
       out.needDeficit  = out.totalDeficit/out.days;               // to hit goal by date
-      out.foodDeficit  = Math.min(Math.max(0,out.needDeficit), MAX_FOOD_DEFICIT);
-      out.stepDeficit  = Math.max(0, out.needDeficit - out.foodDeficit);
-      out.intake = bm.maint - out.foodDeficit;
       var kps = calcKcalPerStep(bm.weightKg, bm.heightCm);
       out.kcalPerStep = kps;
+      // A dieting phase always includes a baseline of walking: reserve at least
+      // MIN_PHASE_STEPS steps' worth of the deficit for steps, taken out of food
+      // first so the goal (and the projection) are unchanged. Food is still
+      // capped at MAX_FOOD_DEFICIT; any deficit beyond that is walked off too.
+      var inPhase = out.lostKg > 0;
+      var stepFloor = (inPhase && kps>0) ? MIN_PHASE_STEPS*kps : 0;
+      out.foodDeficit  = Math.min(Math.max(0, out.needDeficit - stepFloor), MAX_FOOD_DEFICIT);
+      out.stepDeficit  = Math.max(stepFloor, out.needDeficit - out.foodDeficit);
+      out.intake = bm.maint - out.foodDeficit;
       out.steps = kps>0 ? out.stepDeficit/kps : NaN;
       // Macros: protein & fat are fixed minimums; carbs take the remainder.
       var carbKcal = out.intake - out.proteinKcal - out.fatKcal;
@@ -1612,7 +1667,7 @@
       grid+='<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)"/>';
       grid+='<text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--inkSoft)">'+gv.toFixed(1)+'</text>';
     }
-    var xlbl='<text x="'+X(0)+'" y="'+(h-8)+'" text-anchor="start" font-size="10" fill="var(--inkSoft)">wk '+pr[0].week+' · today</text>'+
+    var xlbl='<text x="'+X(0)+'" y="'+(h-8)+'" text-anchor="start" font-size="10" fill="var(--inkSoft)">wk '+pr[0].week+' · start</text>'+
              '<text x="'+X(n)+'" y="'+(h-8)+'" text-anchor="end" font-size="10" fill="var(--inkSoft)">wk '+pr[n].week+' · end</text>';
     return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" role="img">'+
       '<defs><linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">'+
@@ -1748,8 +1803,8 @@
       var stepsK = roundSteps(e.steps);
       var cur = parseInt(state.curSteps,10), hasCur = isFinite(cur) && cur>0;
       var stepNote = stepsK>0
-        ? (hasCur ? "Your "+fmt0(cur)+"/day average plus the steps needed to cover the rest of the deficit."
-                  : "Added on top of your current daily average to cover the rest of the deficit.")
+        ? (hasCur ? "Your "+fmt0(cur)+"/day average plus the walking that covers the rest of the deficit. A "+fmt0(MIN_PHASE_STEPS)+"-step daily baseline is always included while dieting (taken out of food first, so your goal is unchanged)."
+                  : "Added on top of your current daily average. A "+fmt0(MIN_PHASE_STEPS)+"-step daily baseline is always included while dieting (taken out of food first), plus enough to cover the rest of the deficit.")
         : "Your food deficit already covers your goal — extra steps are optional but recommended.";
       var grid = hasCur
         ? stat("Target / day", fmt0(cur+Math.max(0,stepsK))+' <small>steps total</small>')+
@@ -1807,7 +1862,8 @@
     }
     var note='<p class="note" style="margin-top:14px">Maintenance = bodyweight in lb × a sex/weight multiplier; '+
       'protein &amp; fat targets come from your height. Goal calories = maintenance − the deficit to hit your date '+
-      '(food deficit capped at '+MAX_FOOD_DEFICIT+' kcal, steps cover any more; ~'+KCAL_PER_KG.toLocaleString()+
+      '(food deficit capped at '+MAX_FOOD_DEFICIT+' kcal, with a '+fmt0(MIN_PHASE_STEPS)+'-step daily minimum and steps '+
+      'covering any more; ~'+KCAL_PER_KG.toLocaleString()+
       ' kcal per kg). These are estimates, not medical advice.</p>';
     var promptBtn='<button type="button" id="mealPromptBtn" class="promptbtn">'+
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
@@ -1820,14 +1876,19 @@
     var c=compute(), unit=state.unit;
     var wl=weeksLeft(), hasToday=!!todayEntry();
 
+    // Phase length (start → end), independent of whether a weight is logged yet.
+    var startD=phaseStart(), endD=state.endDate ? new Date(state.endDate+"T00:00:00") : null;
+    var phaseT=(endD && !isNaN(endD)) ? (endD-startD)/WEEK_MS : NaN;
+    var phaseN=(isFinite(phaseT) && phaseT>=0) ? Math.floor(phaseT) : null;
+
     $("weeksLeft").textContent  = wl!=null ? wl : "—";
     $("targetDate").textContent = wl!=null ? prettyDate(state.endDate) : "—";
     $("resDate").textContent    = prettyDate(state.endDate);
     $("finalW").textContent   = c.valid ? fmt(c.final)   : "—";
     $("lostW").textContent    = c.valid ? fmt(c.lost)    : "—";
     $("lostPct").textContent  = c.valid ? fmt(c.lostPct) : "—";
-    $("endHint").textContent  = wl!=null ? (wl+" weeks from today ("+todayStr+")") : "Pick a date on or after today";
-    $("noteN").textContent    = wl!=null ? wl : "—";
+    $("endHint").textContent  = phaseN!=null ? (phaseN+" weeks from your start date ("+state.startDate+")") : "Pick a date on or after your start date";
+    $("noteN").textContent    = phaseN!=null ? phaseN : "—";
 
     $("weightHint").textContent = hasToday
       ? "Saved for today ("+prettyDate(todayStr)+") — edit any time to update."
@@ -1844,6 +1905,7 @@
     renderProgress();
     renderEnergy();
     setAbout();   // keep the Done button's enabled state in sync with sex/height
+    setPlan();    // keep the collapsed plan summary in sync with the rate/dates
   }
 
   // ---- persistence (settings + shareable URL) -----------------------------
@@ -1862,6 +1924,7 @@
       renderMealPlan();
       state.weight  = "";
       state.pct     = "1";
+      state.startDate = todayStr;
       state.endDate = toDateStr(addDays(today,84));
       state.unit    = "kg";
       state.sex     = "";
@@ -1869,7 +1932,9 @@
       state.pattern = "even";
       state.highDays= "2";
       state.curSteps= "";
+      state.planConfirmed = false;
       aboutOpen     = true;   // reopen the one-time setup after a wipe
+      planOpen      = true;
       try{ history.replaceState(null, "", location.pathname); }catch(e){} // drop any ?log= in the URL
       setInputs();
       render();
@@ -1900,7 +1965,12 @@
     if(cleaned !== elCurSteps.value) elCurSteps.value = cleaned;
     state.curSteps = cleaned; persist(); render();
   });
+  elStart.addEventListener("input", function(){ state.startDate = elStart.value; setInputs(); persist(); render(); });
   elEnd.addEventListener("input", function(){ state.endDate = elEnd.value; persist(); render(); });
+  elPlanEdit.addEventListener("click", function(){ planOpen=true; setPlan(); });
+  elPlanDone.addEventListener("click", function(){
+    planOpen=false; state.planConfirmed=true; persist(); setPlan();
+  });
   elSexSeg.addEventListener("click", function(e){
     var b = e.target.closest("button"); if(!b) return;
     state.sex = b.dataset.sex; persist(); setInputs(); render();

@@ -9,17 +9,24 @@ dependencies.
 
 - **Weeks-left countdown** — pick an end date and see how many whole weeks remain
   from today.
+- **Your plan, set once** — pick your weekly loss percentage, a **start date**
+  (when the phase begins, defaulting to today) and an end date. Like "About you",
+  the plan collapses to a summary chip after you confirm it the first time, so
+  return visits land straight on the **log today's weight** field — the one thing
+  you need day to day. Tap *Edit* to change the rate or dates again.
 - **Weight projection** — enter your current weight and a weekly loss percentage.
-  The app compounds that loss week over week and shows your projected weight on
-  the target date, total lost, and the percentage of your starting weight.
-- **Trajectory chart** — an inline SVG line chart of your weight from today
-  (week N) to your end date (week 0).
+  The app compounds that loss week over week across your start→end window and
+  shows your projected weight on the target date, total lost, and the percentage
+  of your starting weight.
+- **Trajectory chart** — an inline SVG line chart of your weight from your start
+  date (week N) to your end date (week 0).
 - **Week-by-week table** — every week's projected weight and cumulative loss.
 - **Calories, macros & steps** — set your sex and height once (it collapses to a
   summary afterwards, so return visits land on the weight field) and the app
   works out the daily calories to eat to hit your goal as the headline, plus
   maintenance, a protein / fat / carb split (with a fibre target), and the daily
-  step count needed to make up the rest of the deficit. See
+  step count needed to make up the rest of the deficit. A dieting phase always
+  includes a **2,000-step daily minimum**. See
   [How the calorie numbers work](#how-the-calorie-numbers-work).
 - **kg / lb toggle** — switch units on the fly (height follows as cm / in).
 - **Shareable links** — all inputs are stored in the URL's query string, so you
@@ -59,8 +66,9 @@ Then open `http://localhost:8000`.
 
 Each week the weight is multiplied by `(1 − rate)`, where `rate` is the weekly
 loss percentage divided by 100 — so the loss compounds on your current weight
-rather than being linear. Week 0 is your end date; higher week numbers count
-back toward today. Only whole weeks between today and the end date are shown.
+rather than being linear. The phase runs from your **start date** (defaults to
+today) to the end date. Week 0 is your end date; higher week numbers count back
+toward your start date. Only whole weeks between start and end are shown.
 
 ## How the calorie numbers work
 
@@ -82,12 +90,14 @@ estimates.
 - **Deficit & intake** — the projected weight to lose × ~7,700 kcal/kg (≈3,500
   kcal/lb), spread over the days until your end date. The deficit taken from
   **food is capped at 700 kcal** so the diet never gets too aggressive.
-- **Steps** — any deficit beyond that 700 kcal is made up with walking. The app
-  shows the daily step count for it, using a height-based stride and the net
-  cost of walking (~0.5 kcal per kg per km). Enter your **current daily step
-  average** (optional, under "About you") and the plan shows your *total* daily
-  step target — your current average plus what's added — instead of just the
-  extra.
+- **Steps** — any deficit beyond that 700 kcal is made up with walking. A dieting
+  phase also always adds a **2,000-step daily minimum**: that baseline is taken
+  out of the food deficit first (so you eat a little more and your goal is
+  unchanged), and anything still left over is walked off on top. The app shows
+  the daily step count using a height-based stride and the net cost of walking
+  (~0.5 kcal per kg per km). Enter your **current daily step average** (optional,
+  under "About you") and the plan shows your *total* daily step target — your
+  current average plus what's added — instead of just the extra.
 
 ### Eating patterns (carb cycling)
 
