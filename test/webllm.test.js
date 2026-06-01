@@ -187,6 +187,35 @@ function run() {
           ok("veg: a plant protein (tofu) was used instead",
              foods.some(function (f) { return /tofu/i.test(f); }), foods.join("|"));
         });
+      }).then(function () {
+        // 6) When product fetch fails but the catalog has macros, every item must
+        //    still show the catalog's calories — NEVER a 0-kcal line.
+        var VC = [
+          ["t1", "Tofu", "B", "fi", 100, "g", 1.5, 1.9, 8, 15],
+          ["t3", "Spinach", "G", "fi", 100, "g", 2.2, 3.6, 0.4, 2.9],
+          ["t4", "Oats", "M", "fi", 100, "g", 10, 66, 7, 13],
+          ["t5", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0]
+        ].map(function (a) { return JSON.stringify(a); }).join("\n");
+        var allMiss = function () { return Promise.resolve({ ok: false, status: 404 }); };
+        var jp = ['{"meals":[',
+          '{"name":"Breakfast","foods":["oats","spinach","tofu"]},',
+          '{"name":"Lunch","foods":["tofu","spinach","olive oil"]},',
+          '{"name":"Dinner","foods":["oats","tofu","olive oil"]}',
+          ']}'];
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: jp }) }, fast));
+        return planner.buildPlan({
+          dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 110, fat: 55, carbs: 150, fiber: 35 }],
+          country: "Finland", prefs: "vegetarian", breakfast: "savory", mealsPerDay: 3,
+          io: { catalog: fl.parseCatalog(VC), fetch: allMiss }, engine: eng
+        }).then(function (mp) {
+          var items = [];
+          mp.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { items.push(it); }); });
+          ok("no-fetch: every item shows calories from the catalog (no 0-kcal lines)",
+             items.length > 0 && items.every(function (it) { return it.kcal > 0; }),
+             items.map(function (it) { return it.food + ":" + it.kcal; }).join("|"));
+          ok("no-fetch: plan flags the macros as estimated (catalog-derived)",
+             /estimated/i.test(mp.micronutrients || ""), mp.micronutrients);
+        });
       });
     });
   });

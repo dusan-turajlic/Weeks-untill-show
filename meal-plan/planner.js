@@ -97,6 +97,38 @@
     };
   }
 
+  // A product-shaped object built from the catalog line's own macros, used as the
+  // displayed nutrition when a real product fetch is missing or macro-less. The
+  // solver already falls back to catalog macros (macroRow), but buildMealTotals —
+  // which produces the per-item kcal SHOWN to the user — reads products[code]
+  // only, so without this a food whose fetch failed renders at 0 kcal even though
+  // the catalog knows its macros. Flagged ai_guesses so the UI marks it estimated.
+  function catalogProduct(rec) {
+    if (!rec) return null;
+    var kcal = rec.kcalEst != null ? num(rec.kcalEst)
+             : Math.round(4 * num(rec.protein) + 4 * num(rec.carbs) + 9 * num(rec.fat));
+    return {
+      product_name: rec.name || rec.code,
+      breakdown: { macros: {
+        energy_kcal: kcal, proteins: num(rec.protein),
+        fat: num(rec.fat), carbohydrates: num(rec.carbs), fiber: num(rec.fiber)
+      } },
+      ai_guesses: true
+    };
+  }
+  function hasMacros(m) { return !!m && num(m.proteins) + num(m.fat) + num(m.carbohydrates) > 0.5; }
+
+  // Guarantee products[rec.code] carries usable macros: keep a real fetched product
+  // when it has them, otherwise back it with the catalog line. Leaves the entry
+  // missing only when neither source has macros (so the food gets filtered out).
+  function ensureProduct(products, rec) {
+    if (!rec || !rec.code) return;
+    var p = products[rec.code];
+    if (hasMacros(p && p.breakdown && p.breakdown.macros)) return;
+    var cp = catalogProduct(rec);
+    if (cp && hasMacros(cp.breakdown.macros)) products[rec.code] = cp;
+  }
+
   // Gather a candidate food pool by searching the catalog for each query and
   // taking the best hit. Returns unique catalog records (deduped by code).
   function gatherFoods(catalog, queries) {
@@ -177,6 +209,7 @@
           extra.forEach(function (rec) {
             codes.push(rec.code);
             if (!recsByCode[rec.code]) recsByCode[rec.code] = rec;
+            ensureProduct(products, rec); // repair foods are never fetched — back them with catalog macros
             foods.push(macroRow(rec, products[rec.code]));
           });
           if (extra.length) added = true;
@@ -346,6 +379,10 @@
         report("fetch", "Fetching nutrition for " + recs.length + " foods…");
         return FL.fetchProducts(recs.map(function (r) { return r.code; }), io).then(function (products) {
 
+          // Back any food whose fetch failed with its catalog macros, so the
+          // numbers shown match the numbers the solver sized against (no 0-kcal items).
+          recs.forEach(function (r) { ensureProduct(products, r); });
+
           // 2) Size portions. The model-meal path solves EACH meal to its share of
           // the day's targets (so every meal is a balanced plate); the flat path
           // solves the day as a whole and splits it.
@@ -374,7 +411,7 @@
                 var q = repairQueries(fc.constraint, opts.prefs);
                 if (!q.length) return;
                 var extra = gatherFoods(catalog, q).filter(function (r) { return !foodHas(foods, r.code); });
-                extra.forEach(function (r) { foods.push(macroRow(r, products[r.code])); });
+                extra.forEach(function (r) { ensureProduct(products, r); foods.push(macroRow(r, products[r.code])); });
                 if (extra.length) added = true;
               });
               if (!added) break;
