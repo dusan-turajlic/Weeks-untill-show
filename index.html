@@ -461,7 +461,7 @@
 <div class="modal" id="wizModal" hidden>
   <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
     <h2 id="wizTitle">Build a plan on this device</h2>
-    <p class="sub" style="margin:0 0 4px">Private — a small AI runs in your browser and picks foods; all the maths is done on-device. The model downloads the first time (a few hundred MB) and is cached after.</p>
+    <p class="sub" style="margin:0 0 4px">Private — your plan is built on this device from your country's food catalog, and every portion is sized by the on-device solver. Optionally let a small in-browser AI choose the foods.</p>
     <div id="wizForm">
       <label class="field"><span class="flabel">Country</span>
         <div class="ibox"><select id="wizCountry" style="flex:1;border:none;outline:none;background:transparent;font-size:18px;font-family:var(--serif);color:var(--ink);padding:11px 0"></select></div>
@@ -479,6 +479,11 @@
           <button type="button" data-meals="5">5 meals</button>
           <button type="button" data-meals="2">2 meals</button>
         </div>
+      </label>
+      <label class="field" style="display:flex;align-items:flex-start;gap:10px;margin-top:16px">
+        <input type="checkbox" id="wizUseAI" style="margin-top:3px;width:18px;height:18px;flex:none">
+        <span><span class="flabel" style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)">Use on-device AI to choose foods</span>
+        <span class="hint" style="margin-top:2px">Downloads a small model the first time (a few hundred MB), then runs privately in your browser. Leave off for an instant, reliable plan built from staple foods.</span></span>
       </label>
       <p class="hint" id="wizNote">Needs the country catalog to be reachable online the first time.</p>
     </div>
@@ -2189,7 +2194,8 @@
       currency: (opt&&opt.dataset.curr)||"EUR",
       weeklyBudget: parseFloat($("wizBudget").value)||0,
       prefs: ($("wizPrefs").value||"").trim(),
-      mealsPerDay: wizMeals
+      mealsPerDay: wizMeals,
+      useAI: $("wizUseAI").checked
     };
     $("wizModal").hidden=true;
     runBuild(lastWizAnswers);
@@ -2205,11 +2211,14 @@
     setBuildProgress("start","Starting…",null);
 
     var io={ base:YdinFoodLookup.DEFAULT_BASE, cache:mpCache };
-    // Create the on-device model engine (WebGPU present at this point). If the
-    // model or its CDN can't load, the planner falls back to staple foods.
+    // The on-device model is opt-in (it's a large download). Without it the plan
+    // is built deterministically from staple foods + the solver. With it, the
+    // model only chooses foods and the planner still falls back on any failure.
     var engine=null;
-    try{ engine=YdinPlanner.createWebLLMEngine({ onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); } }); }
-    catch(err){ engine=null; }
+    if(ans.useAI){
+      try{ engine=YdinPlanner.createWebLLMEngine({ onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); } }); }
+      catch(err){ engine=null; }
+    }
 
     YdinPlanner.buildPlan({
       dayTargets:dayTargets, cc:ans.cc, country:ans.country, currency:ans.currency,

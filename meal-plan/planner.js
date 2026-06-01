@@ -39,14 +39,14 @@
 
   // Browsers' DecompressionStream supports gzip/deflate but (almost universally)
   // NOT brotli, and the catalog .br objects ship with no Content-Encoding — so we
-  // decompress with a wasm decoder, loaded lazily from a CDN only when needed.
-  // Returns Promise<Uint8Array>. food-lookup's decodeBrotli awaits this.
-  var BROTLI_CDNS = ["https://esm.sh/brotli-wasm@3.0.1", "https://esm.run/brotli-wasm"];
-  var _brotliP = null;
-  // brotli-wasm's default export is itself a Promise (wasm init is async), and
-  // CDNs vary in how they re-export it — resolve defensively to the object that
-  // actually has decompress().
-  function pickBrotli(m) {
+  // decompress in JS, loaded lazily from a CDN only when needed.
+  //
+  // We prefer a PURE-JS decompressor: WASM brotli builds (e.g. brotli-wasm) often
+  // fail to initialise when served from a CDN (manifesting as an opaque
+  // "(void 0) is not a function" from their glue code). The wasm build is kept
+  // only as a last resort. Each attempt is normalised to decode(u8)->Uint8Array.
+  var _brotliDecodeP = null;
+  function pickBrotliWasm(m) {
     return Promise.resolve(m && m.default).then(function (resolvedDefault) {
       var candidates = [resolvedDefault, m, m && m.brotli];
       for (var i = 0; i < candidates.length; i++) {
@@ -55,15 +55,37 @@
       throw new Error("brotli-wasm: no decompress() export found");
     });
   }
-  function browserBrotli(u8) {
-    if (!_brotliP) {
-      _brotliP = BROTLI_CDNS.reduce(function (chain, url) {
-        return chain.catch(function () {
-          return import(/* webpackIgnore: true */ url).then(pickBrotli);
+  function loadBrotliDecode() {
+    if (_brotliDecodeP) return _brotliDecodeP;
+    function pureJS(url) {
+      return function () {
+        return import(/* webpackIgnore: true */ url).then(function (m) {
+          var fn = (m && m.default) || m;
+          if (typeof fn !== "function") throw new Error("brotli: no decompress function at " + url);
+          return function (u8) { return new Uint8Array(fn(u8)); };
         });
-      }, Promise.reject());
+      };
     }
-    return _brotliP.then(function (brotli) { return brotli.decompress(u8); });
+    function wasm(url) {
+      return function () {
+        return import(/* webpackIgnore: true */ url).then(pickBrotliWasm).then(function (b) {
+          return function (u8) { return new Uint8Array(b.decompress(u8)); };
+        });
+      };
+    }
+    var attempts = [
+      pureJS("https://esm.sh/brotli@1.3.3/decompress"),
+      pureJS("https://esm.run/brotli/decompress"),
+      wasm("https://esm.sh/brotli-wasm@3.0.1"),
+      wasm("https://esm.run/brotli-wasm")
+    ];
+    _brotliDecodeP = attempts.reduce(function (chain, attempt) {
+      return chain.catch(attempt);
+    }, Promise.reject());
+    return _brotliDecodeP;
+  }
+  function browserBrotli(u8) {
+    return loadBrotliDecode().then(function (decode) { return decode(u8); });
   }
 
   // Turn a catalog record + (optional) fetched product into the per-100 g macro

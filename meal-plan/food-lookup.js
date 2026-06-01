@@ -179,26 +179,31 @@
   // brotli-wasm) for browsers without native brotli.
   function decodeBrotli(bytes, opts) {
     opts = opts || {};
-    function wasm(err) {
-      if (typeof opts.brotliDecode === "function") {
-        var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-        // brotliDecode may be async (e.g. it lazily loads a wasm module).
-        return Promise.resolve(opts.brotliDecode(u8)).then(function (out) {
-          return (out instanceof Uint8Array || ArrayBuffer.isView(out))
-            ? new TextDecoder().decode(out) : String(out);
-        });
-      }
-      return Promise.reject(err || new Error("No brotli decoder (native or wasm fallback)"));
+    var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    function toText(out) {
+      return (out instanceof Uint8Array || ArrayBuffer.isView(out))
+        ? new TextDecoder().decode(out) : String(out);
     }
-    if (typeof DecompressionStream !== "undefined") {
-      try {
-        var ds = new DecompressionStream("brotli");
-        var stream = new Response(bytes).body.pipeThrough(ds);
-        // Native may reject asynchronously (e.g. non-brotli bytes) — fall back then too.
-        return new Response(stream).text().catch(wasm);
-      } catch (e) { return wasm(e); }
+    // Caller-provided decoder (pure-JS in the app). brotliDecode may be async.
+    function viaProvided() {
+      if (typeof opts.brotliDecode !== "function") return Promise.reject(new Error("no brotli decoder"));
+      return Promise.resolve(opts.brotliDecode(u8)).then(toText);
     }
-    return wasm();
+    // Native DecompressionStream("brotli"): rare and inconsistent across
+    // browsers (often unsupported, sometimes errors mid-pipe), so it's the
+    // fallback. Every failure — sync or async — is contained in this promise.
+    function viaNative() {
+      return new Promise(function (resolve, reject) {
+        try {
+          if (typeof DecompressionStream === "undefined") throw new Error("no DecompressionStream");
+          var ds = new DecompressionStream("brotli");
+          var stream = new Response(u8).body.pipeThrough(ds);
+          new Response(stream).text().then(resolve, reject);
+        } catch (e) { reject(e); }
+      });
+    }
+    // Prefer the (reliable, pure-JS) provided decoder; fall back to native.
+    return viaProvided().catch(function () { return viaNative(); });
   }
 
   // loadCountryCatalog(cc, opts) -> Promise<catalog array>.
