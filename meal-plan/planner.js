@@ -41,47 +41,41 @@
   // NOT brotli, and the catalog .br objects ship with no Content-Encoding — so we
   // decompress in JS, loaded lazily from a CDN only when needed.
   //
-  // We prefer a PURE-JS decompressor: WASM brotli builds (e.g. brotli-wasm) often
-  // fail to initialise when served from a CDN (manifesting as an opaque
-  // "(void 0) is not a function" from their glue code). The wasm build is kept
-  // only as a last resort. Each attempt is normalised to decode(u8)->Uint8Array.
+  // We use a PURE-JS decompressor (foliojs `brotli`). WASM brotli builds proved
+  // unreliable from CDNs — failing to initialise ("(void 0) is not a function")
+  // or throwing Emscripten binding errors ("Cannot pass non-string to
+  // std::string"). Pure JS has none of that. Output is normalised to Uint8Array.
   var _brotliDecodeP = null;
-  function pickBrotliWasm(m) {
-    return Promise.resolve(m && m.default).then(function (resolvedDefault) {
-      var candidates = [resolvedDefault, m, m && m.brotli];
-      for (var i = 0; i < candidates.length; i++) {
-        if (candidates[i] && typeof candidates[i].decompress === "function") return candidates[i];
-      }
-      throw new Error("brotli-wasm: no decompress() export found");
-    });
+  function findDecompressFn(m) {
+    var cands = [m && m.default, m && m.decompress,
+                 m && m.default && m.default.decompress, m];
+    for (var i = 0; i < cands.length; i++) {
+      if (typeof cands[i] === "function") return cands[i];
+    }
+    return null;
   }
   function loadBrotliDecode() {
     if (_brotliDecodeP) return _brotliDecodeP;
-    function pureJS(url) {
+    var urls = [
+      "https://esm.sh/brotli/decompress",
+      "https://esm.run/brotli/decompress",
+      "https://esm.sh/brotli",
+      "https://cdn.jsdelivr.net/npm/brotli@1.3.3/decompress.js/+esm"
+    ];
+    function attempt(url) {
       return function () {
         return import(/* webpackIgnore: true */ url).then(function (m) {
-          var fn = (m && m.default) || m;
-          if (typeof fn !== "function") throw new Error("brotli: no decompress function at " + url);
+          var fn = findDecompressFn(m);
+          if (!fn) throw new Error("brotli: no decompress() at " + url);
           return function (u8) { return new Uint8Array(fn(u8)); };
         });
       };
     }
-    function wasm(url) {
-      return function () {
-        return import(/* webpackIgnore: true */ url).then(pickBrotliWasm).then(function (b) {
-          return function (u8) { return new Uint8Array(b.decompress(u8)); };
-        });
-      };
-    }
-    var attempts = [
-      pureJS("https://esm.sh/brotli@1.3.3/decompress"),
-      pureJS("https://esm.run/brotli/decompress"),
-      wasm("https://esm.sh/brotli-wasm@3.0.1"),
-      wasm("https://esm.run/brotli-wasm")
-    ];
-    _brotliDecodeP = attempts.reduce(function (chain, attempt) {
-      return chain.catch(attempt);
-    }, Promise.reject());
+    _brotliDecodeP = urls.reduce(function (chain, url) {
+      return chain.catch(attempt(url));
+    }, Promise.reject()).catch(function () {
+      throw new Error("Couldn't load a brotli decoder from any CDN (offline or blocked).");
+    });
     return _brotliDecodeP;
   }
   function browserBrotli(u8) {

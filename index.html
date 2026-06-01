@@ -2168,6 +2168,11 @@
   // Session cache so repeat builds don't refetch the catalog/products.
   var mpCache={_c:{}, get:function(k){return this._c[k];}, set:function(k,v){this._c[k]=v;}};
 
+  // True while an on-device build is running, so the global error handler below
+  // can surface otherwise-uncaught failures (e.g. errors thrown inside the WebLLM
+  // / wasm bundles, which escape normal promise chains) in the build UI.
+  var buildActive=false;
+
   function setBuildProgress(stage, detail, pct){
     var fill=$("buildFill"), st=$("buildStage");
     if(st) st.textContent = detail || stage;
@@ -2177,13 +2182,33 @@
     }
   }
   function showBuildError(msg){
+    buildActive=false;
     var err=$("buildErr");
+    $("buildModal").hidden=false;
     $("buildTitle").textContent="Couldn’t finish on-device";
     setBuildProgress("error", "Stopped.", 0);
     if(err){ err.hidden=false; err.textContent=msg; }
     $("buildRetry").hidden=false;
   }
-  $("buildClose").addEventListener("click", function(){ $("buildModal").hidden=true; });
+  // Catch failures that escape the promise chain (uncaught rejections + errors
+  // thrown synchronously inside dynamically-imported bundles) and warn in the UI
+  // instead of failing silently in the console.
+  function buildErrText(reason){
+    if(!reason) return "Something went wrong building on-device.";
+    if(reason.message) return reason.message;
+    return String(reason);
+  }
+  window.addEventListener("unhandledrejection", function(e){
+    if(!buildActive) return;
+    showBuildError(buildErrText(e && e.reason)+
+      "\n\nThis came from the on-device build. You can try again, or use the copy-prompt path which always works.");
+  });
+  window.addEventListener("error", function(e){
+    if(!buildActive) return;
+    showBuildError(buildErrText(e && (e.error||e.message))+
+      "\n\nThis came from the on-device build. You can try again, or use the copy-prompt path which always works.");
+  });
+  $("buildClose").addEventListener("click", function(){ buildActive=false; $("buildModal").hidden=true; });
   var lastWizAnswers=null;
   $("buildRetry").addEventListener("click", function(){ if(lastWizAnswers) runBuild(lastWizAnswers); });
 
@@ -2205,6 +2230,7 @@
     var dayTargets=buildDayTargets();
     if(!dayTargets){ return; }
     // reset modal
+    buildActive=true;
     $("buildErr").hidden=true; $("buildRetry").hidden=true;
     $("buildTitle").textContent="Building your plan…";
     $("buildModal").hidden=false;
@@ -2231,6 +2257,7 @@
     }).then(function(plan){
       var norm=normalizeMealPlan(plan);
       if(!norm){ showBuildError("The plan came back without any days. Try again, or use the copy-prompt path."); return; }
+      buildActive=false;
       mealPlan=norm; mealDay=0; mealEditor=null;
       persist(); renderMealPlan();
       setBuildProgress("done","Done — opening your plan.",100);
