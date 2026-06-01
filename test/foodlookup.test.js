@@ -84,6 +84,24 @@ ok("estimated flag true (milk has ai_guesses)", totals.estimated === true);
 ok("missing reported for unknown code",
    fl.buildMealTotals([{ code: "999", grams: 100 }], products).missing.length === 1);
 
+// ---- decodeBrotli accepts an async (promise-returning) wasm decoder ----------
+console.log("\n== decodeBrotli async fallback ==");
+(function () {
+  var plain = '["x","Async food",null,"fi",100,"g",1,2,3,4]';
+  // No native brotli in Node for these bytes -> falls back to our async decoder,
+  // which mimics a wasm module that loads/returns asynchronously.
+  return fl.decodeBrotli(Buffer.from("ignored"), {
+    brotliDecode: function () {
+      return Promise.resolve(Buffer.from(plain, "utf8"));
+    }
+  }).then(function (text) {
+    var cat = fl.parseCatalog(text);
+    ok("async brotliDecode resolves to parseable text", cat.length === 1 && cat[0].name === "Async food",
+       JSON.stringify(cat));
+  });
+})().then(runDispatch);
+
+function runDispatch() {
 // ---- dispatchTool end to end, with injected fetch + brotli (no live host) ----
 console.log("\n== dispatchTool (injected I/O) ==");
 function fakeFetch(url) {
@@ -117,3 +135,4 @@ fl.dispatchTool("fi", "search_foods", { query: "oats" }, ctx).then(function (res
   console.log("\n" + pass + " passed, " + (fail + 1) + " failed");
   process.exit(1);
 });
+}

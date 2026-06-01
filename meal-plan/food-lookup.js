@@ -182,10 +182,11 @@
     function wasm(err) {
       if (typeof opts.brotliDecode === "function") {
         var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-        var out = opts.brotliDecode(u8);
-        var decoded = out instanceof Uint8Array || ArrayBuffer.isView(out)
-          ? new TextDecoder().decode(out) : String(out);
-        return Promise.resolve(decoded);
+        // brotliDecode may be async (e.g. it lazily loads a wasm module).
+        return Promise.resolve(opts.brotliDecode(u8)).then(function (out) {
+          return (out instanceof Uint8Array || ArrayBuffer.isView(out))
+            ? new TextDecoder().decode(out) : String(out);
+        });
       }
       return Promise.reject(err || new Error("No brotli decoder (native or wasm fallback)"));
     }

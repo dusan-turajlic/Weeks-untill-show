@@ -37,6 +37,35 @@
                     return typeof n === "number" && isFinite(n) ? n : 0; }
   function round(x) { return Math.round(num(x) * 10) / 10; }
 
+  // Browsers' DecompressionStream supports gzip/deflate but (almost universally)
+  // NOT brotli, and the catalog .br objects ship with no Content-Encoding — so we
+  // decompress with a wasm decoder, loaded lazily from a CDN only when needed.
+  // Returns Promise<Uint8Array>. food-lookup's decodeBrotli awaits this.
+  var BROTLI_CDNS = ["https://esm.sh/brotli-wasm@3.0.1", "https://esm.run/brotli-wasm"];
+  var _brotliP = null;
+  // brotli-wasm's default export is itself a Promise (wasm init is async), and
+  // CDNs vary in how they re-export it — resolve defensively to the object that
+  // actually has decompress().
+  function pickBrotli(m) {
+    return Promise.resolve(m && m.default).then(function (resolvedDefault) {
+      var candidates = [resolvedDefault, m, m && m.brotli];
+      for (var i = 0; i < candidates.length; i++) {
+        if (candidates[i] && typeof candidates[i].decompress === "function") return candidates[i];
+      }
+      throw new Error("brotli-wasm: no decompress() export found");
+    });
+  }
+  function browserBrotli(u8) {
+    if (!_brotliP) {
+      _brotliP = BROTLI_CDNS.reduce(function (chain, url) {
+        return chain.catch(function () {
+          return import(/* webpackIgnore: true */ url).then(pickBrotli);
+        });
+      }, Promise.reject());
+    }
+    return _brotliP.then(function (brotli) { return brotli.decompress(u8); });
+  }
+
   // Turn a catalog record + (optional) fetched product into the per-100 g macro
   // row the solver needs. Product macros win for P/F/C; fibre comes from the
   // catalog index (product breakdowns often omit it).
@@ -130,6 +159,10 @@
     var mealsPerDay = Math.max(1, (opts.mealsPerDay | 0) || 3);
     var staples = opts.staples || DEFAULT_STAPLES;
     var repairRounds = opts.repairRounds == null ? 2 : opts.repairRounds;
+
+    // Brotli isn't decodable natively in the browser — supply the wasm fallback
+    // unless the caller already wired one (the Node tests inject their own).
+    if (!io.brotliDecode && typeof window !== "undefined") io.brotliDecode = browserBrotli;
 
     report("catalog", "Loading the " + (opts.country || "country") + " food catalog…");
     var catP = io.catalog ? Promise.resolve(io.catalog)
@@ -338,6 +371,7 @@
   var api = {
     buildPlan: buildPlan,
     createWebLLMEngine: createWebLLMEngine,
+    browserBrotli: browserBrotli,
     DEFAULT_STAPLES: DEFAULT_STAPLES,
     macroRow: macroRow,
     splitIntoMeals: splitIntoMeals,
