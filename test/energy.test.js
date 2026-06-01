@@ -27,7 +27,8 @@ var api = new Function(
   "return { maintMultiplier:maintMultiplier, maintenanceCalories:maintenanceCalories, " +
   "minProtein:minProtein, minFat:minFat, interp:interp, calcKcalPerStep:calcKcalPerStep, roundSteps:roundSteps, " +
   "fatFloorG:fatFloorG, cyclePlan:cyclePlan, " +
-  "KCAL_PER_KG:KCAL_PER_KG, KG_TO_LB:KG_TO_LB, MAX_FOOD_DEFICIT:MAX_FOOD_DEFICIT, FIBER_MIN:FIBER_MIN };"
+  "KCAL_PER_KG:KCAL_PER_KG, KG_TO_LB:KG_TO_LB, MAX_FOOD_DEFICIT:MAX_FOOD_DEFICIT, " +
+  "MIN_PHASE_STEPS:MIN_PHASE_STEPS, FIBER_MIN:FIBER_MIN };"
 )();
 
 // ---- tiny assert harness ---------------------------------------------------
@@ -114,6 +115,34 @@ check("fibre target is 35g", api.FIBER_MIN === 35);
   var steps = stepDef / kps;
   check("10kg/84d (~917) caps food at 700, steps cover the rest",
     food === 700 && near(stepDef, 217, 2) && steps > 5000);
+})();
+
+// ---- minimum-steps floor for a dieting phase -------------------------------
+// energyPlan() always reserves at least MIN_PHASE_STEPS worth of the deficit
+// for walking, taken out of food first so the goal (and projection) stay put.
+check("minimum phase steps is 2000", api.MIN_PHASE_STEPS === 2000);
+
+// Small goal that food alone used to cover: reserve the step floor from food.
+//   stepFloor = 2000 * kps ;  food = clamp(need - stepFloor, 0, 700)
+(function () {
+  var need = 6 * api.KCAL_PER_KG / 84;               // ~550/day, under the old cap
+  var stepFloor = api.MIN_PHASE_STEPS * kps;
+  var food = Math.min(Math.max(0, need - stepFloor), api.MAX_FOOD_DEFICIT);
+  var stepDef = Math.max(stepFloor, need - food);
+  var steps = stepDef / kps;
+  check("6kg/84d now still walks at least the 2000-step minimum",
+    api.roundSteps(steps) >= api.MIN_PHASE_STEPS &&
+    near(food + stepDef, need, 1e-9));               // total deficit unchanged
+})();
+
+// Steep goal (food already capped): the step floor never lowers the real steps.
+(function () {
+  var need = 10 * api.KCAL_PER_KG / 84;              // ~917/day
+  var stepFloor = api.MIN_PHASE_STEPS * kps;
+  var food = Math.min(Math.max(0, need - stepFloor), api.MAX_FOOD_DEFICIT);
+  var stepDef = Math.max(stepFloor, need - food);
+  check("10kg/84d keeps food at 700 and steps stay above the 2000 floor",
+    food === 700 && stepDef > stepFloor && near(food + stepDef, need, 1e-9));
 })();
 
 // ---- carb cycling ----------------------------------------------------------
