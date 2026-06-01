@@ -102,11 +102,10 @@ planner.buildPlan({
     });
   ok("import-shape valid (days/meals/items numeric)", importable);
 
-  // A failing engine (e.g. WebLLM stalling/erroring) must NOT break the build:
-  // the planner falls back to staples, still produces a valid plan, and emits
-  // an "aiskip" progress signal so the UI can tell the user.
-  console.log("\n== engine-failure fallback ==");
-  var stages2 = [];
+  // A failing engine (e.g. WebLLM stalling/erroring) must NOT silently degrade to
+  // a staple plan — that path was removed. buildPlan rejects with an aiFailure
+  // flag so the app can blocklist that model and walk to the next one.
+  console.log("\n== engine failure rejects (no staple fallback) ==");
   var brokenEngine = {
     suggestFoods: function () { return Promise.reject(new Error("Cannot pass non-string to std::string")); }
   };
@@ -114,13 +113,24 @@ planner.buildPlan({
     dayTargets: dayTargets, country: "Finland", currency: "EUR", weeklyBudget: 70,
     prefs: "", mealsPerDay: 3, io: { catalog: catalog, fetch: fakeFetch },
     engine: brokenEngine,
-    staples: ["chicken", "olive oil", "rice", "black beans", "psyllium"],
-    onProgress: function (stage) { stages2.push(stage); }
-  }).then(function (plan2) {
-    ok("fallback still builds a plan", plan2 && plan2.days && plan2.days.length === 2);
-    ok("emits aiskip when engine fails", stages2.indexOf("aiskip") >= 0, stages2.join(","));
-    ok("fallback plan hits protein", plan2.days[0].totals.protein >= 132, "got " + plan2.days[0].totals.protein);
-
+    staples: ["chicken", "olive oil", "rice", "black beans", "psyllium"]
+  }).then(function () {
+    ok("engine failure rejects (no staple plan)", false, "resolved instead of rejecting");
+  }, function (err) {
+    ok("engine failure rejects (no staple plan)", true);
+    ok("rejection flagged aiFailure (lets the app walk models)", err && err.aiFailure === true);
+  }).then(function () {
+    // A model that returns ZERO usable foods is also a failure, not a staple plan.
+    return planner.buildPlan({
+      dayTargets: dayTargets, country: "Finland", currency: "EUR", weeklyBudget: 70,
+      prefs: "", mealsPerDay: 3, io: { catalog: catalog, fetch: fakeFetch },
+      engine: { suggestFoods: function () { return Promise.resolve([]); } }
+    }).then(function () {
+      ok("empty food list rejects", false, "resolved instead of rejecting");
+    }, function (err) {
+      ok("empty food list rejects with aiFailure", err && err.aiFailure === true);
+    });
+  }).then(function () {
     // ---- device-aware model selection (pure) ----
     console.log("\n== selectModel (device mapping) ==");
     // Minimal stand-in for webllm.prebuiltAppConfig.model_list.

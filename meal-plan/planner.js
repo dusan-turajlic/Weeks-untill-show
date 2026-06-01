@@ -187,19 +187,30 @@
     return catP.then(function (catalog) {
       io.catalog = catalog;
 
-      // 1) Choose foods — model first, staples as the safety net.
+      // 1) Choose foods. With an engine the model's picks are authoritative —
+      // there is NO staple fallback: if it can't produce foods we reject (flagged
+      // aiFailure) so the caller can blocklist that model and try the next one.
+      // (The staples list is only used when buildPlan is called with no engine.)
       report("choose", "Choosing foods…");
-      var queriesP = opts.engine && opts.engine.suggestFoods
-        ? Promise.resolve(opts.engine.suggestFoods({
+      var queriesP;
+      if (opts.engine && opts.engine.suggestFoods) {
+        queriesP = Promise.resolve(opts.engine.suggestFoods({
             dayTargets: opts.dayTargets, prefs: opts.prefs,
             country: opts.country, mealsPerDay: mealsPerDay
           })).then(function (list) {
-            return (list && list.length) ? list.concat(staples) : staples;
-          }).catch(function () {
-            report("aiskip", "On-device AI couldn't start — building from staple foods.");
-            return staples;
-          })
-        : Promise.resolve(staples);
+            var foods = (list || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+            if (!foods.length) {
+              var empty = new Error("The on-device model didn't return any foods.");
+              empty.aiFailure = true; throw empty;
+            }
+            return foods;
+          }, function (err) {
+            err = err || new Error("On-device AI failed.");
+            err.aiFailure = true; throw err;
+          });
+      } else {
+        queriesP = Promise.resolve(staples);
+      }
 
       return queriesP.then(function (queries) {
         var recs = gatherFoods(catalog, queries);
@@ -310,14 +321,18 @@
   // the deterministic staple plan. WebLLM can hang on some GPUs (e.g. Apple) with
   // an internal "Cannot pass non-string to std::string" while its load promise
   // never settles — the watchdog is the escape hatch.
-  var STALL_MS = 40000;
-  // Once the model has loaded, generation must also make progress. WebLLM can
-  // finish loading ("Finish loading on WebGPU - …") and then hang on the very
+  // These are "no progress for this long" windows, NOT total-time caps: a build
+  // may legitimately run well over a minute as long as something is happening.
+  // Download is alive while its % advances; generation is alive while tokens
+  // stream. Only a genuine silence this long counts as stuck.
+  var STALL_MS = 60000;
+  // Once the model has loaded, generation must also keep communicating. WebLLM
+  // can finish loading ("Finish loading on WebGPU - …") and then hang on the very
   // first generation on some GPUs (notably Apple) — emitting no tokens and never
   // settling. We stream the reply so each token is a heartbeat; if none arrives
-  // for this long we interrupt and reject, which drops to the staple plan and
-  // blocklists this model so "Build again" walks to the next one.
-  var GEN_STALL_MS = 25000;
+  // for this long we interrupt and reject, so the caller can blocklist this model
+  // and try the next one.
+  var GEN_STALL_MS = 60000;
 
   // Preferred model bases, smallest-first. The model only NAMES foods (a trivial
   // task), so a 1B is plenty — favour fast, low-memory, reliable downloads, and
@@ -473,8 +488,9 @@
     // forever; callers parse JSON leniently from the returned text.
     function streamChat(engine, messages, opts) {
       opts = opts || {};
+      var label = opts.label || "Working";
       return new Promise(function (resolve, reject) {
-        var text = "", settled = false, lastTok = Date.now(), watch;
+        var text = "", nTok = 0, settled = false, lastTok = Date.now(), watch;
         function finish(err) {
           if (settled) return;
           settled = true;
@@ -502,7 +518,10 @@
               if (res.done) { finish(null); return; }
               lastTok = Date.now();
               var d = res.value && res.value.choices && res.value.choices[0] && res.value.choices[0].delta;
-              if (d && d.content) text += d.content;
+              if (d && d.content) {
+                text += d.content; nTok++;
+                onProgress("generate", label + "… (" + nTok + " tokens)");
+              }
               pump();
             }, finish);
           })();
@@ -520,12 +539,12 @@
       return {};
     }
 
-    function chatJSON(system, user) {
+    function chatJSON(system, user, label) {
       return load().then(function (engine) {
         return streamChat(engine, [
           { role: "system", content: system },
           { role: "user", content: user }
-        ], { temperature: 0.4, max_tokens: 600 }).then(parseLooseJSON);
+        ], { temperature: 0.4, max_tokens: 600, label: label }).then(parseLooseJSON);
       });
     }
 
@@ -544,7 +563,7 @@
           " g fat, " + Math.round(t.carbs || 0) + " g carbs, fibre ≥ " +
           Math.round(t.fiber || 35) + " g.\nMeals per day: " + (ctx.mealsPerDay || 3) +
           ".\nName foods only — portions are computed separately.";
-        return chatJSON(sys, usr).then(function (o) {
+        return chatJSON(sys, usr, "The model is choosing foods").then(function (o) {
           return Array.isArray(o.foods) ? o.foods.filter(function (x) { return typeof x === "string"; }) : [];
         });
       },
@@ -555,7 +574,7 @@
         return load().then(function (engine) {
           return streamChat(engine, [
             { role: "system", content: sys }, { role: "user", content: usr }
-          ], { temperature: 0.6, max_tokens: 80 }).then(function (txt) {
+          ], { temperature: 0.6, max_tokens: 80, label: "Writing your plan summary" }).then(function (txt) {
             return (txt || "").trim();
           });
         }).catch(function () { return ""; });

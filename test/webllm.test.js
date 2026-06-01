@@ -108,17 +108,17 @@ function run() {
     }
     var catalog = fl.parseCatalog(CATALOG);
     var stallEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ stall: true }) }, fast));
-    var stages = [];
     return planner.buildPlan({
       dayTargets: [{ key: "low", label: "Low day", count: 7, kcal: 1444, protein: 135, fat: 68, carbs: 74, fiber: 35 }],
       country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "", mealsPerDay: 3,
-      io: { catalog: catalog, fetch: fakeFetch }, engine: stallEngine,
-      staples: ["chicken", "olive oil", "rice", "black beans", "psyllium"],
-      onProgress: function (stage) { stages.push(stage); }
-    }).then(function (plan) {
-      ok("stalling engine does not hang buildPlan (plan returned)", plan && plan.days && plan.days.length === 1);
-      ok("emits aiskip so the model gets blocklisted", stages.indexOf("aiskip") >= 0, stages.join(","));
-      ok("fallback plan still hits protein target", plan.days[0].totals.protein >= 132, "got " + plan.days[0].totals.protein);
+      io: { catalog: catalog, fetch: fakeFetch }, engine: stallEngine
+    }).then(function () {
+      ok("stalling engine -> buildPlan rejects (no hang, no staple plan)", false, "resolved instead of rejecting");
+    }, function (err) {
+      // The watchdog turns the hang into a clean rejection (so the app can walk
+      // to the next model) rather than spinning forever or degrading to staples.
+      ok("stalling engine -> buildPlan rejects (no hang, no staple plan)", !!err);
+      ok("rejection flagged aiFailure (app walks to next model)", err && err.aiFailure === true);
     });
   });
 }
