@@ -195,7 +195,10 @@
             country: opts.country, mealsPerDay: mealsPerDay
           })).then(function (list) {
             return (list && list.length) ? list.concat(staples) : staples;
-          }).catch(function () { return staples; })
+          }).catch(function () {
+            report("aiskip", "On-device AI couldn't start — building from staple foods.");
+            return staples;
+          })
         : Promise.resolve(staples);
 
       return queriesP.then(function (queries) {
@@ -305,6 +308,11 @@
   var WEBLLM_CDN = "https://esm.run/@mlc-ai/web-llm";
   var DEFAULT_MODEL = "Llama-3.2-3B-Instruct-q4f16_1-MLC";
   var FALLBACK_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+  // If model init makes no progress for this long, treat it as stuck and bail to
+  // the deterministic staple plan. WebLLM can hang on some GPUs (e.g. Apple) with
+  // an internal "Cannot pass non-string to std::string" while its load promise
+  // never settles — the watchdog is the escape hatch.
+  var STALL_MS = 40000;
 
   function createWebLLMEngine(options) {
     options = options || {};
@@ -313,23 +321,36 @@
 
     // Lazy: the heavy WebLLM code + model only download when a method is first
     // called (i.e. after the catalog has loaded), never on Path B / no-WebGPU.
-    // Dynamic import() works fine in a classic script.
     var loadP = null;
     function load() {
       if (loadP) return loadP;
-      loadP = import(/* webpackIgnore: true */ WEBLLM_CDN).then(function (webllm) {
-        function start(m) {
-          return webllm.CreateMLCEngine(m, {
-            initProgressCallback: function (p) {
-              onProgress("download", p && p.text ? p.text : ("Downloading model… " +
-                Math.round((p && p.progress || 0) * 100) + "%"));
-            }
-          });
+      loadP = new Promise(function (resolve, reject) {
+        var settled = false, lastTick = Date.now(), watch;
+        function finish(ok, val) {
+          if (settled) return;
+          settled = true;
+          clearInterval(watch);
+          ok ? resolve(val) : reject(val);
         }
-        return start(model).catch(function () {
-          onProgress("download", "Falling back to a smaller model…");
-          return start(FALLBACK_MODEL);
-        });
+        watch = setInterval(function () {
+          if (Date.now() - lastTick > STALL_MS) {
+            finish(false, new Error("On-device AI stalled while loading the model on this device."));
+          }
+        }, 2000);
+        function progress(p) {
+          lastTick = Date.now();
+          onProgress("download", p && p.text ? p.text : ("Downloading model… " +
+            Math.round((p && p.progress || 0) * 100) + "%"));
+        }
+        import(/* webpackIgnore: true */ WEBLLM_CDN).then(function (webllm) {
+          function start(m) { return webllm.CreateMLCEngine(m, { initProgressCallback: progress }); }
+          return start(model).catch(function () {
+            onProgress("download", "Falling back to a smaller model…");
+            lastTick = Date.now();
+            return start(FALLBACK_MODEL);
+          });
+        }).then(function (engine) { finish(true, engine); },
+                function (err) { finish(false, err); });
       });
       return loadP;
     }

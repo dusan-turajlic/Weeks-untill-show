@@ -102,6 +102,26 @@ planner.buildPlan({
     });
   ok("import-shape valid (days/meals/items numeric)", importable);
 
+  // A failing engine (e.g. WebLLM stalling/erroring) must NOT break the build:
+  // the planner falls back to staples, still produces a valid plan, and emits
+  // an "aiskip" progress signal so the UI can tell the user.
+  console.log("\n== engine-failure fallback ==");
+  var stages2 = [];
+  var brokenEngine = {
+    suggestFoods: function () { return Promise.reject(new Error("Cannot pass non-string to std::string")); }
+  };
+  return planner.buildPlan({
+    dayTargets: dayTargets, country: "Finland", currency: "EUR", weeklyBudget: 70,
+    prefs: "", mealsPerDay: 3, io: { catalog: catalog, fetch: fakeFetch },
+    engine: brokenEngine,
+    staples: ["chicken", "olive oil", "rice", "black beans", "psyllium"],
+    onProgress: function (stage) { stages2.push(stage); }
+  }).then(function (plan2) {
+    ok("fallback still builds a plan", plan2 && plan2.days && plan2.days.length === 2);
+    ok("emits aiskip when engine fails", stages2.indexOf("aiskip") >= 0, stages2.join(","));
+    ok("fallback plan hits protein", plan2.days[0].totals.protein >= 132, "got " + plan2.days[0].totals.protein);
+  });
+}).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (e) {

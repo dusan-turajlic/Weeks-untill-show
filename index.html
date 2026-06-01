@@ -2190,23 +2190,14 @@
     if(err){ err.hidden=false; err.textContent=msg; }
     $("buildRetry").hidden=false;
   }
-  // Catch failures that escape the promise chain (uncaught rejections + errors
-  // thrown synchronously inside dynamically-imported bundles) and warn in the UI
-  // instead of failing silently in the console.
-  function buildErrText(reason){
-    if(!reason) return "Something went wrong building on-device.";
-    if(reason.message) return reason.message;
-    return String(reason);
-  }
+  // The on-device AI (WebLLM) can throw uncaught errors from inside its wasm
+  // bundle (e.g. "Cannot pass non-string to std::string" on some GPUs) while its
+  // load promise never settles. The planner's watchdog recovers by falling back
+  // to staple foods, so during a build we swallow these escapes (keeping the
+  // console clean) rather than failing — the user still gets a plan, plus the
+  // "AI couldn't start" note below. Genuine failures surface via runBuild's catch.
   window.addEventListener("unhandledrejection", function(e){
-    if(!buildActive) return;
-    showBuildError(buildErrText(e && e.reason)+
-      "\n\nThis came from the on-device build. You can try again, or use the copy-prompt path which always works.");
-  });
-  window.addEventListener("error", function(e){
-    if(!buildActive) return;
-    showBuildError(buildErrText(e && (e.error||e.message))+
-      "\n\nThis came from the on-device build. You can try again, or use the copy-prompt path which always works.");
+    if(buildActive) e.preventDefault();
   });
   $("buildClose").addEventListener("click", function(){ buildActive=false; $("buildModal").hidden=true; });
   var lastWizAnswers=null;
@@ -2231,6 +2222,7 @@
     if(!dayTargets){ return; }
     // reset modal
     buildActive=true;
+    var aiSkipped=false;
     $("buildErr").hidden=true; $("buildRetry").hidden=true;
     $("buildTitle").textContent="Building your plan…";
     $("buildModal").hidden=false;
@@ -2251,7 +2243,8 @@
       weeklyBudget:ans.weeklyBudget, prefs:ans.prefs, mealsPerDay:ans.mealsPerDay,
       io:io, engine:engine,
       onProgress:function(stage,detail){
-        var pctMap={catalog:15,choose:35,fetch:55,solve:75,assemble:90,done:100};
+        if(stage==="aiskip") aiSkipped=true;
+        var pctMap={catalog:15,choose:35,aiskip:40,fetch:55,solve:75,assemble:90,done:100};
         setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
       }
     }).then(function(plan){
@@ -2263,7 +2256,9 @@
       setBuildProgress("done","Done — opening your plan.",100);
       $("buildModal").hidden=true;
       setView("meal");
-      setImportOk("On-device plan built and saved to this device.");
+      setImportOk(aiSkipped
+        ? "Plan built from staple foods — on-device AI couldn’t start on this device. You can retry, untick the AI option, or use the copy-prompt path."
+        : "On-device plan built and saved to this device.");
     }).catch(function(err){
       showBuildError((err && err.message) ? err.message :
         "Something went wrong building on-device. The country catalog may be unreachable — the copy-prompt path always works.");
