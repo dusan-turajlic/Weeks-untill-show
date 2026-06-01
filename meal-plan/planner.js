@@ -108,14 +108,24 @@
     return out;
   }
 
+  var MEAL_NAMES = ["Breakfast", "Lunch", "Dinner", "Snack", "Second snack", "Supper"];
+  function defaultMealNames(n) {
+    var a = [];
+    for (var i = 0; i < n; i++) a.push(i < MEAL_NAMES.length ? MEAL_NAMES[i] : "Meal " + (i + 1));
+    return a;
+  }
+
   // Split a day's solved foods across `meals` meals. Deterministic: each food's
   // grams are divided evenly across the meals, so every meal is nutritionally
   // balanced. Foods under ~5 g are dropped as noise.
+  // NOTE: this even-split makes every meal identical, so it's only the fallback
+  // for the engine-less / flat-list path. The model path uses a real per-meal
+  // layout (buildMealsFromLayout) so meals are genuinely different.
   function splitIntoMeals(solvedFoods, products, mealsPerDay) {
     var n = Math.max(1, mealsPerDay | 0);
     var kept = solvedFoods.filter(function (f) { return f.grams >= 5; });
     var meals = [];
-    var names = ["Breakfast", "Lunch", "Dinner", "Snack", "Second snack", "Supper"];
+    var names = defaultMealNames(n);
     for (var i = 0; i < n; i++) {
       var items = kept.map(function (f) {
         var grams = round(f.grams / n);
@@ -129,6 +139,33 @@
       meals.push({ name: n <= names.length ? names[i] : "Meal " + (i + 1), items: items });
     }
     return meals;
+  }
+
+  // Build per-meal items from a model-designed layout: each food belongs to ONE
+  // meal and shows its FULL solved grams (not divided), so meals are genuinely
+  // distinct. `mealOf[i]` is the meal index for foods[i]; `solved[i]` carries the
+  // grams. Empty meals (e.g. all their foods zeroed on a low day) are dropped.
+  function buildMealsFromLayout(names, mealOf, solved, products) {
+    var meals = names.map(function (nm) { return { name: nm, items: [] }; });
+    solved.forEach(function (s, i) {
+      if (s.grams < 5) return;
+      var mi = mealOf[i]; if (mi == null || mi < 0 || mi >= meals.length) mi = 0;
+      var t = FL.buildMealTotals([{ code: s.code, grams: s.grams, fiber100: s.fiber100 }], products).totals;
+      meals[mi].items.push({
+        food: s.name, amount: Math.round(s.grams) + " g",
+        kcal: Math.round(t.kcal), protein: round(t.protein),
+        fat: round(t.fat), carbs: round(t.carbs), fiber: round(t.fiber)
+      });
+    });
+    return meals.filter(function (m) { return m.items.length; });
+  }
+  // Meal index that currently holds the fewest foods — where a repair food goes,
+  // so additions spread out instead of piling into one meal.
+  function smallestMeal(mealOf, nMeals) {
+    var counts = []; for (var k = 0; k < nMeals; k++) counts[k] = 0;
+    mealOf.forEach(function (mi) { if (mi >= 0 && mi < nMeals) counts[mi]++; });
+    var best = 0; for (var i = 1; i < nMeals; i++) if (counts[i] < counts[best]) best = i;
+    return best;
   }
 
   // Build a shopping list grouped by brand (a stand-in "retailer" — real
@@ -188,40 +225,70 @@
     return catP.then(function (catalog) {
       io.catalog = catalog;
 
-      // 1) Choose foods. With an engine the model's picks are authoritative —
-      // there is NO staple fallback: if it can't produce foods we reject (flagged
-      // aiFailure) so the caller can blocklist that model and try the next one.
-      // (The staples list is only used when buildPlan is called with no engine.)
-      report("choose", "Choosing foods…");
-      var queriesP;
-      if (opts.engine && opts.engine.suggestFoods) {
-        queriesP = Promise.resolve(opts.engine.suggestFoods({
-            dayTargets: opts.dayTargets, prefs: opts.prefs,
-            country: opts.country, mealsPerDay: mealsPerDay
-          })).then(function (list) {
-            var foods = (list || []).filter(function (x) { return typeof x === "string" && x.trim(); });
-            if (!foods.length) {
-              var empty = new Error("The on-device model didn't return any foods.");
-              empty.aiFailure = true; throw empty;
-            }
-            return foods;
-          }, function (err) {
-            err = err || new Error("On-device AI failed.");
-            err.aiFailure = true; throw err;
-          });
-      } else {
-        queriesP = Promise.resolve(staples);
-      }
-
-      return queriesP.then(function (queries) {
+      // 1) Decide the foods. With an engine the model is authoritative — there is
+      // NO staple fallback: any failure rejects (flagged aiFailure) so the caller
+      // can blocklist that model and try the next. suggestMeals designs DISTINCT
+      // meals (which foods go in each meal); suggestFoods is the older flat-list
+      // path; the staples list is only for engine-less (library) calls.
+      report("choose", "Designing your meals…");
+      var nMeals = mealsPerDay;
+      var mealNames = defaultMealNames(nMeals);
+      function aiReject(err) { err = err || new Error("On-device AI failed."); err.aiFailure = true; throw err; }
+      function flatSelect(queries) {
         var recs = gatherFoods(catalog, queries);
         if (!recs.length) throw new Error("No matching foods found in the catalog for this country.");
         var recsByCode = {};
         recs.forEach(function (r) { recsByCode[r.code] = r; });
+        return { recs: recs, recsByCode: recsByCode, layout: null };
+      }
+
+      var selectP;
+      if (opts.engine && opts.engine.suggestMeals) {
+        selectP = Promise.resolve(opts.engine.suggestMeals({
+            dayTargets: opts.dayTargets, prefs: opts.prefs, tastes: opts.tastes,
+            breakfast: opts.breakfast, country: opts.country,
+            mealsPerDay: nMeals, mealNames: mealNames
+          })).then(function (design) {
+            var dm = design && design.meals;
+            if (!Array.isArray(dm) || !dm.length) aiReject(new Error("The model returned no meals."));
+            // Resolve each meal's food names against the catalog; each code belongs
+            // to the FIRST meal that names it (so meals stay distinct).
+            var names = [], ofCode = {}, recsByCode = {}, recs = [];
+            dm.forEach(function (m, mi) {
+              names.push((m && typeof m.name === "string" && m.name.trim()) ? m.name.trim()
+                         : (mealNames[mi] || ("Meal " + (mi + 1))));
+              ((m && m.foods) || []).forEach(function (nm) {
+                if (typeof nm !== "string" || !nm.trim()) return;
+                var hit = FL.searchFoods(catalog, nm, 1)[0];
+                if (hit && hit.code && ofCode[hit.code] == null) {
+                  ofCode[hit.code] = mi; recsByCode[hit.code] = hit; recs.push(hit);
+                }
+              });
+            });
+            if (!recs.length) aiReject(new Error("None of the model's foods matched the catalog."));
+            return { recs: recs, recsByCode: recsByCode, layout: { names: names, ofCode: ofCode } };
+          }, aiReject);
+      } else if (opts.engine && opts.engine.suggestFoods) {
+        selectP = Promise.resolve(opts.engine.suggestFoods({
+            dayTargets: opts.dayTargets, prefs: opts.prefs,
+            country: opts.country, mealsPerDay: nMeals
+          })).then(function (list) {
+            var q = (list || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+            if (!q.length) aiReject(new Error("The model returned no foods."));
+            return q;
+          }, aiReject).then(flatSelect);
+      } else {
+        selectP = Promise.resolve(staples).then(flatSelect);
+      }
+
+      return selectP.then(function (sel) {
+        var recs = sel.recs, recsByCode = sel.recsByCode, layout = sel.layout;
 
         report("fetch", "Fetching nutrition for " + recs.length + " foods…");
         return FL.fetchProducts(recs.map(function (r) { return r.code; }), io).then(function (products) {
           var foods = recs.map(function (r) { return macroRow(r, products[r.code]); });
+          // Meal index per food, parallel to `foods` and grown alongside repairs.
+          var mealOf = layout ? foods.map(function (f) { return layout.ofCode[f.code]; }) : null;
 
           // 2) Solve each day type; repair by adding a macro-rich food if needed.
           report("solve", "Sizing portions to hit every target…");
@@ -234,7 +301,10 @@
                 var q = REPAIR_QUERY[fc.constraint];
                 if (!q) return;
                 var extra = gatherFoods(catalog, q).filter(function (r) { return !foodHas(foods, r.code); });
-                extra.forEach(function (r) { foods.push(macroRow(r, products[r.code])); });
+                extra.forEach(function (r) {
+                  foods.push(macroRow(r, products[r.code]));
+                  if (mealOf) mealOf.push(smallestMeal(mealOf, layout.names.length));
+                });
                 if (extra.length) added = true;
               });
               if (!added) break;
@@ -256,7 +326,8 @@
             return {
               label: target.label || "Every day",
               perWeek: target.perWeek || target.count || 7,
-              meals: splitIntoMeals(solved, products, mealsPerDay),
+              meals: layout ? buildMealsFromLayout(layout.names, mealOf, solved, products)
+                            : splitIntoMeals(solved, products, nMeals),
               totals: {
                 kcal: dayTot.totals.kcal, protein: dayTot.totals.protein,
                 fat: dayTot.totals.fat, carbs: dayTot.totals.carbs, fiber: dayTot.totals.fiber
@@ -549,16 +620,47 @@
       return {};
     }
 
-    function chatJSON(system, user, label) {
+    function chatJSON(system, user, label, maxTokens) {
       return load().then(function (engine) {
         return streamChat(engine, [
           { role: "system", content: system },
           { role: "user", content: user }
-        ], { temperature: 0.4, max_tokens: 600, label: label }).then(parseLooseJSON);
+        ], { temperature: 0.4, max_tokens: maxTokens || 600, label: label }).then(parseLooseJSON);
       });
     }
 
     return {
+      // Design DISTINCT meals (which foods go in each meal), honouring the user's
+      // cuisines/tastes/breakfast style. The model only names foods per meal — the
+      // solver sizes portions afterwards.
+      suggestMeals: function (ctx) {
+        var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
+        var names = (ctx.mealNames && ctx.mealNames.length) ? ctx.mealNames : [];
+        var n = ctx.mealsPerDay || names.length || 3;
+        var sys = "You are a chef and nutritionist designing ONE day of meals from real, " +
+          "locally available whole foods. Design EXACTLY " + n + " meals" +
+          (names.length ? " named: " + names.join(", ") : "") + ". Rules: " +
+          "(1) every meal must use DIFFERENT foods — never repeat a food across meals; " +
+          "(2) match the user's cuisines and tastes; (3) respect dietary restrictions strictly; " +
+          "(4) 2–5 simple whole-food ingredients per meal; (5) you ONLY name foods — no amounts, " +
+          "no numbers, no arithmetic (portions are computed separately). " +
+          "Output ONLY JSON, no prose or code fences: " +
+          "{\"meals\":[{\"name\":\"" + (names[0] || "Breakfast") + "\",\"foods\":[\"food\",\"food\"]}, …]}";
+        var usr = "Country: " + (ctx.country || "unknown") + "\n" +
+          "Cuisines / foods I love: " + (ctx.tastes || "no strong preference") + "\n" +
+          "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" +
+          "Dietary restrictions / allergies (strict): " + (ctx.prefs || "none") + "\n" +
+          "Meals to design: " + (names.length ? names.join(", ") : (n + " meals")) + "\n" +
+          "The whole day must be high in protein (~" + Math.round(t.protein || 0) +
+          " g) and fibre (≥ " + Math.round(t.fiber || 35) +
+          " g), so spread enough protein- and fibre-rich foods across the meals.";
+        return chatJSON(sys, usr, "The model is designing your meals", 800).then(function (o) {
+          var meals = Array.isArray(o.meals) ? o.meals : [];
+          return { meals: meals.map(function (m) {
+            return { name: (m && m.name) || "", foods: (m && Array.isArray(m.foods)) ? m.foods : [] };
+          }) };
+        });
+      },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var sys = "You are a nutritionist choosing real, locally available whole foods. " +

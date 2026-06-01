@@ -119,6 +119,31 @@ function run() {
       // to the next model) rather than spinning forever or degrading to staples.
       ok("stalling engine -> buildPlan rejects (no hang, no staple plan)", !!err);
       ok("rejection flagged aiFailure (app walks to next model)", err && err.aiFailure === true);
+    }).then(function () {
+      // 4) Model-designed DISTINCT meals (the fix for "same food every meal"):
+      //    suggestMeals assigns each food to ONE meal, so meals genuinely differ.
+      var mealJSON = ['{"meals":[',
+        '{"name":"Breakfast","foods":["black beans"]},',
+        '{"name":"Lunch","foods":["chicken breast","rice cooked"]},',
+        '{"name":"Dinner","foods":["olive oil","psyllium husk"]}',
+        ']}'];
+      var designEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: mealJSON }) }, fast));
+      return planner.buildPlan({
+        dayTargets: [{ key: "low", label: "Low day", count: 7, kcal: 1444, protein: 135, fat: 68, carbs: 74, fiber: 35 }],
+        country: "Finland", prefs: "", tastes: "Mediterranean", breakfast: "savory", mealsPerDay: 3,
+        io: { catalog: catalog, fetch: fakeFetch }, engine: designEngine
+      }).then(function (mp) {
+        var d0 = mp.days[0];
+        var perMeal = d0.meals.map(function (m) { return m.items.map(function (it) { return it.food; }); });
+        var all = perMeal.reduce(function (a, s) { return a.concat(s); }, []);
+        var uniq = all.filter(function (x, i) { return all.indexOf(x) === i; });
+        ok("layout: at least 2 distinct meals", d0.meals.length >= 2, "meals=" + d0.meals.length);
+        ok("layout: no food repeats across meals", uniq.length === all.length, all.join("|"));
+        ok("layout: meals are not all identical",
+           perMeal.length <= 1 || !perMeal.every(function (s) { return s.join(",") === perMeal[0].join(","); }),
+           JSON.stringify(perMeal));
+        ok("layout: still hits protein target", d0.totals.protein >= 132, "got " + d0.totals.protein);
+      });
     });
   });
 }
