@@ -187,6 +187,16 @@ planner.buildPlan({
     ok("smallestModel honours the blocklist (walks to next-lowest-VRAM, across quants)",
        planner.smallestModel(ML, f16, { blocklist: ["Llama-3.2-1B-Instruct-q4f16_1-MLC"] }) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
     ok("smallestModel returns null with no WebGPU", planner.smallestModel(ML, null) === null);
+    // The iOS load fix: when a sub-400 MB model is in the list, it wins (it's the
+    // only thing Safari's tab cap will reliably load).
+    var ML_TINY = ML.concat([
+      { model_id: "SmolLM2-360M-Instruct-q4f16_1-MLC", vram_required_MB: 376, required_features: ["shader-f16"] },
+      { model_id: "SmolLM2-360M-Instruct-q4f32_1-MLC", vram_required_MB: 580 }
+    ]);
+    ok("smallestModel drops to a sub-400 MB model when available (the iOS load fix)",
+       planner.smallestModel(ML_TINY, f16) === "SmolLM2-360M-Instruct-q4f16_1-MLC");
+    ok("...even without shader-f16 it takes the tiny model's f32 build",
+       planner.smallestModel(ML_TINY, nof16) === "SmolLM2-360M-Instruct-q4f32_1-MLC");
 
     // MODEL_PREFERENCE must be biggest-first (capable models before tiny ones) and
     // free of the variants that break a short JSON reply.

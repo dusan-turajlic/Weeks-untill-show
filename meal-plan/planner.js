@@ -668,7 +668,10 @@
     "Llama-3.2-3B-Instruct",  // 2264 / 2952 MB
     "Qwen2.5-1.5B-Instruct",  // 1630 / 1889 MB
     "Llama-3.2-1B-Instruct",  //  879 / 1129 MB
-    "Qwen2.5-0.5B-Instruct"   //  945 / 1060 MB — last resort
+    "Qwen2.5-0.5B-Instruct",  //  945 / 1060 MB
+    "SmolLM2-360M-Instruct"   //  ~376 MB weights — tiny; the only thing iOS Safari's
+                              //  per-tab memory cap will reliably LOAD (smallestModel
+                              //  picks it there). Weak, but enough to name a few foods.
   ];
 
   // Detect what this device's WebGPU adapter actually supports. The decisive
