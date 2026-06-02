@@ -147,6 +147,47 @@
     return a;
   }
 
+  // Per-meal prompt guidance: what THIS meal is, what a single such meal looks
+  // like, and how to compose it. Drives the dedicated per-meal design prompt so
+  // breakfast reads like breakfast and a snack stays a snack.
+  function mealGuidance(name, breakfast) {
+    var n = (name || "").toLowerCase();
+    if (/break|morning/.test(n)) return {
+      isBreakfast: true, kind: "breakfast", count: "3–5",
+      desc: "A breakfast to start the day" + (breakfast ? " (" + breakfast + " style)" : "") + ".",
+      compose: "a protein, a slow/whole-grain carbohydrate, some fruit or vegetables, and a healthy " +
+               "fat (e.g. eggs + oats + berries + nuts, or yoghurt + fruit + seeds, or beans + eggs + greens)"
+    };
+    if (/snack/.test(n)) return {
+      isBreakfast: false, kind: "snack", count: "2–3",
+      desc: "A light snack between meals — smaller than a main meal.",
+      compose: "2–3 foods that pair well, carrying some protein or fibre (e.g. fruit + nuts, " +
+               "yoghurt + seeds, or vegetable sticks + hummus)"
+    };
+    return {
+      isBreakfast: false, kind: "main meal", count: "3–5",
+      desc: "A main meal — a full, balanced plate.",
+      compose: "a protein source, plenty of vegetables, a whole-food carbohydrate, and a healthy fat " +
+               "(e.g. fish + rice + greens + olive oil, or chicken + potatoes + salad, or lentils + grains + vegetables)"
+    };
+  }
+
+  // A model macro guess is per-100 g; clamp it to sane ranges and reconcile kcal
+  // with Atwater so a hallucinated number can't poison the solver. Returns null
+  // when there's nothing usable.
+  function sanitizeGuess(g) {
+    if (!g) return null;
+    function clamp(x, hi) { x = num(x); return x < 0 ? 0 : (x > hi ? hi : x); }
+    var p = clamp(g.protein, 100), f = clamp(g.fat, 100), c = clamp(g.carbs, 100), fib = clamp(g.fiber, 80);
+    if (p + f + c < 0.5) return null;
+    var atwater = 4 * p + 4 * c + 9 * f, kcal = num(g.kcal);
+    if (!(kcal > 0) || Math.abs(kcal - atwater) > 0.5 * atwater + 50) kcal = atwater;
+    return { protein: p, fat: f, carbs: c, fiber: fib, kcal: Math.round(kcal) };
+  }
+  function aiCode(name) {
+    return "ai:" + String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
   // Split a day's solved foods across `meals` meals. Deterministic: each food's
   // grams are divided evenly across the meals, so every meal is nutritionally
   // balanced. Foods under ~5 g are dropped as noise.
@@ -316,8 +357,8 @@
 
       // 1) Decide the foods. With an engine the model is authoritative — there is
       // NO staple fallback: any failure rejects (flagged aiFailure) so the caller
-      // can blocklist that model and try the next. suggestMeals designs DISTINCT
-      // meals (which foods go in each meal); suggestFoods is the older flat-list
+      // can blocklist that model and try the next. designMeal builds the day ONE
+      // meal at a time (each its own prompt); suggestFoods is the older flat-list
       // path; the staples list is only for engine-less (library) calls.
       report("choose", "Designing your meals…");
       var nMeals = mealsPerDay;
@@ -332,34 +373,98 @@
       }
 
       var selectP;
-      if (opts.engine && opts.engine.suggestMeals) {
-        selectP = Promise.resolve(opts.engine.suggestMeals({
-            dayTargets: opts.dayTargets, prefs: opts.prefs,
-            breakfast: opts.breakfast, country: opts.country,
-            mealsPerDay: nMeals, mealNames: mealNames
-          })).then(function (design) {
-            var dm = design && design.meals;
-            if (!Array.isArray(dm) || !dm.length) aiReject(new Error("The model returned no meals."));
-            // Resolve each meal's food names against the catalog, keeping a
-            // per-meal code list so each meal can be solved on its own.
-            var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
-            dm.forEach(function (m, mi) {
-              names.push((m && typeof m.name === "string" && m.name.trim()) ? m.name.trim()
-                         : (mealNames[mi] || ("Meal " + (mi + 1))));
+      if (opts.engine && opts.engine.designMeal) {
+        // Per-meal design: one dedicated model call PER meal (stateless — each gets
+        // a fresh context, so we never hit the model's limit). Each call is told
+        // what that meal is, its share of the day's macros, and which foods earlier
+        // meals already used (for variety). Foods are matched to the catalog; any
+        // the catalog lacks are queued for ONE batched AI macro guess afterwards,
+        // so the model can name real local dishes we don't stock.
+        var t0 = (opts.dayTargets && opts.dayTargets[0]) || {};
+        var weights = mealNames.map(function (nm) { return /snack/i.test(nm) ? 0.6 : 1; });
+        var totalW = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
+        var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
+        var usedFoods = [], unmatched = [];
+
+        var chainP = Promise.resolve();
+        mealNames.forEach(function (nm, mi) {
+          chainP = chainP.then(function () {
+            report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")…");
+            var w = weights[mi] / totalW;
+            var mealTarget = {
+              kcal: (t0.kcal || 0) * w, protein: (t0.protein || 0) * w, fat: (t0.fat || 0) * w,
+              carbs: (t0.carbs || 0) * w, fiber: (t0.fiber || 35) * w
+            };
+            return Promise.resolve(opts.engine.designMeal({
+              mealName: nm, target: mealTarget, country: opts.country,
+              prefs: opts.prefs, breakfast: opts.breakfast, usedFoods: usedFoods.slice()
+            })).then(function (res) {
+              names.push(nm);
               var codes = [];
-              ((m && m.foods) || []).forEach(function (nm) {
-                if (typeof nm !== "string" || !nm.trim()) return;
-                var hit = FL.searchFoods(catalog, nm, 1)[0];
+              ((res && res.foods) || []).forEach(function (fname) {
+                if (typeof fname !== "string" || !fname.trim()) return;
+                fname = fname.trim();
+                usedFoods.push(fname);
+                var hit = FL.searchFoods(catalog, fname, 1)[0];
                 if (hit && hit.code) {
                   if (codes.indexOf(hit.code) < 0) codes.push(hit.code);
                   if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
+                } else {
+                  var code = aiCode(fname);
+                  if (codes.indexOf(code) < 0) codes.push(code);
+                  unmatched.push({ code: code, name: fname });
                 }
               });
               mealCodes.push(codes);
             });
-            if (!recs.length) aiReject(new Error("None of the model's foods matched the catalog."));
-            return { recs: recs, recsByCode: recsByCode, layout: { names: names, mealCodes: mealCodes } };
-          }, aiReject);
+          });
+        });
+
+        selectP = chainP.then(function () {
+          if (!names.length) aiReject(new Error("The model designed no meals."));
+          // De-dupe unmatched foods, then resolve them with ONE macro-guess call.
+          var byCode = {}, order = [];
+          unmatched.forEach(function (u) { if (!byCode[u.code]) { byCode[u.code] = u.name; order.push(u.code); } });
+          var guessedProducts = {};
+          var guessP = (order.length && opts.engine.guessMacros)
+            ? Promise.resolve(opts.engine.guessMacros({
+                foods: order.map(function (c) { return byCode[c]; }),
+                country: opts.country, prefs: opts.prefs
+              })).then(function (g) {
+                var arr = (g && g.macros) || [];
+                // Map each requested food to its guess: prefer a name match (guards
+                // against the model reordering its answers), else fall back to order.
+                function pick(nm, i) {
+                  var low = nm.toLowerCase();
+                  for (var k = 0; k < arr.length; k++) {
+                    var an = arr[k] && arr[k].name ? String(arr[k].name).toLowerCase() : "";
+                    if (an && (an === low || an.indexOf(low) >= 0 || low.indexOf(an) >= 0)) return arr[k];
+                  }
+                  return arr[i];
+                }
+                order.forEach(function (code, i) {
+                  var nm = byCode[code];
+                  var m = sanitizeGuess(pick(nm, i));
+                  if (!m) return;
+                  var rec = { code: code, name: nm, protein: m.protein, fat: m.fat,
+                              carbs: m.carbs, fiber: m.fiber, kcalEst: m.kcal };
+                  if (!seen[code]) { seen[code] = 1; recsByCode[code] = rec; recs.push(rec); }
+                  guessedProducts[code] = { product_name: nm, ai_guesses: true,
+                    breakdown: { macros: { energy_kcal: m.kcal, proteins: m.protein,
+                      fat: m.fat, carbohydrates: m.carbs, fiber: m.fiber } } };
+                });
+              }, function () { /* guess failed — those foods get pruned below */ })
+            : Promise.resolve();
+          return guessP.then(function () {
+            // Drop any food we could neither match nor guess (keeps codes solvable).
+            mealCodes = mealCodes.map(function (cl) {
+              return cl.filter(function (c) { return recsByCode[c]; });
+            });
+            if (!recs.length) aiReject(new Error("None of the model's foods could be priced or estimated."));
+            return { recs: recs, recsByCode: recsByCode,
+                     layout: { names: names, mealCodes: mealCodes }, guessedProducts: guessedProducts };
+          });
+        }, aiReject);
       } else if (opts.engine && opts.engine.suggestFoods) {
         selectP = Promise.resolve(opts.engine.suggestFoods({
             dayTargets: opts.dayTargets, prefs: opts.prefs,
@@ -375,9 +480,15 @@
 
       return selectP.then(function (sel) {
         var recs = sel.recs, recsByCode = sel.recsByCode, layout = sel.layout;
+        var guessedProducts = sel.guessedProducts || {};
 
-        report("fetch", "Fetching nutrition for " + recs.length + " foods…");
-        return FL.fetchProducts(recs.map(function (r) { return r.code; }), io).then(function (products) {
+        // Only real catalog codes go to the product API; AI-guessed foods (ai:…)
+        // carry their own macros and are merged straight in.
+        var fetchCodes = recs.filter(function (r) { return r.code.indexOf("ai:") !== 0; })
+                             .map(function (r) { return r.code; });
+        report("fetch", "Fetching nutrition for " + fetchCodes.length + " foods…");
+        return FL.fetchProducts(fetchCodes, io).then(function (products) {
+          Object.keys(guessedProducts).forEach(function (c) { products[c] = guessedProducts[c]; });
 
           // Back any food whose fetch failed with its catalog macros, so the
           // numbers shown match the numbers the solver sized against (no 0-kcal items).
@@ -765,39 +876,51 @@
     }
 
     return {
-      // Design balanced meals (which foods go in each meal), honouring the user's
-      // breakfast style and dietary restrictions. The model only names foods per
-      // meal — the solver sizes portions afterwards.
-      suggestMeals: function (ctx) {
-        var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
-        var names = (ctx.mealNames && ctx.mealNames.length) ? ctx.mealNames : [];
-        var n = ctx.mealsPerDay || names.length || 3;
-        var sys = "You are a chef and nutritionist designing ONE day of meals from real, " +
-          "locally available whole foods. Design EXACTLY " + n + " meals" +
-          (names.length ? " named: " + names.join(", ") : "") + ". Rules: " +
-          "(1) EVERY meal must be a complete, balanced plate — a protein source, at least one " +
-          "vegetable or fruit, a slow/whole-food carbohydrate, and a healthy fat. NEVER a single " +
-          "ingredient or a lone nibble (no meal that is just 'almonds'). A snack may be smaller but " +
-          "still combines 2–3 foods. (2) Maximise MICRONUTRIENT density and health: lean on leafy " +
-          "greens, colourful vegetables, legumes, whole grains, fish, eggs and dairy, and VARY the " +
-          "foods across meals for broad vitamin/mineral coverage. (3) Make each meal a coherent dish — " +
-          "foods that genuinely go together. (4) Respect dietary restrictions strictly. (5) Use 3–5 " +
-          "whole-food ingredients per meal. (6) You ONLY name foods — no amounts, no numbers, no " +
-          "arithmetic (portions are computed separately). " +
-          "Output ONLY JSON, no prose or code fences: " +
-          "{\"meals\":[{\"name\":\"" + (names[0] || "Breakfast") + "\",\"foods\":[\"food\",\"food\",\"food\"]}, …]}";
-        var usr = "Country: " + (ctx.country || "unknown") + "\n" +
-          "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" +
+      // Design ONE meal at a time, each with its own dedicated, meal-aware prompt.
+      // The model names the ingredients for that single meal (no amounts — the
+      // solver sizes portions); `usedFoods` from earlier meals is passed in so the
+      // day stays varied without any cross-meal conversation state.
+      designMeal: function (ctx) {
+        var nm = ctx.mealName || "Meal";
+        var t = ctx.target || {};
+        var g = mealGuidance(nm, ctx.breakfast);
+        var sys = "You are a chef and nutritionist designing ONE meal: a " + g.kind + ". " + g.desc + " " +
+          "Picture what this single meal realistically looks like on a plate, then list its whole-food " +
+          "ingredients. Rules: (1) It must be ONE coherent " + g.kind + " — foods that genuinely go " +
+          "together, not a random assortment. (2) Build it from " + g.compose + ". (3) Favour " +
+          "micronutrient-dense whole foods — colourful vegetables or fruit, legumes, whole grains, " +
+          "good proteins and fats. (4) Respect dietary restrictions strictly. (5) Name " + g.count + " " +
+          "ingredients. (6) Name foods ONLY — no amounts, no numbers, no arithmetic. " +
+          "Output ONLY JSON, no prose or code fences: {\"foods\":[\"ingredient\",\"ingredient\",\"ingredient\"]}";
+        var usr = "Meal: " + nm + "\nCountry: " + (ctx.country || "unknown") + "\n" +
+          (g.isBreakfast ? "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" : "") +
           "Dietary restrictions / allergies (strict): " + (ctx.prefs || "none") + "\n" +
-          "Meals to design: " + (names.length ? names.join(", ") : (n + " meals")) + "\n" +
-          "The whole day must be high in protein (~" + Math.round(t.protein || 0) +
-          " g) and fibre (≥ " + Math.round(t.fiber || 35) +
-          " g), so spread enough protein- and fibre-rich foods across the meals.";
-        return chatJSON(sys, usr, "The model is designing your meals", 1000).then(function (o) {
-          var meals = Array.isArray(o.meals) ? o.meals : [];
-          return { meals: meals.map(function (m) {
-            return { name: (m && m.name) || "", foods: (m && Array.isArray(m.foods)) ? m.foods : [] };
-          }) };
+          "Aim for roughly " + Math.round(t.kcal || 0) + " kcal, " + Math.round(t.protein || 0) +
+          " g protein, " + Math.round(t.carbs || 0) + " g carbs, " + Math.round(t.fat || 0) +
+          " g fat and " + Math.round(t.fiber || 0) + " g fibre in this meal, so pick foods substantial " +
+          "and protein-/fibre-rich enough to reach that.\n" +
+          ((ctx.usedFoods && ctx.usedFoods.length)
+            ? "Already used earlier today — choose DIFFERENT foods for variety: " + ctx.usedFoods.join(", ") + "\n"
+            : "") +
+          "Design the " + nm + " now.";
+        return chatJSON(sys, usr, "Designing " + nm, 500).then(function (o) {
+          return { foods: Array.isArray(o.foods) ? o.foods.filter(function (x) { return typeof x === "string"; }) : [] };
+        });
+      },
+      // Fallback nutrition for foods the catalog/product API can't price: ask the
+      // model for typical per-100 g macros (the planner clamps + Atwater-checks them).
+      guessMacros: function (ctx) {
+        var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+        if (!foods.length) return Promise.resolve({ macros: [] });
+        var sys = "You are a nutrition database. For each food given, return its typical macros PER " +
+          "100 g of the edible food as normally eaten. Output ONLY JSON, no prose or code fences, with " +
+          "one entry per input food IN THE SAME ORDER: {\"macros\":[{\"name\":\"food\",\"kcal\":0," +
+          "\"protein\":0,\"fat\":0,\"carbs\":0,\"fiber\":0}, …]}. protein/fat/carbs/fiber are grams per " +
+          "100 g; kcal is energy per 100 g. Give realistic values.";
+        var usr = "Foods (one entry each, IN THIS ORDER):\n" +
+          foods.map(function (f, i) { return (i + 1) + ". " + f; }).join("\n");
+        return chatJSON(sys, usr, "Estimating nutrition", 700).then(function (o) {
+          return { macros: Array.isArray(o.macros) ? o.macros : [] };
         });
       },
       suggestFoods: function (ctx) {

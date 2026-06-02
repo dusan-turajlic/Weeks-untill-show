@@ -39,9 +39,17 @@ function fakeWebLLM(opts) {
       var engine = {
         interrupted: false,
         interruptGenerate: function () { this.interrupted = true; },
-        chat: { completions: { create: function () {
+        chat: { completions: { create: function (args) {
           if (opts.stall) return Promise.resolve(asyncIter(function () { return new Promise(function () {}); }));
-          var chunks = (opts.chunks || []).slice();
+          // opts.reply(messages) lets a test answer each call differently (needed
+          // now that every meal — and the macro guess — is its own generation).
+          var chunks;
+          if (opts.reply) {
+            var r = opts.reply((args && args.messages) || []);
+            chunks = Array.isArray(r) ? r.slice() : [String(r)];
+          } else {
+            chunks = (opts.chunks || []).slice();
+          }
           return Promise.resolve(asyncIter(function () {
             if (chunks.length) {
               return Promise.resolve({ done: false, value: { choices: [{ delta: { content: chunks.shift() } }] } });
@@ -55,6 +63,30 @@ function fakeWebLLM(opts) {
     }
   };
   return mod;
+}
+
+// Route the per-meal architecture's calls: a designMeal call (one per meal) is
+// answered from spec.meals[<meal name>] (or spec.meals._default); a guessMacros
+// call (recognised by its "nutrition database" system prompt) is answered per
+// food, in order, via spec.macro(name) — returning null falls back to a default.
+function mealReply(spec) {
+  return function (messages) {
+    var sys = (messages[0] && messages[0].content) || "";
+    var usr = (messages[1] && messages[1].content) || "";
+    if (/nutrition database/i.test(sys)) {
+      var foods = usr.split("\n")
+        .map(function (l) { return (l.match(/^\s*\d+\.\s*(.+?)\s*$/) || [])[1]; })
+        .filter(Boolean);
+      var macro = spec.macro || function () { return null; };
+      return JSON.stringify({ macros: foods.map(function (f) {
+        var m = macro(f) || { kcal: 150, protein: 8, fat: 5, carbs: 15, fiber: 3 };
+        return { name: f, kcal: m.kcal, protein: m.protein, fat: m.fat, carbs: m.carbs, fiber: m.fiber };
+      }) });
+    }
+    var meal = (usr.match(/^Meal:\s*(.+)$/m) || [])[1] || "";
+    var foods = (spec.meals && (spec.meals[meal] || spec.meals._default)) || [];
+    return JSON.stringify({ foods: foods });
+  };
 }
 
 var fast = { model: "Test-q4f32_1-MLC", pollMs: 10, genStallMs: 40, stallMs: 1000 };
@@ -120,14 +152,13 @@ function run() {
       ok("stalling engine -> buildPlan rejects (no hang, no staple plan)", !!err);
       ok("rejection flagged aiFailure (app walks to next model)", err && err.aiFailure === true);
     }).then(function () {
-      // 4) Model-designed meals, solved PER MEAL: each meal is a real, balanced,
-      //    substantial plate (the fix for "same food every meal" AND "25 g almonds").
-      var mealJSON = ['{"meals":[',
-        '{"name":"Breakfast","foods":["chicken breast","black beans"]},',
-        '{"name":"Lunch","foods":["chicken breast","rice cooked","olive oil"]},',
-        '{"name":"Dinner","foods":["chicken breast","psyllium husk","olive oil"]}',
-        ']}'];
-      var designEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: mealJSON }) }, fast));
+      // 4) Per-meal design: one dedicated prompt PER meal. Each meal is solved to
+      //    its own balanced, substantial plate (the fix for "same food every meal").
+      var designEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ reply: mealReply({ meals: {
+        Breakfast: ["chicken breast", "black beans"],
+        Lunch: ["chicken breast", "rice cooked", "olive oil"],
+        Dinner: ["chicken breast", "psyllium husk", "olive oil"]
+      } }) }) }, fast));
       return planner.buildPlan({
         dayTargets: [{ key: "low", label: "Low day", count: 7, kcal: 1444, protein: 135, fat: 68, carbs: 74, fiber: 35 }],
         country: "Finland", prefs: "", breakfast: "savory", mealsPerDay: 3,
@@ -136,16 +167,16 @@ function run() {
         var d0 = mp.days[0];
         var perMeal = d0.meals.map(function (m) { return m.items.map(function (it) { return it.food; }).sort().join(","); });
         var mealKcal = d0.meals.map(function (m) { return m.totals.kcal; });
-        ok("layout: produces every requested meal", d0.meals.length === 3, "meals=" + d0.meals.length);
-        ok("layout: each meal is substantial (>=200 kcal, no lone nibble)",
+        ok("per-meal: produces every requested meal", d0.meals.length === 3, "meals=" + d0.meals.length);
+        ok("per-meal: each meal is substantial (>=200 kcal, no lone nibble)",
            mealKcal.every(function (k) { return k >= 200; }), mealKcal.join(","));
-        ok("layout: each meal carries protein (balanced plate)",
+        ok("per-meal: each meal carries protein (balanced plate)",
            d0.meals.every(function (m) { return m.totals.protein >= 10; }),
            d0.meals.map(function (m) { return m.totals.protein; }).join(","));
-        ok("layout: meals are not all identical",
+        ok("per-meal: meals are not all identical",
            perMeal.length > 1 && !perMeal.every(function (s) { return s === perMeal[0]; }), JSON.stringify(perMeal));
-        ok("layout: day still hits protein target", d0.totals.protein >= 130, "got " + d0.totals.protein);
-        ok("layout: per-meal totals sum to the day total",
+        ok("per-meal: day still hits protein target", d0.totals.protein >= 130, "got " + d0.totals.protein);
+        ok("per-meal: per-meal totals sum to the day total",
            Math.abs(d0.meals.reduce(function (a, m) { return a + m.totals.protein; }, 0) - d0.totals.protein) <= 2);
       }).then(function () {
         // 5) Diet-aware repair: a vegetarian whose meals are protein-short must get
@@ -169,12 +200,9 @@ function run() {
           var m = url.match(/products\/(\w+)\.json$/);
           return Promise.resolve(m && VP[m[1]] ? { ok: true, status: 200, json: function () { return Promise.resolve(VP[m[1]]); } } : { ok: false, status: 404 });
         }
-        var vegJSON = ['{"meals":[',
-          '{"name":"Breakfast","foods":["oats","spinach"]},',
-          '{"name":"Lunch","foods":["spinach","olive oil"]},',
-          '{"name":"Dinner","foods":["oats","spinach","olive oil"]}',
-          ']}'];
-        var vegEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: vegJSON }) }, fast));
+        var vegEngine = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ reply: mealReply({
+          meals: { _default: ["oats", "spinach", "olive oil"] } // protein-light -> forces diet-aware repair
+        }) }) }, fast));
         return planner.buildPlan({
           dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 110, fat: 55, carbs: 150, fiber: 35 }],
           country: "Finland", prefs: "vegetarian", breakfast: "savory", mealsPerDay: 3,
@@ -197,12 +225,9 @@ function run() {
           ["t5", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0]
         ].map(function (a) { return JSON.stringify(a); }).join("\n");
         var allMiss = function () { return Promise.resolve({ ok: false, status: 404 }); };
-        var jp = ['{"meals":[',
-          '{"name":"Breakfast","foods":["oats","spinach","tofu"]},',
-          '{"name":"Lunch","foods":["tofu","spinach","olive oil"]},',
-          '{"name":"Dinner","foods":["oats","tofu","olive oil"]}',
-          ']}'];
-        var eng = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ chunks: jp }) }, fast));
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ reply: mealReply({
+          meals: { _default: ["oats", "spinach", "tofu"] }
+        }) }) }, fast));
         return planner.buildPlan({
           dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 110, fat: 55, carbs: 150, fiber: 35 }],
           country: "Finland", prefs: "vegetarian", breakfast: "savory", mealsPerDay: 3,
@@ -215,6 +240,70 @@ function run() {
              items.map(function (it) { return it.food + ":" + it.kcal; }).join("|"));
           ok("no-fetch: plan flags the macros as estimated (catalog-derived)",
              /estimated/i.test(mp.micronutrients || ""), mp.micronutrients);
+        });
+      }).then(function () {
+        // 7) AI macro fallback: a meal names a food the catalog DOESN'T stock. Instead
+        //    of dropping it, the planner asks the model for its per-100 g macros and
+        //    uses the food anyway — it appears in the plan with real calories.
+        var VC = [
+          ["o1", "Oats", "M", "fi", 100, "g", 10, 66, 7, 13],
+          ["o2", "Spinach", "G", "fi", 100, "g", 2.2, 3.6, 0.4, 2.9]
+        ].map(function (a) { return JSON.stringify(a); }).join("\n");
+        var fetchOats = function (url) {
+          var m = url.match(/products\/(\w+)\.json$/);
+          return Promise.resolve(m && m[1] === "o1"
+            ? { ok: true, status: 200, json: function () { return Promise.resolve({ product_name: "Oats", breakdown: { macros: { energy_kcal: 389, proteins: 13, fat: 7, carbohydrates: 66 } } }); } }
+            : { ok: false, status: 404 });
+        };
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: fakeWebLLM({ reply: mealReply({
+          meals: { _default: ["oats", "grandma's kimchi pancake"] },
+          macro: function (name) { return /kimchi/i.test(name) ? { kcal: 180, protein: 6, fat: 7, carbs: 22, fiber: 3 } : null; }
+        }) }) }, fast));
+        return planner.buildPlan({
+          dayTargets: [{ label: "Day", count: 7, kcal: 1500, protein: 90, fat: 50, carbs: 170, fiber: 30 }],
+          country: "Korea", prefs: "", breakfast: "savory", mealsPerDay: 3,
+          io: { catalog: fl.parseCatalog(VC), fetch: fetchOats }, engine: eng
+        }).then(function (mp) {
+          var items = [];
+          mp.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { items.push(it); }); });
+          var pancake = items.filter(function (it) { return /kimchi pancake/i.test(it.food); });
+          ok("ai-macro: the off-catalog food still appears (not dropped)", pancake.length > 0,
+             items.map(function (it) { return it.food; }).join("|"));
+          ok("ai-macro: it carries the AI-estimated calories (>0)",
+             pancake.length > 0 && pancake.every(function (it) { return it.kcal > 0; }),
+             pancake.map(function (it) { return it.food + ":" + it.kcal; }).join("|"));
+          ok("ai-macro: plan flagged estimated", /estimated/i.test(mp.micronutrients || ""), mp.micronutrients);
+        });
+      }).then(function () {
+        // 8) Variety: each meal's prompt is told which foods earlier meals used, so
+        //    later meals pick different foods (no cross-meal conversation needed).
+        var VC = [
+          ["v1", "Oats", "M", "fi", 100, "g", 10, 66, 7, 13],
+          ["v2", "Spinach", "G", "fi", 100, "g", 2.2, 3.6, 0.4, 2.9],
+          ["v3", "Tofu", "B", "fi", 100, "g", 1.5, 1.9, 8, 15],
+          ["v4", "Brown rice", "M", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+          ["v5", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0]
+        ].map(function (a) { return JSON.stringify(a); }).join("\n");
+        var prompts = [];
+        var recording = fakeWebLLM({ reply: function (messages) {
+          var usr = (messages[1] && messages[1].content) || "";
+          prompts.push(usr);
+          if (/nutrition database/i.test((messages[0] && messages[0].content) || "")) return JSON.stringify({ macros: [] });
+          var meal = (usr.match(/^Meal:\s*(.+)$/m) || [])[1] || "";
+          var foods = ({ Breakfast: ["oats", "spinach"], Lunch: ["tofu", "brown rice"], Dinner: ["olive oil", "oats"] })[meal] || [];
+          return JSON.stringify({ foods: foods });
+        } });
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: recording }, fast));
+        return planner.buildPlan({
+          dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 90, fat: 55, carbs: 180, fiber: 30 }],
+          country: "Finland", prefs: "", breakfast: "savory", mealsPerDay: 3,
+          io: { catalog: fl.parseCatalog(VC), fetch: function () { return Promise.resolve({ ok: false, status: 404 }); } }, engine: eng
+        }).then(function () {
+          var lunchPrompt = prompts.filter(function (p) { return /^Meal:\s*Lunch/m.test(p); })[0] || "";
+          var breakfastPrompt = prompts.filter(function (p) { return /^Meal:\s*Breakfast/m.test(p); })[0] || "";
+          ok("variety: first meal has no 'already used' line", !/already used earlier today/i.test(breakfastPrompt));
+          ok("variety: later meals are told the foods earlier meals used",
+             /already used earlier today/i.test(lunchPrompt) && /oats/i.test(lunchPrompt), lunchPrompt.split("\n").slice(-3).join(" | "));
         });
       });
     });
