@@ -179,25 +179,6 @@ planner.buildPlan({
     ok("a 2 GB phone is budgeted too small for even a 1B model (steers to copy-prompt)",
        planner.selectModel(ML, f16, { budgetMB: planner.computeBudgetMB({ isMobile: true, deviceMemory: 2 }), safetyFactor: 1.3 }) === null);
 
-    // smallestModel: the lowest-VRAM known-good model the GPU can bind (the iOS path).
-    ok("smallestModel picks the lowest-VRAM f16 model (1B, not the heavier 0.5B)",
-       planner.smallestModel(ML, f16) === "Llama-3.2-1B-Instruct-q4f16_1-MLC");
-    ok("smallestModel without f16 picks the lowest-VRAM f32 model",
-       planner.smallestModel(ML, nof16) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
-    ok("smallestModel honours the blocklist (walks to next-lowest-VRAM, across quants)",
-       planner.smallestModel(ML, f16, { blocklist: ["Llama-3.2-1B-Instruct-q4f16_1-MLC"] }) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
-    ok("smallestModel returns null with no WebGPU", planner.smallestModel(ML, null) === null);
-    // The iOS load fix: when a sub-400 MB model is in the list, it wins (it's the
-    // only thing Safari's tab cap will reliably load).
-    var ML_TINY = ML.concat([
-      { model_id: "SmolLM2-360M-Instruct-q4f16_1-MLC", vram_required_MB: 376, required_features: ["shader-f16"] },
-      { model_id: "SmolLM2-360M-Instruct-q4f32_1-MLC", vram_required_MB: 580 }
-    ]);
-    ok("smallestModel drops to a sub-400 MB model when available (the iOS load fix)",
-       planner.smallestModel(ML_TINY, f16) === "SmolLM2-360M-Instruct-q4f16_1-MLC");
-    ok("...even without shader-f16 it takes the tiny model's f32 build",
-       planner.smallestModel(ML_TINY, nof16) === "SmolLM2-360M-Instruct-q4f32_1-MLC");
-
     // MODEL_PREFERENCE must be biggest-first (capable models before tiny ones) and
     // free of the variants that break a short JSON reply.
     var P = planner.MODEL_PREFERENCE;
@@ -221,10 +202,18 @@ planner.buildPlan({
       return planner.recommendModel(ML, { env: { isMobile: false }, caps: null });
     }).then(function (r) {
       ok("recommendModel flags no-WebGPU devices", r.model === null && /WebGPU/.test(r.reason || ""), JSON.stringify(r));
+      // iOS: only the tiny tier. With a SmolLM2 in the list it picks that…
+      var ML_IOS = ML.concat([{ model_id: "SmolLM2-360M-Instruct-q4f16_1-MLC", vram_required_MB: 376, required_features: ["shader-f16"] }]);
+      return planner.recommendModel(ML_IOS, { env: { isMobile: true, isIOS: true }, caps: f16 });
+    }).then(function (r) {
+      ok("recommendModel: iOS uses the tiny model when present",
+         r.model === "SmolLM2-360M-Instruct-q4f16_1-MLC" && r.isIOS === true, JSON.stringify(r));
+      // …and CRUCIALLY never escalates to a 1B when no tiny model exists (the bug
+      // where iOS started downloading Llama after a hiccup). It returns null instead.
       return planner.recommendModel(ML, { env: { isMobile: true, isIOS: true }, caps: f16 });
     }).then(function (r) {
-      ok("recommendModel: iOS always gets the smallest model (ignores budget walk)",
-         r.model === "Llama-3.2-1B-Instruct-q4f16_1-MLC" && r.isIOS === true, JSON.stringify(r));
+      ok("recommendModel: iOS NEVER escalates to a big model — null + copy-prompt instead",
+         r.model === null && /copy-prompt/.test(r.reason || ""), JSON.stringify(r));
     });
   });
 }).then(function () {

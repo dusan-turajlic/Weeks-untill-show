@@ -670,8 +670,18 @@
     "Llama-3.2-1B-Instruct",  //  879 / 1129 MB
     "Qwen2.5-0.5B-Instruct",  //  945 / 1060 MB
     "SmolLM2-360M-Instruct"   //  ~376 MB weights — tiny; the only thing iOS Safari's
-                              //  per-tab memory cap will reliably LOAD (smallestModel
-                              //  picks it there). Weak, but enough to name a few foods.
+                              //  per-tab memory cap will reliably LOAD (see IOS_PREFERENCE).
+                              //  Weak, but enough to name a few foods.
+  ];
+
+  // iOS Safari OOM-crashes loading anything bigger than the tiny tier, AND the crash
+  // is an uncatchable tab reload — so on iOS we ONLY ever offer these. Critically,
+  // this stops the model-walk from "escalating" to a 1B after a hiccup (which would
+  // just crash the tab); when this list is exhausted, selection returns null and the
+  // app falls back to the copy-prompt path instead of downloading a doomed model.
+  var IOS_PREFERENCE = [
+    "SmolLM2-360M-Instruct",  // ~376 MB — the one that actually loads in Safari
+    "SmolLM2-135M-Instruct"   // ~140 MB — last-ditch if 360M is exhausted; very weak
   ];
 
   // Detect what this device's WebGPU adapter actually supports. The decisive
@@ -769,38 +779,6 @@
     return null;
   }
 
-  // The single smallest-footprint model the device can run — used on iOS, where
-  // Safari's hard per-tab memory cap means "biggest that fits" still OOM-crashes
-  // the tab, so we ignore the budget walk and just take the lowest-VRAM known-good
-  // model the GPU can bind (preferring f16, which is smaller, when supported).
-  function smallestModel(modelList, caps, opts) {
-    opts = opts || {};
-    if (!caps) return null; // no WebGPU adapter → nothing runs
-    var blocklist = opts.blocklist || [];
-    var feats = caps.features || [];
-    var allowF16 = caps.shaderF16 && !opts.preferF32;
-    var best = null, bestVram = Infinity;
-    (modelList || []).forEach(function (rec) {
-      var id = rec && rec.model_id;
-      if (!id || blocklist.indexOf(id) >= 0) return;
-      // Only our vetted Instruct bases, in an allowed quant for this GPU.
-      if (!MODEL_PREFERENCE.some(function (b) { return id.indexOf(b + "-") === 0; })) return;
-      var isF16 = /q4f16_1-MLC$/.test(id), isF32 = /q4f32_1-MLC$/.test(id);
-      if (!isF16 && !isF32) return;
-      if (isF16 && !allowF16) return;
-      if (rec.required_features && !rec.required_features.every(function (f) {
-            return f === "shader-f16" ? caps.shaderF16 : feats.indexOf(f) >= 0;
-          })) return;
-      if (rec.buffer_size_required_bytes) {
-        if (caps.maxStorageBufferBindingSize && rec.buffer_size_required_bytes > caps.maxStorageBufferBindingSize) return;
-        if (caps.maxBufferSize && rec.buffer_size_required_bytes > caps.maxBufferSize) return;
-      }
-      var v = rec.vram_required_MB || Infinity;
-      if (v < bestVram) { bestVram = v; best = id; }
-    });
-    return best;
-  }
-
   // Answer "what will this device run?" — inspect memory + WebGPU caps and report
   // which model would be chosen, the budget, and why (so the UI can show it, or warn
   // before an OOM). `modelList` is webllm.prebuiltAppConfig.model_list. Pass
@@ -816,14 +794,15 @@
       // No WebGPU adapter at all → nothing can run on-device, regardless of budget.
       if (!caps) return Object.assign(base, { model: null,
         reason: "No WebGPU adapter — on-device AI can't run; use the copy-prompt path." });
-      // iOS: always the smallest model (Safari's tab memory cap, not the budget, is
-      // the limit), so skip the budget walk.
+      // iOS: only the tiny tier (Safari's tab cap is the limit, not the budget), and
+      // it must NOT escalate to a 1B — so restrict the preference to IOS_PREFERENCE.
       var model = env.isIOS
-        ? smallestModel(modelList, caps, { blocklist: opts.blocklist || [], preferF32: opts.preferF32 })
+        ? selectModel(modelList, caps, { preference: IOS_PREFERENCE, blocklist: opts.blocklist || [],
+            preferF32: opts.preferF32, budgetMB: budgetMB, safetyFactor: 1.3 })
         : selectModel(modelList, caps, { blocklist: opts.blocklist || [], preferF32: opts.preferF32,
             budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1 });
       return Object.assign(base, { model: model,
-        reason: model ? null : (env.isIOS ? "This device's GPU can't run even the smallest model — use the copy-prompt path."
+        reason: model ? null : (env.isIOS ? "This iPhone can only run a tiny on-device model and none is available — use the copy-prompt path."
           : ("No model fits this device's ~" + budgetMB + " MB budget" +
              (env.deviceMemory ? " (~" + env.deviceMemory + " GB RAM)" : "") + " — use the copy-prompt path.")) });
     });
@@ -871,11 +850,14 @@
             var env = options.env || browserEnv(); // options.env is a test seam
             var budgetMB = computeBudgetMB(env);
             var list = webllm.prebuiltAppConfig && webllm.prebuiltAppConfig.model_list;
-            // iOS: Safari's per-tab memory cap (not the model budget) is the limit
-            // and OOM crashes the tab uncatchably — so always take the smallest
-            // model rather than the biggest that "fits".
+            // iOS: Safari's per-tab memory cap (not the model budget) is the limit and
+            // OOM crashes the tab uncatchably — so restrict to the tiny IOS_PREFERENCE
+            // tier. This also stops the model-walk from escalating to a 1B after a
+            // hiccup (which would just crash); exhausting the tier returns null and the
+            // app surfaces the copy-prompt path instead.
             var picked = options.model || (env.isIOS
-              ? smallestModel(list, caps, { blocklist: options.blocklist || [], preferF32: options.preferF32 })
+              ? selectModel(list, caps, { preference: IOS_PREFERENCE, blocklist: options.blocklist || [],
+                  preferF32: options.preferF32, budgetMB: budgetMB, safetyFactor: 1.3 })
               : selectModel(list, caps, { blocklist: options.blocklist || [], preferF32: options.preferF32,
                   budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1 }));
             if (!picked) {
@@ -1069,7 +1051,6 @@
     selectModel: selectModel,
     detectGpuCaps: detectGpuCaps,
     computeBudgetMB: computeBudgetMB,
-    smallestModel: smallestModel,
     recommendModel: recommendModel,
     browserEnv: browserEnv,
     MODEL_PREFERENCE: MODEL_PREFERENCE,
