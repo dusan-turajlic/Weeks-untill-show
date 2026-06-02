@@ -998,6 +998,11 @@
       guessMacros: function (ctx) {
         var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); });
         if (!foods.length) return Promise.resolve({ macros: [] });
+        // iOS: skip this generation. Producing numeric macro JSON is the slowest,
+        // least-reliable task for the tiny model Safari forces us onto (it can ramble
+        // to the token cap and stall). Returning none drops the off-catalog foods;
+        // the catalog match + deterministic repair still build a full plan.
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve({ macros: [] });
         var sys = "You are a nutrition database. For each food given, return its typical macros PER " +
           "100 g of the edible food as normally eaten. Output ONLY JSON, no prose or code fences, with " +
           "one entry per input food IN THE SAME ORDER: {\"macros\":[{\"name\":\"food\",\"kcal\":0," +

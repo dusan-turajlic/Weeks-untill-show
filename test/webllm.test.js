@@ -318,13 +318,18 @@ function run() {
              web._chatOpts && web._chatOpts.prefill_chunk_size === 256, JSON.stringify(web._chatOpts));
         });
       }).then(function () {
-        // 10) iOS skips the summary generation (one fewer generation = less memory):
-        //     summarize returns "" WITHOUT loading the model at all.
+        // 10) iOS skips the post-meal generations (summary + macro guess): each is a
+        //     memory/stall risk on the tiny model, and both have non-LLM fallbacks.
         var web = fakeWebLLM({ reply: mealReply({ meals: {} }) });
         var eng = planner.createWebLLMEngine(Object.assign({ webllm: web, env: { isIOS: true } }, fast));
         return eng.summarize({ country: "Finland", prefs: "", dayTargets: [{ label: "Every day" }] }).then(function (s) {
           ok("iOS: summarize is skipped — empty result, model never loaded",
              s === "" && !web._engine, JSON.stringify({ summary: s, loaded: !!web._engine }));
+          return eng.guessMacros({ foods: ["grandma's stew", "homemade kimchi"], country: "Korea" });
+        }).then(function (g) {
+          ok("iOS: macro-guess is skipped — no macros, model never loaded",
+             g && Array.isArray(g.macros) && g.macros.length === 0 && !web._engine,
+             JSON.stringify({ macros: g && g.macros, loaded: !!web._engine }));
         });
       });
     });
