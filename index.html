@@ -2112,9 +2112,17 @@
   // The on-device path reuses the exact same targets as the copy-prompt: the
   // model only chooses foods; meal-plan/solver.js sizes every portion. Gated on
   // WebGPU (see CSS html[data-webgpu]).
+  //
+  // We offer the button whenever the browser EXPOSES WebGPU (navigator.gpu),
+  // not only when an init-time requestAdapter() happens to succeed: on iOS Safari
+  // that probe is flaky (it can return null under memory pressure, e.g. right
+  // after an OOM tab reload) even though WebGPU is present. The adapter is
+  // requested again at build time, so a genuinely unusable GPU surfaces a clear
+  // error + the copy-prompt fallback rather than the button just disappearing.
   if(window.YdinFoodLookup && YdinFoodLookup.detectWebGPU){
+    var hasGpuObj = (typeof navigator!=="undefined") && !!navigator.gpu;
     YdinFoodLookup.detectWebGPU().then(function(has){
-      if(has) document.documentElement.dataset.webgpu = "1";
+      if(has || hasGpuObj) document.documentElement.dataset.webgpu = "1";
     });
   }
 
