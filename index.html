@@ -200,7 +200,8 @@
   .modal[hidden]{display:none}   /* the hidden attr must win over display:flex */
   @keyframes fade{from{opacity:0}to{opacity:1}}
   .modal .sheet{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;
-                max-width:380px;width:100%;box-shadow:0 24px 60px rgba(30,40,34,.28);animation:rise .25s ease}
+                max-width:380px;width:100%;box-shadow:0 24px 60px rgba(30,40,34,.28);animation:rise .25s ease;
+                max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px);overflow-y:auto;-webkit-overflow-scrolling:touch}
   .modal h2{font-family:var(--serif);font-size:22px;font-weight:600;margin:0 0 8px}
   .modal p{color:var(--inkSoft);font-size:14px;margin:0 0 18px;line-height:1.5}
   .modal .actions{display:flex;gap:10px;justify-content:flex-end}
@@ -269,6 +270,13 @@
   .modal .mbtn.go{background:var(--accent);border-color:var(--accent);color:#fff}
   .modal .mbtn.go:hover{filter:brightness(.95)}
   .modal .sheet.wide{max-width:440px}
+  /* Full-screen modal (the build-a-plan prompt): edge to edge, no side borders,
+     scrolls internally; inner content stays readable-width and centred. */
+  .modal.full{padding:0;align-items:stretch;justify-content:stretch}
+  .modal.full .sheet{max-width:none;width:100%;min-height:100vh;min-height:100dvh;
+                     max-height:100vh;max-height:100dvh;border:none;border-radius:0;box-shadow:none;padding:0}
+  .modal.full .sheetinner{max-width:520px;margin:0 auto;
+                          padding:26px 20px calc(28px + env(safe-area-inset-bottom,0px))}
   .modal pre.fix{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
                  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;max-height:160px;overflow:auto;
                  white-space:pre-wrap;color:var(--inkSoft);margin:0 0 16px}
@@ -458,8 +466,9 @@
 </div>
 
 <!-- On-device meal-plan wizard (Path A). Shown only when WebGPU is available. -->
-<div class="modal" id="wizModal" hidden>
+<div class="modal full" id="wizModal" hidden>
   <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
+   <div class="sheetinner">
     <h2 id="wizTitle">Build a plan on this device</h2>
     <p class="sub" style="margin:0 0 4px">Private — an in-browser AI picks foods from your country's catalog and the on-device solver sizes every portion to hit your macro &amp; fibre targets. Nothing leaves this device. This plan is <strong>nutrition-only — it is not price-aware</strong> (an offline model can't know current prices); for a budget- and price-based plan, use <strong>Copy prompt</strong> instead. The model downloads once (up to a few GB) and runs locally, so the first build can take several minutes.</p>
     <div id="wizForm">
@@ -490,6 +499,7 @@
       <button type="button" class="mbtn cancel" id="wizCancel">Cancel</button>
       <button type="button" class="mbtn go" id="wizStart">Build my plan</button>
     </div>
+   </div>
   </div>
 </div>
 
