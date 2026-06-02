@@ -699,9 +699,10 @@
   function browserEnv() {
     var nav = typeof navigator !== "undefined" ? navigator : {};
     var ua = nav.userAgent || "";
-    var isMobile = /Mobi|Android|iPhone|iPod/i.test(ua) || /iPad/i.test(ua) ||
-                   (/Macintosh/.test(ua) && (nav.maxTouchPoints || 0) > 1);
-    return { isMobile: isMobile, deviceMemory: nav.deviceMemory || 0 };
+    // iPadOS reports as "Macintosh" but has touch points; treat it as iOS too.
+    var isIOS = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && (nav.maxTouchPoints || 0) > 1);
+    var isMobile = isIOS || /Mobi|Android/i.test(ua);
+    return { isMobile: isMobile, isIOS: isIOS, deviceMemory: nav.deviceMemory || 0 };
   }
   function computeBudgetMB(env) {
     env = env || {};
@@ -765,6 +766,38 @@
     return null;
   }
 
+  // The single smallest-footprint model the device can run — used on iOS, where
+  // Safari's hard per-tab memory cap means "biggest that fits" still OOM-crashes
+  // the tab, so we ignore the budget walk and just take the lowest-VRAM known-good
+  // model the GPU can bind (preferring f16, which is smaller, when supported).
+  function smallestModel(modelList, caps, opts) {
+    opts = opts || {};
+    if (!caps) return null; // no WebGPU adapter → nothing runs
+    var blocklist = opts.blocklist || [];
+    var feats = caps.features || [];
+    var allowF16 = caps.shaderF16 && !opts.preferF32;
+    var best = null, bestVram = Infinity;
+    (modelList || []).forEach(function (rec) {
+      var id = rec && rec.model_id;
+      if (!id || blocklist.indexOf(id) >= 0) return;
+      // Only our vetted Instruct bases, in an allowed quant for this GPU.
+      if (!MODEL_PREFERENCE.some(function (b) { return id.indexOf(b + "-") === 0; })) return;
+      var isF16 = /q4f16_1-MLC$/.test(id), isF32 = /q4f32_1-MLC$/.test(id);
+      if (!isF16 && !isF32) return;
+      if (isF16 && !allowF16) return;
+      if (rec.required_features && !rec.required_features.every(function (f) {
+            return f === "shader-f16" ? caps.shaderF16 : feats.indexOf(f) >= 0;
+          })) return;
+      if (rec.buffer_size_required_bytes) {
+        if (caps.maxStorageBufferBindingSize && rec.buffer_size_required_bytes > caps.maxStorageBufferBindingSize) return;
+        if (caps.maxBufferSize && rec.buffer_size_required_bytes > caps.maxBufferSize) return;
+      }
+      var v = rec.vram_required_MB || Infinity;
+      if (v < bestVram) { bestVram = v; best = id; }
+    });
+    return best;
+  }
+
   // Answer "what will this device run?" — inspect memory + WebGPU caps and report
   // which model would be chosen, the budget, and why (so the UI can show it, or warn
   // before an OOM). `modelList` is webllm.prebuiltAppConfig.model_list. Pass
@@ -776,17 +809,20 @@
     var capsP = opts.caps !== undefined ? Promise.resolve(opts.caps) : detectGpuCaps();
     return Promise.resolve(capsP).then(function (caps) {
       var base = { budgetMB: budgetMB, deviceMemory: env.deviceMemory || 0,
-                   isMobile: !!env.isMobile, shaderF16: !!(caps && caps.shaderF16) };
+                   isMobile: !!env.isMobile, isIOS: !!env.isIOS, shaderF16: !!(caps && caps.shaderF16) };
       // No WebGPU adapter at all → nothing can run on-device, regardless of budget.
       if (!caps) return Object.assign(base, { model: null,
         reason: "No WebGPU adapter — on-device AI can't run; use the copy-prompt path." });
-      var model = selectModel(modelList, caps, {
-        blocklist: opts.blocklist || [], preferF32: opts.preferF32,
-        budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1
-      });
+      // iOS: always the smallest model (Safari's tab memory cap, not the budget, is
+      // the limit), so skip the budget walk.
+      var model = env.isIOS
+        ? smallestModel(modelList, caps, { blocklist: opts.blocklist || [], preferF32: opts.preferF32 })
+        : selectModel(modelList, caps, { blocklist: opts.blocklist || [], preferF32: opts.preferF32,
+            budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1 });
       return Object.assign(base, { model: model,
-        reason: model ? null : ("No model fits this device's ~" + budgetMB + " MB budget" +
-          (env.deviceMemory ? " (~" + env.deviceMemory + " GB RAM)" : "") + " — use the copy-prompt path.") });
+        reason: model ? null : (env.isIOS ? "This device's GPU can't run even the smallest model — use the copy-prompt path."
+          : ("No model fits this device's ~" + budgetMB + " MB budget" +
+             (env.deviceMemory ? " (~" + env.deviceMemory + " GB RAM)" : "") + " — use the copy-prompt path.")) });
     });
   }
 
@@ -832,10 +868,13 @@
             var env = browserEnv();
             var budgetMB = computeBudgetMB(env);
             var list = webllm.prebuiltAppConfig && webllm.prebuiltAppConfig.model_list;
-            var picked = options.model || selectModel(list, caps, {
-              blocklist: options.blocklist || [], preferF32: options.preferF32,
-              budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1
-            });
+            // iOS: Safari's per-tab memory cap (not the model budget) is the limit
+            // and OOM crashes the tab uncatchably — so always take the smallest
+            // model rather than the biggest that "fits".
+            var picked = options.model || (env.isIOS
+              ? smallestModel(list, caps, { blocklist: options.blocklist || [], preferF32: options.preferF32 })
+              : selectModel(list, caps, { blocklist: options.blocklist || [], preferF32: options.preferF32,
+                  budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1 }));
             if (!picked) {
               throw new Error("No on-device model fits this device" +
                 (env.isMobile ? " (memory is tight on this phone" +
@@ -845,13 +884,13 @@
             chosenModel = picked;
             lastTick = Date.now();
             if (options.onPick) {
-              try { options.onPick(picked, caps, { deviceMemory: env.deviceMemory, budgetMB: budgetMB, isMobile: env.isMobile }); } catch (e) {}
+              try { options.onPick(picked, caps, { deviceMemory: env.deviceMemory, budgetMB: budgetMB, isMobile: env.isMobile, isIOS: env.isIOS }); } catch (e) {}
             }
             onProgress("download", "Preparing " + picked + "…");
-            // Cap the context window to keep the KV cache small — the main
-            // generation-time memory lever, and the per-meal prompts are short.
-            var chatOpts = options.contextWindowSize ? { context_window_size: options.contextWindowSize }
-                         : (env.isMobile ? { context_window_size: 2048 } : undefined);
+            // Cap the context window to keep the KV cache + prefill spike small — the
+            // main generation-time memory lever; tighter on iOS. Prompts are short.
+            var ctx = options.contextWindowSize || (env.isIOS ? 1024 : (env.isMobile ? 2048 : 0));
+            var chatOpts = ctx ? { context_window_size: ctx } : undefined;
             return webllm.CreateMLCEngine(picked, { initProgressCallback: progress }, chatOpts);
           });
         }).then(function (engine) { finish(true, engine); },
@@ -1017,6 +1056,7 @@
     selectModel: selectModel,
     detectGpuCaps: detectGpuCaps,
     computeBudgetMB: computeBudgetMB,
+    smallestModel: smallestModel,
     recommendModel: recommendModel,
     browserEnv: browserEnv,
     MODEL_PREFERENCE: MODEL_PREFERENCE,

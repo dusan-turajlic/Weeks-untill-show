@@ -179,6 +179,15 @@ planner.buildPlan({
     ok("a 2 GB phone is budgeted too small for even a 1B model (steers to copy-prompt)",
        planner.selectModel(ML, f16, { budgetMB: planner.computeBudgetMB({ isMobile: true, deviceMemory: 2 }), safetyFactor: 1.3 }) === null);
 
+    // smallestModel: the lowest-VRAM known-good model the GPU can bind (the iOS path).
+    ok("smallestModel picks the lowest-VRAM f16 model (1B, not the heavier 0.5B)",
+       planner.smallestModel(ML, f16) === "Llama-3.2-1B-Instruct-q4f16_1-MLC");
+    ok("smallestModel without f16 picks the lowest-VRAM f32 model",
+       planner.smallestModel(ML, nof16) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
+    ok("smallestModel honours the blocklist (walks to next-lowest-VRAM, across quants)",
+       planner.smallestModel(ML, f16, { blocklist: ["Llama-3.2-1B-Instruct-q4f16_1-MLC"] }) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
+    ok("smallestModel returns null with no WebGPU", planner.smallestModel(ML, null) === null);
+
     // MODEL_PREFERENCE must be biggest-first (capable models before tiny ones) and
     // free of the variants that break a short JSON reply.
     var P = planner.MODEL_PREFERENCE;
@@ -202,6 +211,10 @@ planner.buildPlan({
       return planner.recommendModel(ML, { env: { isMobile: false }, caps: null });
     }).then(function (r) {
       ok("recommendModel flags no-WebGPU devices", r.model === null && /WebGPU/.test(r.reason || ""), JSON.stringify(r));
+      return planner.recommendModel(ML, { env: { isMobile: true, isIOS: true }, caps: f16 });
+    }).then(function (r) {
+      ok("recommendModel: iOS always gets the smallest model (ignores budget walk)",
+         r.model === "Llama-3.2-1B-Instruct-q4f16_1-MLC" && r.isIOS === true, JSON.stringify(r));
     });
   });
 }).then(function () {
