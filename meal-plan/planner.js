@@ -995,24 +995,26 @@
       },
       // Fallback nutrition for foods the catalog/product API can't price: ask the
       // model for typical per-100 g macros (the planner clamps + Atwater-checks them).
+      // ONE food per call, each a fresh, tiny prompt with a hard token cap: a single
+      // small JSON object is something even the 360M model iOS forces on us produces
+      // reliably and fast — a batched array made it ramble toward the cap and stall.
       guessMacros: function (ctx) {
-        var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+        var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); }).slice(0, 8);
         if (!foods.length) return Promise.resolve({ macros: [] });
-        // iOS: skip this generation. Producing numeric macro JSON is the slowest,
-        // least-reliable task for the tiny model Safari forces us onto (it can ramble
-        // to the token cap and stall). Returning none drops the off-catalog foods;
-        // the catalog match + deterministic repair still build a full plan.
-        if ((options.env || browserEnv()).isIOS) return Promise.resolve({ macros: [] });
-        var sys = "You are a nutrition database. For each food given, return its typical macros PER " +
-          "100 g of the edible food as normally eaten. Output ONLY JSON, no prose or code fences, with " +
-          "one entry per input food IN THE SAME ORDER: {\"macros\":[{\"name\":\"food\",\"kcal\":0," +
-          "\"protein\":0,\"fat\":0,\"carbs\":0,\"fiber\":0}, …]}. protein/fat/carbs/fiber are grams per " +
-          "100 g; kcal is energy per 100 g. Give realistic values.";
-        var usr = "Foods (one entry each, IN THIS ORDER):\n" +
-          foods.map(function (f, i) { return (i + 1) + ". " + f; }).join("\n");
-        return chatJSON(sys, usr, "Estimating nutrition", 700).then(function (o) {
-          return { macros: Array.isArray(o.macros) ? o.macros : [] };
+        var sys = "You are a nutrition database. Give typical macros per 100 g of the ONE named food " +
+          "as normally eaten. Output ONLY JSON, no prose or code fences: " +
+          "{\"kcal\":0,\"protein\":0,\"fat\":0,\"carbs\":0,\"fiber\":0}. protein/fat/carbs/fiber are grams " +
+          "per 100 g; kcal is energy per 100 g. Be realistic.";
+        var out = [];
+        var p = Promise.resolve();
+        foods.forEach(function (food) {
+          p = p.then(function () {
+            return chatJSON(sys, "Food: " + food, "Estimating " + food, 80).then(function (o) {
+              out.push({ name: food, kcal: o.kcal, protein: o.protein, fat: o.fat, carbs: o.carbs, fiber: o.fiber });
+            }, function () { out.push({ name: food }); }); // a failed/empty one is sanitized away by the planner
+          });
         });
+        return p.then(function () { return { macros: out }; });
       },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};

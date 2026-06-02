@@ -68,21 +68,17 @@ function fakeWebLLM(opts) {
 
 // Route the per-meal architecture's calls: a designMeal call (one per meal) is
 // answered from spec.meals[<meal name>] (or spec.meals._default); a guessMacros
-// call (recognised by its "nutrition database" system prompt) is answered per
-// food, in order, via spec.macro(name) — returning null falls back to a default.
+// call (recognised by its "nutrition database" system prompt) now asks for ONE
+// food at a time ("Food: X") and is answered as a single macro object via
+// spec.macro(name) — returning null falls back to a default.
 function mealReply(spec) {
   return function (messages) {
     var sys = (messages[0] && messages[0].content) || "";
     var usr = (messages[1] && messages[1].content) || "";
     if (/nutrition database/i.test(sys)) {
-      var foods = usr.split("\n")
-        .map(function (l) { return (l.match(/^\s*\d+\.\s*(.+?)\s*$/) || [])[1]; })
-        .filter(Boolean);
-      var macro = spec.macro || function () { return null; };
-      return JSON.stringify({ macros: foods.map(function (f) {
-        var m = macro(f) || { kcal: 150, protein: 8, fat: 5, carbs: 15, fiber: 3 };
-        return { name: f, kcal: m.kcal, protein: m.protein, fat: m.fat, carbs: m.carbs, fiber: m.fiber };
-      }) });
+      var food = (usr.match(/^Food:\s*(.+)$/m) || [])[1] || "";
+      var m = (spec.macro && spec.macro(food)) || { kcal: 150, protein: 8, fat: 5, carbs: 15, fiber: 3 };
+      return JSON.stringify({ kcal: m.kcal, protein: m.protein, fat: m.fat, carbs: m.carbs, fiber: m.fiber });
     }
     var meal = (usr.match(/^Meal:\s*(.+)$/m) || [])[1] || "";
     var foods = (spec.meals && (spec.meals[meal] || spec.meals._default)) || [];
@@ -318,18 +314,18 @@ function run() {
              web._chatOpts && web._chatOpts.prefill_chunk_size === 256, JSON.stringify(web._chatOpts));
         });
       }).then(function () {
-        // 10) iOS skips the post-meal generations (summary + macro guess): each is a
-        //     memory/stall risk on the tiny model, and both have non-LLM fallbacks.
-        var web = fakeWebLLM({ reply: mealReply({ meals: {} }) });
+        // 10) iOS skips the summary generation (memory), but KEEPS the macro guess —
+        //     done one food at a time so the tiny model stays reliable and never stalls.
+        var web = fakeWebLLM({ reply: mealReply({ macro: function (n) { return /stew/i.test(n) ? { kcal: 120, protein: 7, fat: 4, carbs: 12, fiber: 2 } : null; } }) });
         var eng = planner.createWebLLMEngine(Object.assign({ webllm: web, env: { isIOS: true } }, fast));
         return eng.summarize({ country: "Finland", prefs: "", dayTargets: [{ label: "Every day" }] }).then(function (s) {
           ok("iOS: summarize is skipped — empty result, model never loaded",
              s === "" && !web._engine, JSON.stringify({ summary: s, loaded: !!web._engine }));
           return eng.guessMacros({ foods: ["grandma's stew", "homemade kimchi"], country: "Korea" });
         }).then(function (g) {
-          ok("iOS: macro-guess is skipped — no macros, model never loaded",
-             g && Array.isArray(g.macros) && g.macros.length === 0 && !web._engine,
-             JSON.stringify({ macros: g && g.macros, loaded: !!web._engine }));
+          ok("iOS: macro-guess is KEPT — one entry per food, in order",
+             g && g.macros.length === 2 && g.macros[0].name === "grandma's stew" && g.macros[0].kcal === 120,
+             JSON.stringify(g));
         });
       });
     });
