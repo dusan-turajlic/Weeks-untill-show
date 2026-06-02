@@ -2260,7 +2260,9 @@
       try{
         engine=YdinPlanner.createWebLLMEngine({
           blocklist: loadBadModels().concat(tried),
-          onPick:function(id){ currentModel=id; setBuildProgress("model","Preparing "+id+"…",null); },
+          onPick:function(id,caps,info){ currentModel=id;
+            var mem=(info&&info.deviceMemory)?" · ~"+info.deviceMemory+" GB RAM":"";
+            setBuildProgress("model","Preparing "+id+mem+"…",null); },
           onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); }
         });
       }catch(err){ showBuildError(aiErr); return; }

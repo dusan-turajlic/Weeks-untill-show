@@ -163,10 +163,21 @@ planner.buildPlan({
          { budgetMB: 6000, preference: ["Llama-3.2-3B-Instruct"] }) === "Llama-3.2-3B-Instruct-q4f32_1-MLC");
     ok("returns null when nothing fits",
        planner.selectModel(ML, nof16, { budgetMB: 100 }) === null);
+    ok("safety factor reserves headroom: a model that fits on paper is skipped",
+       planner.selectModel(ML, nof16, { budgetMB: 1100, safetyFactor: 1.3 }) === null &&
+       planner.selectModel(ML, nof16, { budgetMB: 1100, safetyFactor: 1 }) === "Qwen2.5-0.5B-Instruct-q4f32_1-MLC");
     ok("budget is tighter on mobile than desktop",
        planner.computeBudgetMB({ isMobile: true }) < planner.computeBudgetMB({ isMobile: false, deviceMemory: 8 }));
     ok("desktop budget is generous enough for a ~7B in f16 (>=5200 MB)",
        planner.computeBudgetMB({ isMobile: false, deviceMemory: 8 }) >= 5200);
+    // Mobile budget scales with reported RAM and stays conservative on low-end phones.
+    ok("mobile budget scales with device RAM (2 GB < 4 GB < 8 GB phone)",
+       planner.computeBudgetMB({ isMobile: true, deviceMemory: 2 }) <
+       planner.computeBudgetMB({ isMobile: true, deviceMemory: 4 }) &&
+       planner.computeBudgetMB({ isMobile: true, deviceMemory: 4 }) <
+       planner.computeBudgetMB({ isMobile: true, deviceMemory: 8 }));
+    ok("a 2 GB phone is budgeted too small for even a 1B model (steers to copy-prompt)",
+       planner.selectModel(ML, f16, { budgetMB: planner.computeBudgetMB({ isMobile: true, deviceMemory: 2 }), safetyFactor: 1.3 }) === null);
 
     // MODEL_PREFERENCE must be biggest-first (capable models before tiny ones) and
     // free of the variants that break a short JSON reply.
@@ -176,6 +187,22 @@ planner.buildPlan({
        P.findIndex(function (m) { return /7B|8B/.test(m); }) < P.findIndex(function (m) { return /(^|[^.])1B/.test(m) || /0\.5B/.test(m); }));
     ok("preference excludes Coder/Math/Vision/Base/R1 variants",
        P.every(function (m) { return !/Coder|Math|Vision|[-_]Base|R1|Distill/i.test(m); }), P.join(","));
+
+    // recommendModel: a single device check the UI can show / gate on (pure when
+    // env + caps are supplied). Returned so the runner awaits the assertions.
+    console.log("\n== recommendModel (device check) ==");
+    return planner.recommendModel(ML, { env: { isMobile: true, deviceMemory: 4 }, caps: f16 }).then(function (r) {
+      ok("recommendModel returns a fitting model + the budget + RAM",
+         r.model === "Llama-3.2-1B-Instruct-q4f16_1-MLC" && r.budgetMB > 0 && r.deviceMemory === 4 && r.reason === null,
+         JSON.stringify(r));
+      return planner.recommendModel(ML, { env: { isMobile: true, deviceMemory: 2 }, caps: f16 });
+    }).then(function (r) {
+      ok("recommendModel explains when nothing fits (no model + a reason)",
+         r.model === null && /copy-prompt/.test(r.reason || ""), JSON.stringify(r));
+      return planner.recommendModel(ML, { env: { isMobile: false }, caps: null });
+    }).then(function (r) {
+      ok("recommendModel flags no-WebGPU devices", r.model === null && /WebGPU/.test(r.reason || ""), JSON.stringify(r));
+    });
   });
 }).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");

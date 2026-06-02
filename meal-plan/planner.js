@@ -705,13 +705,26 @@
   }
   function computeBudgetMB(env) {
     env = env || {};
-    if (env.isMobile) return 1300;
+    var dm = env.deviceMemory || 0; // GB; 0 = unreported (iOS Safari, Firefox)
+    if (env.isMobile) {
+      // Phones share GPU memory with the OS and kill the tab aggressively, so only
+      // a fraction of total RAM is really usable for model weights — and a model's
+      // live footprint (weights + KV cache + activations + the browser itself) runs
+      // well above its `vram_required_MB`. deviceMemory (Android Chrome) is the one
+      // signal we get; iOS Safari never reports it, so assume a modest phone. These
+      // tiers are deliberately tight — over-reaching here is what OOM-crashes the tab.
+      if (!dm) return 1200;   // unknown (iOS Safari): allow only a 1B, with capped context
+      if (dm <= 2) return 800;   // very low-end — even a 1B won't fit → copy-prompt
+      if (dm <= 3) return 1200;
+      if (dm <= 4) return 1500;
+      if (dm <= 6) return 2200;
+      return 3000;            // 8 GB+ phones (recent flagships)
+    }
     // Desktop/laptop: be generous so the biggest coherent model is reachable
-    // (~6 GB lets a 7B run in f16). navigator.deviceMemory is spec-capped at 8 and
-    // unreported on Safari — assume capable (8) when unknown rather than blocking
-    // big models; the load watchdog + model walk recover if we over-reach.
-    var dm = env.deviceMemory || 8; // GB
-    return Math.max(3000, Math.min(dm, 8) * 750);
+    // (~6 GB lets a 7B run in f16). deviceMemory is spec-capped at 8 and unreported
+    // on Safari — assume capable (8) when unknown rather than blocking big models;
+    // the load watchdog + model walk recover if we over-reach.
+    return Math.max(3000, Math.min(dm || 8, 8) * 750);
   }
 
   // Pure, testable: choose the best model_id from WebLLM's prebuilt list for a
@@ -723,6 +736,10 @@
     var prefs = opts.preference || MODEL_PREFERENCE;
     var blocklist = opts.blocklist || [];
     var budget = opts.budgetMB || 0;
+    // A model's live footprint exceeds its reported vram_required_MB (KV cache,
+    // activations, staging, the browser). safetyFactor (>1 on mobile) reserves for
+    // that, so the chosen model has real headroom instead of fitting only on paper.
+    var safety = opts.safetyFactor || 1;
     var feats = caps.features || [];
     var quants = (caps.shaderF16 && !opts.preferF32) ? ["q4f16_1", "q4f32_1"] : ["q4f32_1"];
     var byId = {};
@@ -741,11 +758,36 @@
           if (caps.maxStorageBufferBindingSize && rec.buffer_size_required_bytes > caps.maxStorageBufferBindingSize) continue;
           if (caps.maxBufferSize && rec.buffer_size_required_bytes > caps.maxBufferSize) continue;
         }
-        if (budget && rec.vram_required_MB && rec.vram_required_MB > budget) continue;
+        if (budget && rec.vram_required_MB && rec.vram_required_MB * safety > budget) continue;
         return id;
       }
     }
     return null;
+  }
+
+  // Answer "what will this device run?" — inspect memory + WebGPU caps and report
+  // which model would be chosen, the budget, and why (so the UI can show it, or warn
+  // before an OOM). `modelList` is webllm.prebuiltAppConfig.model_list. Pass
+  // opts.env / opts.caps to keep it pure (tests); otherwise they're auto-detected.
+  function recommendModel(modelList, opts) {
+    opts = opts || {};
+    var env = opts.env || browserEnv();
+    var budgetMB = opts.budgetMB || computeBudgetMB(env);
+    var capsP = opts.caps !== undefined ? Promise.resolve(opts.caps) : detectGpuCaps();
+    return Promise.resolve(capsP).then(function (caps) {
+      var base = { budgetMB: budgetMB, deviceMemory: env.deviceMemory || 0,
+                   isMobile: !!env.isMobile, shaderF16: !!(caps && caps.shaderF16) };
+      // No WebGPU adapter at all → nothing can run on-device, regardless of budget.
+      if (!caps) return Object.assign(base, { model: null,
+        reason: "No WebGPU adapter — on-device AI can't run; use the copy-prompt path." });
+      var model = selectModel(modelList, caps, {
+        blocklist: opts.blocklist || [], preferF32: opts.preferF32,
+        budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1
+      });
+      return Object.assign(base, { model: model,
+        reason: model ? null : ("No model fits this device's ~" + budgetMB + " MB budget" +
+          (env.deviceMemory ? " (~" + env.deviceMemory + " GB RAM)" : "") + " — use the copy-prompt path.") });
+    });
   }
 
   function createWebLLMEngine(options) {
@@ -787,20 +829,30 @@
         }
         importWebLLM().then(function (webllm) {
           return detectGpuCaps().then(function (caps) {
-            var budgetMB = computeBudgetMB(browserEnv());
+            var env = browserEnv();
+            var budgetMB = computeBudgetMB(env);
             var list = webllm.prebuiltAppConfig && webllm.prebuiltAppConfig.model_list;
             var picked = options.model || selectModel(list, caps, {
-              blocklist: options.blocklist || [], preferF32: options.preferF32, budgetMB: budgetMB
+              blocklist: options.blocklist || [], preferF32: options.preferF32,
+              budgetMB: budgetMB, safetyFactor: env.isMobile ? 1.3 : 1
             });
             if (!picked) {
               throw new Error("No on-device model fits this device" +
-                (caps && !caps.shaderF16 ? " (no shader-f16 support; tried 32-bit models)" : "") + ".");
+                (env.isMobile ? " (memory is tight on this phone" +
+                  (env.deviceMemory ? " — ~" + env.deviceMemory + " GB RAM" : "") + ")" :
+                 (caps && !caps.shaderF16 ? " (no shader-f16 support; tried 32-bit models)" : "")) + ".");
             }
             chosenModel = picked;
             lastTick = Date.now();
-            if (options.onPick) { try { options.onPick(picked, caps); } catch (e) {} }
+            if (options.onPick) {
+              try { options.onPick(picked, caps, { deviceMemory: env.deviceMemory, budgetMB: budgetMB, isMobile: env.isMobile }); } catch (e) {}
+            }
             onProgress("download", "Preparing " + picked + "…");
-            return webllm.CreateMLCEngine(picked, { initProgressCallback: progress });
+            // Cap the context window to keep the KV cache small — the main
+            // generation-time memory lever, and the per-meal prompts are short.
+            var chatOpts = options.contextWindowSize ? { context_window_size: options.contextWindowSize }
+                         : (env.isMobile ? { context_window_size: 2048 } : undefined);
+            return webllm.CreateMLCEngine(picked, { initProgressCallback: progress }, chatOpts);
           });
         }).then(function (engine) { finish(true, engine); },
                 function (err) { finish(false, err); });
@@ -965,6 +1017,7 @@
     selectModel: selectModel,
     detectGpuCaps: detectGpuCaps,
     computeBudgetMB: computeBudgetMB,
+    recommendModel: recommendModel,
     browserEnv: browserEnv,
     MODEL_PREFERENCE: MODEL_PREFERENCE,
     browserBrotli: browserBrotli,
