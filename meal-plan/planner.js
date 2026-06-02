@@ -865,7 +865,7 @@
         }
         importWebLLM().then(function (webllm) {
           return detectGpuCaps().then(function (caps) {
-            var env = browserEnv();
+            var env = options.env || browserEnv(); // options.env is a test seam
             var budgetMB = computeBudgetMB(env);
             var list = webllm.prebuiltAppConfig && webllm.prebuiltAppConfig.model_list;
             // iOS: Safari's per-tab memory cap (not the model budget) is the limit
@@ -887,10 +887,20 @@
               try { options.onPick(picked, caps, { deviceMemory: env.deviceMemory, budgetMB: budgetMB, isMobile: env.isMobile, isIOS: env.isIOS }); } catch (e) {}
             }
             onProgress("download", "Preparing " + picked + "…");
-            // Cap the context window to keep the KV cache + prefill spike small — the
-            // main generation-time memory lever; tighter on iOS. Prompts are short.
+            // Two memory levers, tightest on iOS where Safari's tab cap is unforgiving:
+            //  • context_window_size caps the KV cache (and our prompts are short).
+            //  • prefill_chunk_size caps the activation tensors built while the prompt
+            //    is processed — a big transient spike and a prime OOM trigger; a small
+            //    chunk trades a little prefill speed for a much lower peak.
             var ctx = options.contextWindowSize || (env.isIOS ? 1024 : (env.isMobile ? 2048 : 0));
             var chatOpts = ctx ? { context_window_size: ctx } : undefined;
+            if (env.isIOS) {
+              chatOpts = chatOpts || {};
+              chatOpts.prefill_chunk_size = options.prefillChunkSize || 256;
+            } else if (options.prefillChunkSize) {
+              chatOpts = chatOpts || {};
+              chatOpts.prefill_chunk_size = options.prefillChunkSize;
+            }
             return webllm.CreateMLCEngine(picked, { initProgressCallback: progress }, chatOpts);
           });
         }).then(function (engine) { finish(true, engine); },

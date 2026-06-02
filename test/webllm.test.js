@@ -32,7 +32,8 @@ function fakeWebLLM(opts) {
   opts = opts || {};
   var mod = {
     prebuiltAppConfig: { model_list: [] },
-    CreateMLCEngine: function (model, cfg) {
+    CreateMLCEngine: function (model, cfg, chatOpts) {
+      mod._chatOpts = chatOpts; // expose the memory caps (context/prefill) for assertions
       if (cfg && cfg.initProgressCallback) {
         cfg.initProgressCallback({ progress: 1, text: "Finish loading on WebGPU - test" });
       }
@@ -304,6 +305,17 @@ function run() {
           ok("variety: first meal has no 'already used' line", !/already used earlier today/i.test(breakfastPrompt));
           ok("variety: later meals are told the foods earlier meals used",
              /already used earlier today/i.test(lunchPrompt) && /oats/i.test(lunchPrompt), lunchPrompt.split("\n").slice(-3).join(" | "));
+        });
+      }).then(function () {
+        // 9) iOS memory caps: the engine must hand WebLLM a tight context window AND
+        //    a small prefill chunk (the OOM levers) when running in mobile Safari.
+        var web = fakeWebLLM({ reply: mealReply({ meals: { _default: ["oats"] } }) });
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: web, env: { isIOS: true, isMobile: true, deviceMemory: 0 } }, fast));
+        return eng.warm().then(function () {
+          ok("iOS: WebLLM gets a capped context window (small KV cache)",
+             web._chatOpts && web._chatOpts.context_window_size === 1024, JSON.stringify(web._chatOpts));
+          ok("iOS: WebLLM gets a small prefill chunk (low activation spike)",
+             web._chatOpts && web._chatOpts.prefill_chunk_size === 256, JSON.stringify(web._chatOpts));
         });
       });
     });
