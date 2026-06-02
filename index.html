@@ -2268,6 +2268,12 @@
 
     function attempt(){
       var currentModel=null, engine;
+      // Unload the model from GPU memory (frees the weights + buffers). Always
+      // resolves, so it's safe to await before render / retry on iOS.
+      function disposeEngine(){
+        try{ return (engine && engine.dispose) ? Promise.resolve(engine.dispose()).catch(function(){}) : Promise.resolve(); }
+        catch(e){ return Promise.resolve(); }
+      }
       try{
         engine=YdinPlanner.createWebLLMEngine({
           blocklist: loadBadModels().concat(tried),
@@ -2287,35 +2293,44 @@
           setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
         }
       }).then(function(plan){
-        var norm=normalizeMealPlan(plan);
-        if(!norm){ showBuildError("The plan came back without any days. Tap Try again, or use the copy-prompt path."); return; }
-        buildActive=false;
-        mealPlan=norm; mealDay=0; mealEditor=null;
-        persist(); renderMealPlan();
-        setBuildProgress("done","Done — opening your plan.",100);
-        $("buildModal").hidden=true;
-        setView("meal");
-        setImportOk("On-device plan built and saved to this device"+(currentModel?" with "+currentModel+".":"."));
+        // Free the on-device model BEFORE we render. On iOS the resident model (GPU
+        // buffers) plus rendering the whole plan can exceed Safari's tab memory and
+        // crash the page right after a successful build.
+        return disposeEngine().then(function(){
+          var norm=normalizeMealPlan(plan);
+          if(!norm){ showBuildError("The plan came back without any days. Tap Try again, or use the copy-prompt path."); return; }
+          buildActive=false;
+          mealPlan=norm; mealDay=0; mealEditor=null;
+          persist(); renderMealPlan();
+          setBuildProgress("done","Done — opening your plan.",100);
+          $("buildModal").hidden=true;
+          setView("meal");
+          setImportOk("On-device plan built and saved to this device"+(currentModel?" with "+currentModel+".":"."));
+        });
       }).catch(function(err){
-        // An on-device AI failure on a *specific* model -> blocklist it and try the
-        // next one. Exhausting the candidates (or a non-AI error like an
-        // unreachable catalog) surfaces an error with Try again.
-        if(err && err.aiFailure && currentModel){
-          blockModel(currentModel); tried.push(currentModel);
-          if(tried.length<8){
-            setBuildProgress("retry","That model didn’t respond — trying a different on-device model…",null);
-            attempt();
+        // Free this model before walking or erroring — never hold two models at once
+        // (a second load on top of the first is a sure OOM on iOS).
+        return disposeEngine().then(function(){
+          // An on-device AI failure on a *specific* model -> blocklist it and try the
+          // next one. Exhausting the candidates (or a non-AI error like an
+          // unreachable catalog) surfaces an error with Try again.
+          if(err && err.aiFailure && currentModel){
+            blockModel(currentModel); tried.push(currentModel);
+            if(tried.length<8){
+              setBuildProgress("retry","That model didn’t respond — trying a different on-device model…",null);
+              attempt();
+              return;
+            }
+            showBuildError(aiErr);
             return;
           }
-          showBuildError(aiErr);
-          return;
-        }
-        if(err && (err.aiFailure || /No on-device model fits/i.test(err.message||""))){
-          showBuildError(aiErr); // no model could even be selected/loaded
-          return;
-        }
-        showBuildError((err && err.message) ? err.message :
-          "Something went wrong building on-device. The country catalog may be unreachable — the copy-prompt path always works.");
+          if(err && (err.aiFailure || /No on-device model fits/i.test(err.message||""))){
+            showBuildError(aiErr); // no model could even be selected/loaded
+            return;
+          }
+          showBuildError((err && err.message) ? err.message :
+            "Something went wrong building on-device. The country catalog may be unreachable — the copy-prompt path always works.");
+        });
       });
     }
     attempt();

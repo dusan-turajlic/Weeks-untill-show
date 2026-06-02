@@ -317,6 +317,15 @@ function run() {
           ok("iOS: WebLLM gets a small prefill chunk (low activation spike)",
              web._chatOpts && web._chatOpts.prefill_chunk_size === 256, JSON.stringify(web._chatOpts));
         });
+      }).then(function () {
+        // 10) iOS skips the summary generation (one fewer generation = less memory):
+        //     summarize returns "" WITHOUT loading the model at all.
+        var web = fakeWebLLM({ reply: mealReply({ meals: {} }) });
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: web, env: { isIOS: true } }, fast));
+        return eng.summarize({ country: "Finland", prefs: "", dayTargets: [{ label: "Every day" }] }).then(function (s) {
+          ok("iOS: summarize is skipped — empty result, model never loaded",
+             s === "" && !web._engine, JSON.stringify({ summary: s, loaded: !!web._engine }));
+        });
       });
     });
   });

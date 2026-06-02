@@ -1028,6 +1028,9 @@
         });
       },
       summarize: function (meta) {
+        // Skip on iOS: it's one more generation, and every generation is memory risk
+        // in Safari's tight tab budget. buildPlan falls back to a templated summary.
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve("");
         var sys = "Write ONE warm, concrete sentence (max 30 words) summarising a meal plan. No numbers needed.";
         var usr = "Country: " + (meta.country || "") + ". Preferences: " + (meta.prefs || "none") +
           ". Day types: " + (meta.dayTargets || []).map(function (d) { return d.label; }).join(", ") + ".";
