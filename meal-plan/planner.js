@@ -1051,7 +1051,13 @@
       },
       warm: function () { return load().then(function () { return true; }); },
       getModel: function () { return chosenModel; },
-      dispose: function () { return load().then(function (e) { return e.unload && e.unload(); }).catch(function(){}); }
+      // Free the model if (and only if) it was actually loaded. Calling load() here
+      // would otherwise START a download just to unload it — and on a retry that runs
+      // concurrently with the next attempt's load (two model loads = a hang/OOM).
+      dispose: function () {
+        if (!loadP) return Promise.resolve();
+        return loadP.then(function (e) { return e && e.unload && e.unload(); }).catch(function () {});
+      }
     };
   }
 

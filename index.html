@@ -2266,29 +2266,49 @@
     var tried=[];
     var aiErr="Couldn’t get an on-device model to run on this device — your GPU may be unsupported, or memory is too tight. Tap Try again, or use the copy-prompt path (it always works).";
 
+    // Build-stall watchdog: a hung network fetch (catalog, model download) or a stuck
+    // teardown could otherwise leave the UI spinning forever. If nothing reports
+    // progress for a while, surface an actionable error instead of hanging.
+    var lastTick=Date.now();
+    function bump(){ lastTick=Date.now(); }
+    function stopWatch(){ clearInterval(watchdog); }
+    var watchdog=setInterval(function(){
+      if(!buildActive){ clearInterval(watchdog); return; }
+      if(Date.now()-lastTick > 150000){
+        clearInterval(watchdog); buildActive=false;
+        showBuildError("The on-device build stalled with no progress — your connection or this device may be the cause. Tap Try again, or use the copy-prompt path (it always works).");
+      }
+    }, 5000);
+
     function attempt(){
       var currentModel=null, engine;
-      // Unload the model from GPU memory (frees the weights + buffers). Always
-      // resolves, so it's safe to await before render / retry on iOS.
+      // Unload the model from GPU memory (frees weights + buffers). Bounded so a hung
+      // teardown can't block render/retry; always resolves.
       function disposeEngine(){
-        try{ return (engine && engine.dispose) ? Promise.resolve(engine.dispose()).catch(function(){}) : Promise.resolve(); }
-        catch(e){ return Promise.resolve(); }
+        try{
+          if(!(engine && engine.dispose)) return Promise.resolve();
+          return Promise.race([
+            Promise.resolve(engine.dispose()).catch(function(){}),
+            new Promise(function(r){ setTimeout(r, 4000); })
+          ]);
+        }catch(e){ return Promise.resolve(); }
       }
       try{
         engine=YdinPlanner.createWebLLMEngine({
           blocklist: loadBadModels().concat(tried),
-          onPick:function(id,caps,info){ currentModel=id;
+          onPick:function(id,caps,info){ bump(); currentModel=id;
             var mem=(info&&info.deviceMemory)?" · ~"+info.deviceMemory+" GB RAM":"";
             setBuildProgress("model","Preparing "+id+mem+"…",null); },
-          onProgress:function(stage,txt){ setBuildProgress(stage,txt,null); }
+          onProgress:function(stage,txt){ bump(); setBuildProgress(stage,txt,null); }
         });
-      }catch(err){ showBuildError(aiErr); return; }
+      }catch(err){ stopWatch(); showBuildError(aiErr); return; }
 
       YdinPlanner.buildPlan({
         dayTargets:dayTargets, cc:ans.cc, country:ans.country,
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
         io:io, engine:engine,
         onProgress:function(stage,detail){
+          bump();
           var pctMap={catalog:12,choose:30,guess:50,fetch:60,solve:80,assemble:92,done:100};
           setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
         }
@@ -2297,6 +2317,7 @@
         // buffers) plus rendering the whole plan can exceed Safari's tab memory and
         // crash the page right after a successful build.
         return disposeEngine().then(function(){
+          stopWatch();
           var norm=normalizeMealPlan(plan);
           if(!norm){ showBuildError("The plan came back without any days. Tap Try again, or use the copy-prompt path."); return; }
           buildActive=false;
@@ -2317,13 +2338,15 @@
           if(err && err.aiFailure && currentModel){
             blockModel(currentModel); tried.push(currentModel);
             if(tried.length<8){
+              bump();
               setBuildProgress("retry","That model didn’t respond — trying a different on-device model…",null);
               attempt();
               return;
             }
-            showBuildError(aiErr);
+            stopWatch(); showBuildError(aiErr);
             return;
           }
+          stopWatch();
           if(err && (err.aiFailure || /No on-device model fits/i.test(err.message||""))){
             showBuildError(aiErr); // no model could even be selected/loaded
             return;
