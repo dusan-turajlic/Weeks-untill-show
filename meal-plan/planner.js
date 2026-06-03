@@ -460,7 +460,30 @@
             mealCodes = mealCodes.map(function (cl) {
               return cl.filter(function (c) { return recsByCode[c]; });
             });
-            if (!recs.length) aiReject(new Error("None of the model's foods could be priced or estimated."));
+            // Safety net for weak models (the tiny model iOS forces on us): if a meal
+            // came out empty/sparse because its foods didn't match the catalog and the
+            // macro guesses were unusable, seed DIET-SAFE catalog staples so every meal
+            // is still a real, solvable plate (the model's own matches are kept on top).
+            var seed = gatherFoods(catalog,
+              repairQueries("protein", opts.prefs)
+                .concat(repairQueries("carbs", opts.prefs))
+                .concat(repairQueries("fat", opts.prefs))
+                .concat(repairQueries("fiber", opts.prefs)));
+            var si = 0;
+            if (seed.length) {
+              mealCodes = mealCodes.map(function (cl) {
+                var guard = 0;
+                while (cl.length < 2 && guard++ < seed.length) {
+                  var r = seed[si++ % seed.length];
+                  if (cl.indexOf(r.code) < 0) {
+                    cl.push(r.code);
+                    if (!recsByCode[r.code]) { recsByCode[r.code] = r; recs.push(r); }
+                  }
+                }
+                return cl;
+              });
+            }
+            if (!recs.length) aiReject(new Error("No catalog foods are available for this country."));
             return { recs: recs, recsByCode: recsByCode,
                      layout: { names: names, mealCodes: mealCodes }, guessedProducts: guessedProducts };
           });

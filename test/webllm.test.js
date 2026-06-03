@@ -327,6 +327,36 @@ function run() {
              g && g.macros.length === 2 && g.macros[0].name === "grandma's stew" && g.macros[0].kcal === 120,
              JSON.stringify(g));
         });
+      }).then(function () {
+        // 11) Safety net: a weak model names foods that DON'T match the catalog and
+        //     whose macro guesses are unusable (zeros) — the build must NOT fail; it
+        //     seeds diet-safe catalog staples so every meal is still a real plate.
+        var SC = [
+          ["s1", "Chicken breast", "F", "fi", 100, "g", 0, 0, 3.6, 31],
+          ["s2", "Brown rice", "M", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+          ["s3", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0],
+          ["s4", "Black beans", "L", "fi", 100, "g", 8.7, 23.7, 0.5, 8.9]
+        ].map(function (a) { return JSON.stringify(a); }).join("\n");
+        var web = fakeWebLLM({ reply: mealReply({
+          meals: { _default: ["exotic dragon stew", "mystery gruel"] }, // nothing in the catalog
+          macro: function () { return { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 }; } // unusable -> sanitized away
+        }) });
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: web }, fast));
+        return planner.buildPlan({
+          dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 110, fat: 55, carbs: 150, fiber: 30 }],
+          country: "Finland", prefs: "", breakfast: "savory", mealsPerDay: 3,
+          io: { catalog: fl.parseCatalog(SC), fetch: function () { return Promise.resolve({ ok: false, status: 404 }); } }, engine: eng
+        }).then(function (mp) {
+          var meals = mp.days[0].meals;
+          ok("safety-net: weak model still yields meals (no hard fail)",
+             meals.length >= 1 && meals.every(function (m) { return m.items.length >= 1; }),
+             JSON.stringify(meals.map(function (m) { return m.items.length; })));
+          ok("safety-net: meals are built from diet-safe catalog staples",
+             meals.every(function (m) { return m.items.every(function (it) { return /chicken|rice|olive oil|black beans/i.test(it.food); }); }),
+             meals.map(function (m) { return m.items.map(function (it) { return it.food; }).join(","); }).join(" | "));
+        }, function (err) {
+          ok("safety-net: weak model still yields meals (no hard fail)", false, "rejected: " + (err && err.message));
+        });
       });
     });
   });
