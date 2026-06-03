@@ -184,7 +184,27 @@ Two paths, offered from the **Calories & macros** section on the Projection tab:
 - **Copy prompt** — export the prompt (with your targets filled in) and run it in
   any frontier LLM, then paste the JSON back. Always available; best quality.
 - **Build on this device** — when your browser has WebGPU, a small LLM runs
-  locally and privately: a short wizard asks for country, budget, dietary
-  preferences and meals/day, then the on-device planner picks foods from the
-  country catalog and the solver sizes every portion. Needs the country catalog
-  (`catalog.ydin.app`) reachable online the first time.
+  locally and privately: a short wizard asks for country, dietary preferences,
+  meals/day and **when you train** (don't train / morning / evening), then the
+  on-device planner picks foods from the country catalog and the solver sizes
+  every portion. Needs the country catalog (`catalog.ydin.app`) reachable online
+  the first time.
+
+On the on-device path each meal is designed by its **own** stateless prompt, and
+the day is shaped by one extra prompt per day type:
+
+- **Calorie & carb distribution** — before any meal is designed, the model is
+  asked how to spread the day's calories and carbs across the meals. Calories
+  usually lean toward a bigger evening meal (an even spread is fine when there's
+  plenty to go round); carbs cluster around training time (morning → breakfast and
+  lunch, evening → the later meals) and otherwise drift to the end of the day. On a
+  very low-carb day (≈50 g or less, e.g. a carb-cycling low day) there's nothing to
+  time, so each meal leans on vegetables and fibre helpers (psyllium husk, chia,
+  flax) instead. Protein, fat and fibre follow the calorie split; carbs follow
+  their own; each meal's kcal is the Atwater sum of its macros, so the day total is
+  preserved exactly. A failed call falls back to a heuristic, so it never blocks.
+- **Per-meal design** — each meal prompt is told its carb role (carry carbs vs.
+  stay low-carb) and is steered to pick ingredients that portion cleanly from a
+  normal package (think whole / half / quarter packs) and to pair items that can't
+  be split — e.g. whole eggs **plus** egg whites, so a portion never lands on
+  "1.5 eggs".

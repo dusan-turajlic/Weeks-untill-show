@@ -493,6 +493,13 @@
           <button type="button" data-meals="2">2 meals</button>
         </div>
       </label>
+      <label class="field"><span class="flabel">When do you train?</span>
+        <div class="seg" id="wizWorkout" role="group">
+          <button type="button" data-wo="none" class="on">Don't train</button>
+          <button type="button" data-wo="morning">Morning</button>
+          <button type="button" data-wo="evening">Evening</button>
+        </div>
+      </label>
       <p class="hint" id="wizNote">Needs the catalog and the model to be reachable online the first time. The plan hits your nutrition targets but does not price the shopping list. <span id="wizMobileWarn" hidden>Heads up: the bigger model can run out of memory on phones — a laptop/desktop is more reliable.</span></p>
     </div>
     <div class="actions">
@@ -2159,7 +2166,7 @@
     ["pl","Poland","PLN"],["pt","Portugal","EUR"],["us","United States","USD"],["ca","Canada","CAD"],
     ["au","Australia","AUD"],["nz","New Zealand","NZD"]
   ];
-  var wizMeals=3, wizBreakfast="savory";
+  var wizMeals=3, wizBreakfast="savory", wizWorkout="none";
   function openWizard(){
     if(!buildDayTargets()){ alert("Add your details on the Projection tab first, so I have your targets."); return; }
     var sel=$("wizCountry");
@@ -2180,6 +2187,11 @@
   $("wizBreakfast").addEventListener("click", function(e){
     var b=e.target.closest("[data-bf]"); if(!b) return;
     wizBreakfast=b.getAttribute("data-bf")||"either";
+    [].forEach.call(this.querySelectorAll("button"), function(x){ x.classList.toggle("on", x===b); });
+  });
+  $("wizWorkout").addEventListener("click", function(e){
+    var b=e.target.closest("[data-wo]"); if(!b) return;
+    wizWorkout=b.getAttribute("data-wo")||"none";
     [].forEach.call(this.querySelectorAll("button"), function(x){ x.classList.toggle("on", x===b); });
   });
   $("wizCancel").addEventListener("click", function(){ $("wizModal").hidden=true; });
@@ -2241,7 +2253,8 @@
       cc: sel.value, country: opt?opt.textContent:sel.value,
       prefs: ($("wizPrefs").value||"").trim(),
       breakfast: wizBreakfast,
-      mealsPerDay: wizMeals
+      mealsPerDay: wizMeals,
+      workout: wizWorkout
     };
     $("wizModal").hidden=true;
     runBuild(lastWizAnswers);
@@ -2306,7 +2319,7 @@
       YdinPlanner.buildPlan({
         dayTargets:dayTargets, cc:ans.cc, country:ans.country,
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
-        io:io, engine:engine,
+        workout:ans.workout, io:io, engine:engine,
         onProgress:function(stage,detail){
           bump();
           var pctMap={catalog:12,choose:30,guess:50,fetch:60,solve:80,assemble:92,done:100};
