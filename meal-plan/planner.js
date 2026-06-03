@@ -216,9 +216,11 @@
 
   // Turn a planDayShape reply (relative kcal + carb shares, one entry per meal in
   // morning→night order) into normalised fraction arrays. Whenever the model gives
-  // us nothing usable we fall back to a heuristic — snacks lighter, and carbs
-  // drifting toward the end of the day — so distribution never breaks.
-  function normalizeShape(names, shape) {
+  // us nothing usable — including when we deliberately skip the shape call to save
+  // memory (iOS) — we fall back to a heuristic: snacks lighter, a bigger evening
+  // meal, and carbs timed to `workout` (morning → earlier meals, evening / none →
+  // toward the end of the day). So distribution stays sensible with no extra call.
+  function normalizeShape(names, shape, workout) {
     var n = names.length;
     function norm(a) {
       var s = a.reduce(function (x, y) { return x + (y > 0 ? y : 0); }, 0);
@@ -227,9 +229,13 @@
     }
     function fallbackKcal() { return names.map(function (nm) { return /snack/i.test(nm) ? 0.6 : 1; }); }
     function fallbackCarb() {
-      // No timing signal: lean carbs toward the later meals (end of the day).
       return names.map(function (nm, i) {
-        return (/snack/i.test(nm) ? 0.6 : 1) * (1 + i / Math.max(1, n - 1));
+        var base = /snack/i.test(nm) ? 0.6 : 1;
+        var pos = i / Math.max(1, n - 1); // 0 = first meal … 1 = last meal
+        // Morning training pulls carbs to the earlier meals; otherwise (evening
+        // training or none) they drift toward the end of the day.
+        var bias = workout === "morning" ? (1.6 - pos) : (1 + pos);
+        return base * bias;
       });
     }
     var meals = shape && shape.meals;
@@ -251,8 +257,8 @@
   // every per-meal target is internally consistent and the day total is preserved.
   // `carbFocus` tells the per-meal designer whether to lean into carbs here, keep
   // it low-carb (veg + fibre), or treat it normally.
-  function splitDayTargets(dayTarget, names, shape) {
-    var w = normalizeShape(names, shape);
+  function splitDayTargets(dayTarget, names, shape, workout) {
+    var w = normalizeShape(names, shape, workout);
     var P = dayTarget.protein || 0, F = dayTarget.fat || 0,
         C = dayTarget.carbs || 0, Fib = dayTarget.fiber || 35;
     var avg = 1 / Math.max(1, names.length);
@@ -277,8 +283,8 @@
   // list of catalog codes the model put in meal mi. `shape` is the model's
   // calorie/carb distribution for this day type (snacks lighter, carbs timed).
   // Returns { meals, totals, estimated, unmet, gramsByCode }.
-  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, shape) {
-    var subTargets = splitDayTargets(dayTarget, names, shape);
+  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, shape, workout) {
+    var subTargets = splitDayTargets(dayTarget, names, shape, workout);
     var outMeals = [], unmet = [], estimated = false, gramsByCode = {};
 
     names.forEach(function (nm, mi) {
@@ -437,28 +443,29 @@
         var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
         var usedFoods = [], unmatched = [];
 
-        // First decide how the day's calories and carbs spread across the meals —
-        // its own dedicated call PER day type (more calories in the evening, carbs
-        // clustered around training, lighter snacks). The shapes drive both the
-        // per-meal design targets here and the portion solver later; a failed call
-        // falls back to a heuristic inside normalizeShape, so it never blocks.
-        var dayShapes = new Array(opts.dayTargets.length);
+        // First decide how the day's calories and carbs spread across the meals.
+        // ONE generation for the whole plan: the distribution rules (bigger evening
+        // meal, carbs around training) don't change between day types, and low-carb
+        // days are handled deterministically in splitDayTargets — so a per-type call
+        // would just burn scarce GPU memory. Use the highest-carb day as the
+        // representative so carb timing is meaningful. A failed call falls back to a
+        // heuristic inside normalizeShape, so it never blocks.
+        var dayShape = null;
         var shapeP = Promise.resolve();
         if (opts.engine.planDayShape) {
-          opts.dayTargets.forEach(function (dt, di) {
-            shapeP = shapeP.then(function () {
-              report("choose", "Planning the day's shape…");
-              return Promise.resolve(opts.engine.planDayShape({
-                mealNames: mealNames, target: dt, workout: opts.workout, dayLabel: dt.label
-              })).then(function (s) { dayShapes[di] = s; }, function () { dayShapes[di] = null; });
-            });
-          });
+          var rep = opts.dayTargets.reduce(function (a, b) {
+            return (b.carbs || 0) > (a.carbs || 0) ? b : a;
+          }, opts.dayTargets[0] || {});
+          report("choose", "Planning the day's shape…");
+          shapeP = Promise.resolve(opts.engine.planDayShape({
+            mealNames: mealNames, target: rep, workout: opts.workout, dayLabel: rep.label
+          })).then(function (s) { dayShape = s; }, function () { dayShape = null; });
         }
 
-        // Per-meal targets for the DESIGN pass come from the first day type's shape
-        // (food choice is shared across day types; the solver re-splits per type).
+        // Per-meal targets for the DESIGN pass come from the day shape (food choice
+        // is shared across day types; the solver re-splits each type to its macros).
         var chainP = shapeP.then(function () {
-          var meals0 = splitDayTargets(t0, mealNames, dayShapes[0]);
+          var meals0 = splitDayTargets(t0, mealNames, dayShape, opts.workout);
           var step = Promise.resolve();
           mealNames.forEach(function (nm, mi) {
             step = step.then(function () {
@@ -467,7 +474,9 @@
               return Promise.resolve(opts.engine.designMeal({
                 mealName: nm, target: mealTarget, carbFocus: mealTarget.carbFocus,
                 country: opts.country, prefs: opts.prefs, breakfast: opts.breakfast,
-                usedFoods: usedFoods.slice()
+                // Only the most recent foods — the variety hint must not grow
+                // unbounded across meals, or the later prompts balloon and OOM.
+                usedFoods: usedFoods.slice(-12)
               })).then(function (res) {
               names.push(nm);
               var codes = [];
@@ -556,7 +565,7 @@
               });
             }
             if (!recs.length) aiReject(new Error("No catalog foods are available for this country."));
-            return { recs: recs, recsByCode: recsByCode, dayShapes: dayShapes,
+            return { recs: recs, recsByCode: recsByCode, dayShape: dayShape,
                      layout: { names: names, mealCodes: mealCodes }, guessedProducts: guessedProducts };
           });
         }, aiReject);
@@ -575,7 +584,7 @@
 
       return selectP.then(function (sel) {
         var recs = sel.recs, recsByCode = sel.recsByCode, layout = sel.layout;
-        var dayShapes = sel.dayShapes || [];
+        var dayShape = sel.dayShape || null;
         var guessedProducts = sel.guessedProducts || {};
 
         // Only real catalog codes go to the product API; AI-guessed foods (ai:…)
@@ -595,10 +604,10 @@
           // solves the day as a whole and splits it.
           report("solve", "Sizing portions to hit every target…");
           var unmet = [];
-          var days = opts.dayTargets.map(function (target, di) {
+          var days = opts.dayTargets.map(function (target) {
             if (layout) {
               var d = assembleLayoutDay(target, layout.names, layout.mealCodes, products,
-                                        catalog, recsByCode, repairRounds, opts.prefs, dayShapes[di]);
+                                        catalog, recsByCode, repairRounds, opts.prefs, dayShape, opts.workout);
               if (d.unmet.length) unmet.push.apply(unmet, d.unmet);
               return {
                 label: target.label || "Every day",
@@ -975,9 +984,12 @@
             //    chunk trades a little prefill speed for a much lower peak.
             var ctx = options.contextWindowSize || (env.isIOS ? 1024 : (env.isMobile ? 2048 : 0));
             var chatOpts = ctx ? { context_window_size: ctx } : undefined;
-            if (env.isIOS) {
+            // Cap the prefill activation spike on ALL phones (not just iOS) — Android
+            // shares GPU memory with the OS too, and the spike is a prime OOM trigger,
+            // especially on the later (longer) per-meal prompts of a 5-meal plan.
+            if (env.isMobile) {
               chatOpts = chatOpts || {};
-              chatOpts.prefill_chunk_size = options.prefillChunkSize || 256;
+              chatOpts.prefill_chunk_size = options.prefillChunkSize || (env.isIOS ? 256 : 512);
             } else if (options.prefillChunkSize) {
               chatOpts = chatOpts || {};
               chatOpts.prefill_chunk_size = options.prefillChunkSize;
@@ -1073,20 +1085,17 @@
           "micronutrient-dense whole foods — colourful vegetables or fruit, legumes, whole grains, " +
           "good proteins and fats. (4) Respect dietary restrictions strictly. (5) Name " + g.count + " " +
           "ingredients. (6) Name foods ONLY — no amounts, no numbers, no arithmetic. " +
-          "(7) Pick ingredients that portion cleanly from a normal shop-bought package — think in whole, " +
-          "half or quarter packs — and steer clear of foods that only make sense in awkward fractions. " +
-          "(8) Some foods can't be split sensibly (nobody uses 1.5 eggs): when you choose one, also include " +
-          "the companion that lets a portion land cleanly — e.g. whole eggs PLUS egg whites — so the amount " +
-          "can be tuned without half an egg. " +
+          "(7) Prefer ingredients that portion cleanly from a normal package (whole, half or quarter packs); " +
+          "avoid foods that only work in awkward fractions. (8) Some foods can't be split (no 1.5 eggs) — when " +
+          "you use one, add the companion that makes a clean portion, e.g. whole eggs PLUS egg whites. " +
           "Output ONLY JSON, no prose or code fences: {\"foods\":[\"ingredient\",\"ingredient\",\"ingredient\"]}";
         var carbLine =
           ctx.carbFocus === "high"
-            ? "Carbs: this meal carries a good share of today's carbohydrate — include a satisfying " +
-              "whole-food carb source (e.g. oats, rice, potatoes, wholegrain bread, or fruit).\n"
+            ? "Carbs: this meal carries much of today's carbohydrate — include a whole-food carb (oats, rice, " +
+              "potatoes, wholegrain bread, or fruit).\n"
           : ctx.carbFocus === "low"
-            ? "Carbs: this is a LOW-carb meal — skip starchy/grain carbs and sugary fruit. Build it from " +
-              "protein, healthy fat, plenty of non-starchy vegetables and high-fibre helpers (leafy greens, " +
-              "seeds, and fibre boosters like psyllium husk, chia or ground flaxseed) so it still reaches the fibre target.\n"
+            ? "Carbs: LOW-carb meal — no starches or sugary fruit. Use protein, healthy fat, non-starchy " +
+              "vegetables and fibre helpers (leafy greens, psyllium husk, chia, flax) to reach the fibre target.\n"
           : "";
         var usr = "Meal: " + nm + "\nCountry: " + (ctx.country || "unknown") + "\n" +
           (g.isBreakfast ? "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" : "") +
@@ -1099,20 +1108,27 @@
             ? "Already used earlier today — choose DIFFERENT foods for variety: " + ctx.usedFoods.join(", ") + "\n"
             : "") +
           "Design the " + nm + " now.";
-        return chatJSON(sys, usr, "Designing " + nm, 500).then(function (o) {
+        // 256 tokens is plenty to name 3–5 foods; a tight cap keeps the KV cache
+        // (and the OOM risk) small, which matters across a 5-meal build.
+        return chatJSON(sys, usr, "Designing " + nm, 256).then(function (o) {
           return { foods: Array.isArray(o.foods) ? o.foods.filter(function (x) { return typeof x === "string"; }) : [] };
         });
       },
-      // Decide how to SPREAD one day's calories and carbs across the meals — its own
-      // dedicated call per day type. Most people want a lighter start and a bigger
-      // evening meal; carbs are best clustered around training time (mornings →
-      // breakfast/lunch, evenings → the later meals) and otherwise pushed toward the
-      // end of the day. On very low-carb days there's nothing to time. The model only
-      // returns RELATIVE shares (one entry per meal, in order); the planner normalises
-      // them and the solver does the arithmetic. A failed call falls back to a heuristic.
+      // Decide how to SPREAD one day's calories and carbs across the meals — ONE
+      // generation for the whole plan (buildPlan reuses it across day types). Most
+      // people want a lighter start and a bigger evening meal; carbs are best
+      // clustered around training time (mornings → breakfast/lunch, evenings → the
+      // later meals) and otherwise pushed toward the end of the day. On very low-carb
+      // days there's nothing to time. The model returns RELATIVE shares (one entry
+      // per meal, in order); the planner normalises them and the solver does the
+      // arithmetic. A failed call falls back to a heuristic.
       planDayShape: function (ctx) {
         var names = (ctx.mealNames || []).filter(function (x) { return typeof x === "string" && x.trim(); });
         if (names.length < 2) return Promise.resolve(null); // nothing to distribute
+        // Skip on iOS, like summarize: Safari's tab cap is unforgiving and OOM
+        // crashes the page uncatchably, so we trade this generation for the
+        // deterministic, workout-aware fallback in normalizeShape (null = use it).
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve(null);
         var t = ctx.target || {};
         var wo = ctx.workout || "none";
         var workoutLine =
@@ -1132,7 +1148,7 @@
           "Day total: " + Math.round(t.kcal || 0) + " kcal, " + Math.round(t.carbs || 0) + " g carbs" +
           (ctx.dayLabel ? " (" + ctx.dayLabel + " day)" : "") + ".\n" + workoutLine + "\n" +
           "Give the kcal and carb share for each meal, in order.";
-        return chatJSON(sys, usr, "Planning the day's shape", 300).then(function (o) {
+        return chatJSON(sys, usr, "Planning the day's shape", 200).then(function (o) {
           return { meals: (o && Array.isArray(o.meals)) ? o.meals : [] };
         });
       },

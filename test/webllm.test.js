@@ -314,6 +314,25 @@ function run() {
              web._chatOpts && web._chatOpts.prefill_chunk_size === 256, JSON.stringify(web._chatOpts));
         });
       }).then(function () {
+        // 9b) Non-iOS mobile (Android) also gets a prefill-chunk cap — it shares GPU
+        //     memory with the OS too, and the later per-meal prompts of a 5-meal plan
+        //     are where the activation spike bites.
+        var web = fakeWebLLM({ reply: mealReply({ meals: { _default: ["oats"] } }) });
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: web, env: { isIOS: false, isMobile: true, deviceMemory: 4 } }, fast));
+        return eng.warm().then(function () {
+          ok("Android mobile: WebLLM gets a prefill chunk too (not just iOS)",
+             web._chatOpts && web._chatOpts.prefill_chunk_size === 512, JSON.stringify(web._chatOpts));
+        });
+      }).then(function () {
+        // 9c) iOS skips the day-shape generation (memory): planDayShape resolves null
+        //     so buildPlan uses the deterministic, workout-aware fallback instead.
+        var web = fakeWebLLM({ reply: mealReply({ meals: { _default: ["oats"] } }) });
+        var eng = planner.createWebLLMEngine(Object.assign({ webllm: web, env: { isIOS: true, isMobile: true } }, fast));
+        return eng.planDayShape({ mealNames: ["Breakfast", "Lunch", "Dinner"], target: { kcal: 1800, carbs: 180 }, workout: "morning" }).then(function (s) {
+          ok("iOS: planDayShape is skipped — null result, model never loaded",
+             s === null && !web._engine, JSON.stringify({ shape: s, loaded: !!web._engine }));
+        });
+      }).then(function () {
         // 10) iOS skips the summary generation (memory), but KEEPS the macro guess —
         //     done one food at a time so the tiny model stays reliable and never stalls.
         var web = fakeWebLLM({ reply: mealReply({ macro: function (n) { return /stew/i.test(n) ? { kcal: 120, protein: 7, fat: 4, carbs: 12, fiber: 2 } : null; } }) });

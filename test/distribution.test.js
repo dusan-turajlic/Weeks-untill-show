@@ -67,6 +67,18 @@ var DAY = { protein: 150, fat: 60, carbs: 180, fiber: 36 };
      JSON.stringify(m.map(function (x) { return Math.round(x.carbs); })));
 })();
 
+// 4b) No shape but morning training (e.g. iOS, where the shape call is skipped):
+//     the deterministic fallback still pulls carbs to the earlier meals.
+(function () {
+  console.log("\n== workout-aware fallback (morning training, no model call) ==");
+  var m = split(DAY, NAMES, null, "morning");
+  ok("breakfast gets more carbs than dinner with morning training", m[0].carbs > m[2].carbs,
+     JSON.stringify(m.map(function (x) { return Math.round(x.carbs); })));
+  var e = split(DAY, NAMES, null, "evening");
+  ok("evening training keeps carbs later", e[2].carbs > e[0].carbs,
+     JSON.stringify(e.map(function (x) { return Math.round(x.carbs); })));
+})();
+
 // 5) Very low-carb day (e.g. a carb-cycling low day): nothing to time — every meal
 //    is flagged low-carb so the designer leans on veg + fibre.
 (function () {
