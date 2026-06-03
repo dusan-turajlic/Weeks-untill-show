@@ -1,6 +1,6 @@
 // Weight Projection — service worker
 // Bump CACHE_VERSION when you change any cached asset.
-const CACHE_VERSION = "wp-v9";
+const CACHE_VERSION = "wp-v10";
 const ASSETS = [
   "./",
   "./index.html",
@@ -28,7 +28,10 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Network-first for HTML (so updates land quickly), cache-first for static assets.
+// Network-first for HTML AND our own JS (so code/markup updates always land when
+// online — no CACHE_VERSION bump required, which is too easy to forget); cache-first
+// only for truly static assets (icons, manifest). Everything falls back to cache
+// offline.
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
@@ -36,16 +39,17 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== location.origin) return;
 
   const isHTML = req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html");
+  const isCode = url.pathname.endsWith(".js");
 
-  if (isHTML) {
+  if (isHTML || isCode) {
     event.respondWith(
       fetch(req)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE_VERSION).then((c) => c.put("./index.html", copy));
+          caches.open(CACHE_VERSION).then((c) => c.put(isHTML ? "./index.html" : req, copy));
           return res;
         })
-        .catch(() => caches.match("./index.html"))
+        .catch(() => caches.match(req).then((c) => c || (isHTML ? caches.match("./index.html") : undefined)))
     );
     return;
   }
