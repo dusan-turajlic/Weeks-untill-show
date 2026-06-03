@@ -390,6 +390,9 @@
    *   country, currency, weeklyBudget, prefs, mealsPerDay
    *   workout    : "none" | "morning" | "evening" — when the user trains (carb timing)
    *   io         : food-lookup context { base, fetch, brotliDecode, cache, catalog }
+   *   chatStore  : optional resumable cache { get(key)->Promise<val|null>, set(key,val)->Promise }
+   *                — persists each model response (e.g. to IndexedDB) so an interrupted
+   *                  build resumes from disk instead of regenerating every meal
    *   engine     : optional { suggestFoods(ctx)->Promise<string[]>, summarize?(meta)->Promise<string> }
    *   staples    : optional fallback query list
    *   onProgress : optional (stage, detail) => void
@@ -402,6 +405,24 @@
     var mealsPerDay = Math.max(1, (opts.mealsPerDay | 0) || 3);
     var staples = opts.staples || DEFAULT_STAPLES;
     var repairRounds = opts.repairRounds == null ? 2 : opts.repairRounds;
+
+    // Optional resumable cache (an IndexedDB-backed store from the browser, or any
+    // object exposing async get/set). Every model response is keyed and persisted,
+    // so a build interrupted by an OOM-crash + reload resumes from disk instead of
+    // regenerating every meal — fewer fresh generations on the retry, which is also
+    // less GPU pressure. Fully optional: with no store, behaviour is unchanged.
+    var store = opts.chatStore || null;
+    function cached(key, produce) {
+      if (!store) return Promise.resolve().then(produce);
+      return Promise.resolve(store.get(key)).then(function (hit) {
+        if (hit != null) return hit; // resume: reuse the stored response, no generation
+        return Promise.resolve().then(produce).then(function (val) {
+          if (val == null) return val; // don't cache "nothing" (e.g. a skipped shape call)
+          return Promise.resolve(store.set(key, val)).then(function () { return val; },
+                                                           function () { return val; });
+        });
+      }, function () { return Promise.resolve().then(produce); }); // store read failed → just produce
+    }
 
     // Brotli isn't decodable natively in the browser — supply the wasm fallback
     // unless the caller already wired one (the Node tests inject their own).
@@ -457,9 +478,11 @@
             return (b.carbs || 0) > (a.carbs || 0) ? b : a;
           }, opts.dayTargets[0] || {});
           report("choose", "Planning the day's shape…");
-          shapeP = Promise.resolve(opts.engine.planDayShape({
-            mealNames: mealNames, target: rep, workout: opts.workout, dayLabel: rep.label
-          })).then(function (s) { dayShape = s; }, function () { dayShape = null; });
+          shapeP = cached("shape", function () {
+            return Promise.resolve(opts.engine.planDayShape({
+              mealNames: mealNames, target: rep, workout: opts.workout, dayLabel: rep.label
+            }));
+          }).then(function (s) { dayShape = s; }, function () { dayShape = null; });
         }
 
         // Per-meal targets for the DESIGN pass come from the day shape (food choice
@@ -471,13 +494,18 @@
             step = step.then(function () {
               report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")…");
               var mealTarget = meals0[mi];
-              return Promise.resolve(opts.engine.designMeal({
-                mealName: nm, target: mealTarget, carbFocus: mealTarget.carbFocus,
-                country: opts.country, prefs: opts.prefs, breakfast: opts.breakfast,
-                // Only the most recent foods — the variety hint must not grow
-                // unbounded across meals, or the later prompts balloon and OOM.
-                usedFoods: usedFoods.slice(-12)
-              })).then(function (res) {
+              // Cache key is the meal index: on a resume, meals already designed are
+              // replayed from the store (rebuilding usedFoods in order) and only the
+              // meal that didn't finish is regenerated.
+              return cached("meal:" + mi, function () {
+                return Promise.resolve(opts.engine.designMeal({
+                  mealName: nm, target: mealTarget, carbFocus: mealTarget.carbFocus,
+                  country: opts.country, prefs: opts.prefs, breakfast: opts.breakfast,
+                  // Only the most recent foods — the variety hint must not grow
+                  // unbounded across meals, or the later prompts balloon and OOM.
+                  usedFoods: usedFoods.slice(-12)
+                }));
+              }).then(function (res) {
               names.push(nm);
               var codes = [];
               ((res && res.foods) || []).forEach(function (fname) {
@@ -507,11 +535,16 @@
           var byCode = {}, order = [];
           unmatched.forEach(function (u) { if (!byCode[u.code]) { byCode[u.code] = u.name; order.push(u.code); } });
           var guessedProducts = {};
+          // Key the guess cache by the exact food set so a resume whose foods differ
+          // (the model is non-deterministic) gets a fresh guess rather than stale macros.
+          var guessKey = "guess:" + order.map(function (c) { return byCode[c]; }).sort().join("|");
           var guessP = (order.length && opts.engine.guessMacros)
-            ? Promise.resolve(opts.engine.guessMacros({
-                foods: order.map(function (c) { return byCode[c]; }),
-                country: opts.country, prefs: opts.prefs
-              })).then(function (g) {
+            ? cached(guessKey, function () {
+                return Promise.resolve(opts.engine.guessMacros({
+                  foods: order.map(function (c) { return byCode[c]; }),
+                  country: opts.country, prefs: opts.prefs
+                }));
+              }).then(function (g) {
                 var arr = (g && g.macros) || [];
                 // Map each requested food to its guess: prefer a name match (guards
                 // against the model reordering its answers), else fall back to order.
@@ -1065,7 +1098,14 @@
         return streamChat(engine, [
           { role: "system", content: system },
           { role: "user", content: user }
-        ], { temperature: 0.4, max_tokens: maxTokens || 600, label: label }).then(parseLooseJSON);
+        ], { temperature: 0.4, max_tokens: maxTokens || 600, label: label }).then(function (txt) {
+          var obj = parseLooseJSON(txt);
+          // Clear the conversation after each call so nothing carries into the next
+          // generation's prefill — keeps the on-device footprint flat across a
+          // many-meal build. Guarded: not every engine (or the test seam) has it.
+          return Promise.resolve(engine.resetChat && engine.resetChat())
+            .then(function () { return obj; }, function () { return obj; });
+        });
       });
     }
 

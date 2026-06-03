@@ -837,6 +837,73 @@
   var LS_SETTINGS = "wp:settings";
   var LS_MEAL     = "wp:mealplan";
 
+  // ---- resumable AI build cache (IndexedDB) -------------------------------
+  // Each on-device model response (day shape, per-meal foods, macro guesses) is
+  // written here keyed by a build "session". If the tab OOM-crashes mid-build and
+  // reloads, retrying the SAME plan resumes from disk instead of regenerating every
+  // meal — far fewer fresh generations, so it's likelier to finish. We keep the
+  // store tiny: only the in-flight session survives (pruned on start, cleared on a
+  // clean finish). All IndexedDB use is best-effort — any failure just disables
+  // resume; the planner falls back to generating normally.
+  var CHAT_DB = "wp:chatcache", CHAT_STORE = "chat", chatDBP = null;
+  function hasIDB(){ try{ return typeof indexedDB !== "undefined" && indexedDB; }catch(e){ return false; } }
+  function openChatDB(){
+    if(chatDBP) return chatDBP;
+    chatDBP = new Promise(function(resolve,reject){
+      try{
+        var req = indexedDB.open(CHAT_DB, 1);
+        req.onupgradeneeded = function(){ var db=req.result; if(!db.objectStoreNames.contains(CHAT_STORE)) db.createObjectStore(CHAT_STORE); };
+        req.onsuccess = function(){ resolve(req.result); };
+        req.onerror   = function(){ reject(req.error); };
+      }catch(e){ reject(e); }
+    });
+    chatDBP.catch(function(){ chatDBP=null; }); // let a later call retry a failed open
+    return chatDBP;
+  }
+  function chatTx(mode){ return openChatDB().then(function(db){ return db.transaction(CHAT_STORE, mode).objectStore(CHAT_STORE); }); }
+  // Stable id from the inputs that define a plan, so re-running the SAME wizard
+  // answers resumes, while any change starts a fresh session.
+  function djb2(s){ var h=5381; for(var i=0;i<s.length;i++){ h=((h*33)^s.charCodeAt(i))>>>0; } return h.toString(36); }
+  function chatSessionId(ans, dayTargets){
+    var basis = JSON.stringify({ cc:ans.cc, prefs:ans.prefs, breakfast:ans.breakfast, meals:ans.mealsPerDay, workout:ans.workout,
+      dt:(dayTargets||[]).map(function(d){ return [d.label,Math.round(d.kcal||0),Math.round(d.protein||0),Math.round(d.fat||0),Math.round(d.carbs||0),Math.round(d.fiber||0)]; }) });
+    return "s"+djb2(basis);
+  }
+  // The object handed to buildPlan as opts.chatStore — async get/set, namespaced.
+  function makeChatStore(sessionId){
+    if(!hasIDB()) return null; // no IndexedDB (private mode etc.) -> no resume
+    var prefix = sessionId+"|";
+    return {
+      get:function(key){
+        return chatTx("readonly").then(function(st){ return new Promise(function(res,rej){
+          var r=st.get(prefix+key); r.onsuccess=function(){ res(r.result==null?null:r.result); }; r.onerror=function(){ rej(r.error); };
+        }); });
+      },
+      set:function(key,val){
+        return chatTx("readwrite").then(function(st){ return new Promise(function(res,rej){
+          var r=st.put(val, prefix+key); r.onsuccess=function(){ res(); }; r.onerror=function(){ rej(r.error); };
+        }); });
+      }
+    };
+  }
+  // Housekeeping: delete every cached key NOT belonging to `keepId` (called at
+  // build start), or — with no argument — wipe the whole cache.
+  function pruneChatSessions(keepId){
+    if(!hasIDB()) return Promise.resolve();
+    var keep = keepId ? keepId+"|" : null;
+    return chatTx("readwrite").then(function(st){ return new Promise(function(res){
+      var done=false; function finish(){ if(!done){ done=true; res(); } }
+      try{
+        var cur=st.openCursor();
+        cur.onsuccess=function(){ var c=cur.result; if(!c){ finish(); return; }
+          if(!keep || String(c.key).indexOf(keep)!==0) c.delete();
+          c.continue();
+        };
+        cur.onerror=function(){ finish(); };
+      }catch(e){ finish(); }
+    }); }).catch(function(){});
+  }
+
   // ---- meal plan: parse / validate / (de)serialise ------------------------
   // A plan is whatever the LLM produced from the meal-plan prompt, parsed from
   // its JSON. Rendering is defensive, so we only insist on a non-empty `days`
@@ -2263,6 +2330,11 @@
   function runBuild(ans){
     var dayTargets=buildDayTargets();
     if(!dayTargets){ return; }
+    // Resumable cache: scope it to these exact inputs, and prune any other (stale)
+    // session so the on-disk cache only ever holds this one in-flight build.
+    var chatSession=chatSessionId(ans, dayTargets);
+    var chatStore=makeChatStore(chatSession);
+    pruneChatSessions(chatSession);
     // reset modal
     buildActive=true;
     $("buildErr").hidden=true; $("buildRetry").hidden=true;
@@ -2319,7 +2391,7 @@
       YdinPlanner.buildPlan({
         dayTargets:dayTargets, cc:ans.cc, country:ans.country,
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
-        workout:ans.workout, io:io, engine:engine,
+        workout:ans.workout, io:io, engine:engine, chatStore:chatStore,
         onProgress:function(stage,detail){
           bump();
           var pctMap={catalog:12,choose:30,guess:50,fetch:60,solve:80,assemble:92,done:100};
@@ -2336,6 +2408,7 @@
           buildActive=false;
           mealPlan=norm; mealDay=0; mealEditor=null;
           persist(); renderMealPlan();
+          pruneChatSessions(); // clean finish — the plan is saved, drop the resume cache
           setBuildProgress("done","Done — opening your plan.",100);
           $("buildModal").hidden=true;
           setView("meal");

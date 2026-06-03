@@ -169,6 +169,9 @@ node test/energy.test.js       # maintenance, macros, deficit cap & steps
 node test/solver.test.js       # deterministic meal-plan portion solver
 node test/foodlookup.test.js   # country catalog parse/search + buildMealTotals
 node test/planner.test.js      # on-device planner: catalog -> solver -> import JSON
+node test/webllm.test.js       # on-device engine: streaming, memory caps, per-meal design
+node test/distribution.test.js # per-meal calorie/carb split + workout-aware timing
+node test/chatstore.test.js    # resumable IndexedDB chat cache (resume / partial resume)
 ```
 
 ## Meal planning
@@ -191,20 +194,30 @@ Two paths, offered from the **Calories & macros** section on the Projection tab:
   the first time.
 
 On the on-device path each meal is designed by its **own** stateless prompt, and
-the day is shaped by one extra prompt per day type:
+the whole day is shaped by one extra prompt up front:
 
-- **Calorie & carb distribution** — before any meal is designed, the model is
-  asked how to spread the day's calories and carbs across the meals. Calories
-  usually lean toward a bigger evening meal (an even spread is fine when there's
-  plenty to go round); carbs cluster around training time (morning → breakfast and
-  lunch, evening → the later meals) and otherwise drift to the end of the day. On a
-  very low-carb day (≈50 g or less, e.g. a carb-cycling low day) there's nothing to
-  time, so each meal leans on vegetables and fibre helpers (psyllium husk, chia,
-  flax) instead. Protein, fat and fibre follow the calorie split; carbs follow
-  their own; each meal's kcal is the Atwater sum of its macros, so the day total is
-  preserved exactly. A failed call falls back to a heuristic, so it never blocks.
+- **Calorie & carb distribution** — before any meal is designed, one prompt decides
+  how to spread the day's calories and carbs across the meals (reused across day
+  types). Calories usually lean toward a bigger evening meal (an even spread is fine
+  when there's plenty to go round); carbs cluster around training time (morning →
+  breakfast and lunch, evening → the later meals) and otherwise drift to the end of
+  the day. On a very low-carb day (≈50 g or less, e.g. a carb-cycling low day)
+  there's nothing to time, so each meal leans on vegetables and fibre helpers
+  (psyllium husk, chia, flax) instead. Protein, fat and fibre follow the calorie
+  split; carbs follow their own; each meal's kcal is the Atwater sum of its macros,
+  so the day total is preserved exactly. A failed call (or iOS, where the call is
+  skipped to save memory) falls back to a workout-aware heuristic, so it never blocks.
 - **Per-meal design** — each meal prompt is told its carb role (carry carbs vs.
   stay low-carb) and is steered to pick ingredients that portion cleanly from a
   normal package (think whole / half / quarter packs) and to pair items that can't
   be split — e.g. whole eggs **plus** egg whites, so a portion never lands on
   "1.5 eggs".
+
+To keep memory flat across a many-meal build (phones OOM-crash the tab if a single
+generation peaks too high), the on-device path caps each prompt's size, sets a
+small WebGPU prefill chunk on phones, clears the chat between meals, and persists
+every model response to an **IndexedDB cache** keyed by the plan's inputs. If a
+build is interrupted (including an OOM-crash + reload), retrying the same plan
+**resumes from that cache** and only regenerates the meals that didn't finish. The
+cache holds just the in-flight build — it's pruned on start and cleared on a clean
+finish.
