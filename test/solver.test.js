@@ -81,5 +81,21 @@ console.log("\n== mealTotals scaling ==");
      a.kcal === Math.round(4 * 31 + 4 * 0 + 9 * 3.6), "got " + a.kcal);
 })();
 
+// opts.maxGrams: no single food may exceed its cap; the rest must absorb the
+// target so nothing balloons to an inedible 291 g.
+console.log("\n== bounded portions (maxGrams) ==");
+(function () {
+  var foods = [FOODS.psyllium, FOODS.chicken]; // psyllium is the only big fibre source
+  var target = { kcal: 600, protein: 50, fat: 6, carbs: 10, fiber: 40 };
+  var uncapped = solver.solvePortions(target, foods);
+  var capped = solver.solvePortions(target, foods, { maxGrams: 60 });
+  ok("uncapped lets one food run high", Math.max.apply(null, uncapped.grams) > 60,
+     uncapped.grams.map(Math.round).join(","));
+  ok("maxGrams caps every food", capped.grams.every(function (g) { return g <= 60 + 1e-6; }),
+     capped.grams.map(Math.round).join(","));
+  ok("no maxGrams = original behaviour (unchanged grams)",
+     JSON.stringify(solver.solvePortions(target, foods).grams) === JSON.stringify(uncapped.grams));
+})();
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

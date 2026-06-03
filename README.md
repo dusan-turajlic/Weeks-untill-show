@@ -172,6 +172,7 @@ node test/planner.test.js      # on-device planner: catalog -> solver -> import 
 node test/webllm.test.js       # on-device engine: streaming, memory caps, per-meal design
 node test/distribution.test.js # per-meal calorie/carb split + workout-aware timing
 node test/chatstore.test.js    # resumable IndexedDB chat cache (resume / partial resume)
+node test/balance.test.js      # whole-food critic loop + portion realism guards
 ```
 
 ## Meal planning
@@ -208,10 +209,23 @@ the whole day is shaped by one extra prompt up front:
   so the day total is preserved exactly. A failed call (or iOS, where the call is
   skipped to save memory) falls back to a workout-aware heuristic, so it never blocks.
 - **Per-meal design** — each meal prompt is told its carb role (carry carbs vs.
-  stay low-carb) and is steered to pick ingredients that portion cleanly from a
-  normal package (think whole / half / quarter packs) and to pair items that can't
-  be split — e.g. whole eggs **plus** egg whites, so a portion never lands on
-  "1.5 eggs".
+  stay low-carb) and is steered to pick **whole foods that make a balanced plate**
+  (a real protein, vegetables, a little fat, a whole-food carb when not low-carb),
+  to portion cleanly from a normal package, and to pair items that can't be split —
+  e.g. whole eggs **plus** egg whites, so a portion never lands on "1.5 eggs".
+- **Designer ↔ critic loop** — a small on-device model, left alone, tends to
+  "solve the macros" with cheap fillers (protein powder for protein, nuts for fat,
+  spinach for bulk) and repeat them every meal. So each designed plate is judged by
+  a deterministic critic (no extra model call): it rejects supplements/protein
+  powders, all-protein plates with no vegetable, single-food "meals", and any plate
+  that repeats an earlier one — and re-asks the model with targeted feedback (up to
+  two revisions). Only an **accepted** plate is cached, so a retry never replays a
+  bad meal.
+- **Portion realism** — the solver that sizes each plate is bounded: no single
+  ingredient may exceed 250 g (no 291 g pile of spinach), and any food it sizes
+  below 15 g is dropped and the meal re-solved (no "7 g of chicken" garnish).
+  Supplements are also barred from the deterministic macro-repair, so a
+  protein-short meal is patched with real food, never with whey.
 
 To keep memory flat across a many-meal build (phones OOM-crash the tab if a single
 generation peaks too high), the on-device path caps each prompt's size, sets a

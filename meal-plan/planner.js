@@ -135,7 +135,9 @@
     var seen = {}, out = [];
     (queries || []).forEach(function (q) {
       var hit = FL.searchFoods(catalog, q, 1)[0];
-      if (hit && hit.code && !seen[hit.code]) { seen[hit.code] = 1; out.push(hit); }
+      // Never auto-add a supplement (whey is the catalog's richest "protein", so a
+      // protein-repair would otherwise bolt it onto a meal the critic just cleaned).
+      if (hit && hit.code && !seen[hit.code] && !isSupplementName(hit.name)) { seen[hit.code] = 1; out.push(hit); }
     });
     return out;
   }
@@ -186,6 +188,49 @@
   }
   function aiCode(name) {
     return "ai:" + String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  // A meal is supposed to be a real plate of whole foods. These names mark a
+  // supplement (protein powder, bars, etc.) that the model sometimes reaches for
+  // to hit a macro cheaply — never a meal ingredient.
+  var SUPPLEMENT_RE = /\b(whey|casein|protein\s*(powder|isolate|shake|blend|drink)|mass\s*gainer|bcaa|eaa|creatine|pre[\s-]?workout|meal\s*replacement|protein\s*bar)\b/i;
+  function isSupplementName(s) { return SUPPLEMENT_RE.test(String(s || "")); }
+  // Per-100 g protein at/above this counts a food as a "real protein" anchor.
+  function isProteinRich(rec) { return rec && num(rec.protein) >= 12; }
+  var PROTEIN_WORDS = /chicken|turkey|beef|pork|lamb|veal|fish|salmon|tuna|cod|mackerel|sardine|herring|shrimp|prawn|seafood|egg|tofu|tempeh|seitan|lentil|bean|chickpea|pea\b|yogurt|yoghurt|quark|cheese|cottage|skyr|milk|edamame/i;
+
+  /**
+   * Judge whether a designed meal is a balanced plate of whole foods. Names-based
+   * + catalog macros (no extra model call, no GPU): catches the failure modes the
+   * tiny on-device model falls into — protein-powder fillers, all-protein bricks
+   * with no vegetable, single-food "meals", and meals that just repeat an earlier
+   * one. Returns { ok, feedback } so the design loop can ask for a fix.
+   *   matched : [ { raw, name, code, rec|null } ] — rec carries per-100 g macros
+   *   prevSets: [ setKey ] of meals already accepted today (de-dupe)
+   */
+  function critiqueMeal(matched, prevSets, carbFocus) {
+    var usable = (matched || []).filter(function (m) { return m && m.name; });
+    var supp = usable.filter(function (m) { return isSupplementName(m.raw) || isSupplementName(m.name); });
+    if (supp.length) {
+      return { ok: false, feedback: "you used a supplement (" + supp.map(function (m) { return m.name; }).join(", ") +
+        "). Use only whole foods — real protein like eggs, fish, chicken, dairy, tofu or beans, not powder." };
+    }
+    if (usable.length < 2) {
+      return { ok: false, feedback: "the meal was too thin. Build a fuller, balanced plate of 3–4 whole foods." };
+    }
+    var hasProtein = usable.some(function (m) { return m.rec ? isProteinRich(m.rec) : PROTEIN_WORDS.test(m.name); });
+    if (!hasProtein) {
+      return { ok: false, feedback: "there was no real protein. Add one whole-food protein (eggs, fish, chicken, dairy, tofu or beans)." };
+    }
+    var hasOther = usable.some(function (m) { return m.rec ? !isProteinRich(m.rec) : !PROTEIN_WORDS.test(m.name); });
+    if (!hasOther) {
+      return { ok: false, feedback: "the plate was all protein. Add vegetables" + (carbFocus === "low" ? "" : " or a whole-food carb") + " to balance it." };
+    }
+    var setKey = usable.map(function (m) { return String(m.code || m.name).toLowerCase(); }).sort().join("|");
+    if ((prevSets || []).indexOf(setKey) >= 0) {
+      return { ok: false, feedback: "this repeats an earlier meal. Vary the foods so the day isn't monotonous." };
+    }
+    return { ok: true, setKey: setKey };
   }
 
   // Split a day's solved foods across `meals` meals. Deterministic: each food's
@@ -286,6 +331,11 @@
   function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, shape, workout) {
     var subTargets = splitDayTargets(dayTarget, names, shape, workout);
     var outMeals = [], unmet = [], estimated = false, gramsByCode = {};
+    // Portion-realism guards (the deterministic half of "a meal must look balanced"):
+    // no single ingredient may balloon past MAX_PER_FOOD (the 291 g-of-spinach bug),
+    // and any food the solver sizes below MIN_PORTION is dropped and the meal
+    // re-solved — so a plate never carries a 7 g garnish of chicken.
+    var MAX_PER_FOOD = 250, MIN_PORTION = 15;
 
     names.forEach(function (nm, mi) {
       var sub = subTargets[mi];
@@ -299,7 +349,8 @@
       if (!foods.length) return;
 
       // Solve this meal; if a macro is short, add a DIET-APPROPRIATE food to it.
-      var res = SOLVER.solvePortions(sub, foods);
+      function solve() { return SOLVER.solvePortions(sub, foods, { maxGrams: MAX_PER_FOOD }); }
+      var res = solve();
       for (var r = 0; r < repairRounds && !res.ok; r++) {
         var added = false;
         res.failed.forEach(function (fc) {
@@ -314,7 +365,20 @@
           if (extra.length) added = true;
         });
         if (!added) break;
-        res = SOLVER.solvePortions(sub, foods);
+        res = solve();
+      }
+      // Drop trace portions and re-solve so the remaining foods absorb the macros
+      // in real, edible amounts (keep at least two foods, so a meal is never a
+      // single ingredient).
+      for (var dz = 0; dz < foods.length && foods.length > 2; dz++) {
+        var di = -1, dv = MIN_PORTION;
+        for (var qi = 0; qi < foods.length; qi++) {
+          var gq = res.grams[qi];
+          if (gq > 1e-4 && gq < dv) { dv = gq; di = qi; }
+        }
+        if (di < 0) break;
+        foods.splice(di, 1); codes.splice(di, 1);
+        res = solve();
       }
       if (!res.ok) {
         unmet.push((dayTarget.label || "a day") + " · " + nm + ": " +
@@ -462,7 +526,73 @@
         // so the model can name real local dishes we don't stock.
         var t0 = (opts.dayTargets && opts.dayTargets[0]) || {};
         var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
-        var usedFoods = [], unmatched = [];
+        var usedFoods = [], unmatched = [], mealSets = [];
+
+        // Match the model's food names to the catalog (carrying per-100 g macros);
+        // anything the catalog lacks becomes an ai: code resolved by a macro guess.
+        function matchFoods(raw) {
+          return (raw || []).map(function (fname) {
+            if (typeof fname !== "string" || !fname.trim()) return null;
+            fname = fname.trim();
+            var hit = FL.searchFoods(catalog, fname, 1)[0];
+            if (hit && hit.code) return { raw: fname, name: hit.name, code: hit.code, rec: hit, isAI: false };
+            return { raw: fname, name: fname, code: aiCode(fname), rec: null, isAI: true };
+          }).filter(Boolean);
+        }
+
+        // Design ONE meal and judge it. The model proposes whole foods; the code
+        // critic (no extra model call, no GPU) checks it's a balanced plate — a real
+        // protein, a vegetable/carb, no protein-powder fillers, no repeat of an
+        // earlier meal — and on a fail re-asks with targeted feedback. This is the
+        // designer ↔ critic back-and-forth, bounded so a stubborn model can't stall
+        // the build. Only an ACCEPTED plate is written to the resume cache, so a
+        // retry (or post-crash reload) never replays a bad meal.
+        function designMealWithCritique(mi, nm, mealTarget) {
+          var MAX_TRIES = 3; // 1 design + up to 2 revisions
+          function ask(feedback) {
+            return Promise.resolve(opts.engine.designMeal({
+              mealName: nm, target: mealTarget, carbFocus: mealTarget.carbFocus,
+              country: opts.country, prefs: opts.prefs, breakfast: opts.breakfast,
+              // Only the most recent foods — the variety hint must not grow unbounded
+              // across meals, or the later prompts balloon and OOM.
+              usedFoods: usedFoods.slice(-12), feedback: feedback || null
+            }));
+          }
+          function attempt(tryIdx, feedback) {
+            if (tryIdx > 0) report("choose", "Refining " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")…");
+            return Promise.resolve(ask(feedback)).then(function (res) {
+              var matched = matchFoods(res && res.foods);
+              var verdict = critiqueMeal(matched, mealSets, mealTarget.carbFocus);
+              if (verdict.ok || tryIdx + 1 >= MAX_TRIES) {
+                return { matched: matched, setKey: verdict.setKey || null, ok: !!verdict.ok };
+              }
+              return attempt(tryIdx + 1, verdict.feedback);
+            });
+          }
+          // Resume: a previously ACCEPTED meal is stored as {foods:[…]}. Trust it
+          // (re-match only) and skip the generation entirely.
+          var resumeP = store
+            ? Promise.resolve(store.get("meal:" + mi)).then(function (h) { return h; }, function () { return null; })
+            : Promise.resolve(null);
+          return resumeP.then(function (hit) {
+            if (hit && hit.foods) {
+              var m = matchFoods(hit.foods);
+              if (m.length) {
+                var sk = m.map(function (x) { return String(x.code || x.name).toLowerCase(); }).sort().join("|");
+                return { matched: m, setKey: sk, ok: true, fromCache: true };
+              }
+            }
+            report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")…");
+            return attempt(0, null);
+          }).then(function (acc) {
+            if (store && acc.ok && !acc.fromCache) {
+              var foods = acc.matched.map(function (x) { return x.raw; });
+              return Promise.resolve(store.set("meal:" + mi, { foods: foods }))
+                .then(function () { return acc; }, function () { return acc; });
+            }
+            return acc;
+          });
+        }
 
         // First decide how the day's calories and carbs spread across the meals.
         // ONE generation for the whole plan: the distribution rules (bigger evening
@@ -492,39 +622,22 @@
           var step = Promise.resolve();
           mealNames.forEach(function (nm, mi) {
             step = step.then(function () {
-              report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")…");
-              var mealTarget = meals0[mi];
-              // Cache key is the meal index: on a resume, meals already designed are
-              // replayed from the store (rebuilding usedFoods in order) and only the
-              // meal that didn't finish is regenerated.
-              return cached("meal:" + mi, function () {
-                return Promise.resolve(opts.engine.designMeal({
-                  mealName: nm, target: mealTarget, carbFocus: mealTarget.carbFocus,
-                  country: opts.country, prefs: opts.prefs, breakfast: opts.breakfast,
-                  // Only the most recent foods — the variety hint must not grow
-                  // unbounded across meals, or the later prompts balloon and OOM.
-                  usedFoods: usedFoods.slice(-12)
-                }));
-              }).then(function (res) {
-              names.push(nm);
-              var codes = [];
-              ((res && res.foods) || []).forEach(function (fname) {
-                if (typeof fname !== "string" || !fname.trim()) return;
-                fname = fname.trim();
-                usedFoods.push(fname);
-                var hit = FL.searchFoods(catalog, fname, 1)[0];
-                if (hit && hit.code) {
-                  if (codes.indexOf(hit.code) < 0) codes.push(hit.code);
-                  if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
-                } else {
-                  var code = aiCode(fname);
-                  if (codes.indexOf(code) < 0) codes.push(code);
-                  unmatched.push({ code: code, name: fname });
-                }
+              return designMealWithCritique(mi, nm, meals0[mi]).then(function (acc) {
+                names.push(nm);
+                var codes = [];
+                acc.matched.forEach(function (m) {
+                  usedFoods.push(m.raw);
+                  if (codes.indexOf(m.code) < 0) codes.push(m.code);
+                  if (!m.isAI) {
+                    if (!seen[m.code]) { seen[m.code] = 1; recsByCode[m.code] = m.rec; recs.push(m.rec); }
+                  } else {
+                    unmatched.push({ code: m.code, name: m.name });
+                  }
+                });
+                mealCodes.push(codes);
+                if (acc.setKey) mealSets.push(acc.setKey);
               });
-              mealCodes.push(codes);
             });
-          });
           });
           return step;
         });
@@ -1118,24 +1231,28 @@
         var nm = ctx.mealName || "Meal";
         var t = ctx.target || {};
         var g = mealGuidance(nm, ctx.breakfast);
-        var sys = "You are a chef and nutritionist designing ONE meal: a " + g.kind + ". " + g.desc + " " +
-          "Picture what this single meal realistically looks like on a plate, then list its whole-food " +
-          "ingredients. Rules: (1) It must be ONE coherent " + g.kind + " — foods that genuinely go " +
-          "together, not a random assortment. (2) Build it from " + g.compose + ". (3) Favour " +
-          "micronutrient-dense whole foods — colourful vegetables or fruit, legumes, whole grains, " +
-          "good proteins and fats. (4) Respect dietary restrictions strictly. (5) Name " + g.count + " " +
-          "ingredients. (6) Name foods ONLY — no amounts, no numbers, no arithmetic. " +
-          "(7) Prefer ingredients that portion cleanly from a normal package (whole, half or quarter packs); " +
-          "avoid foods that only work in awkward fractions. (8) Some foods can't be split (no 1.5 eggs) — when " +
-          "you use one, add the companion that makes a clean portion, e.g. whole eggs PLUS egg whites. " +
+        var sys = "You are a chef and nutritionist plating ONE real meal: a " + g.kind + ". " + g.desc + " " +
+          "Picture the actual plate a person sits down and eats, then list its whole-food ingredients. " +
+          "Rules: (1) It is a BALANCED PLATE of WHOLE FOODS that go together as one dish — a clear protein, " +
+          "vegetables, and a little healthy fat (plus a whole-food carb unless told to stay low-carb). " +
+          "(2) NO protein powders, shakes or supplements — no whey, casein, protein isolate, mass gainer, " +
+          "BCAAs, bars. Protein comes from real food: eggs, fish, seafood, poultry, meat, dairy (yogurt, " +
+          "quark, cottage cheese), tofu, tempeh, beans or lentils. (3) Every ingredient is a real component " +
+          "eaten in a NORMAL portion — never a token sprinkle. If a food would only show up in a few grams, " +
+          "leave it out. (4) Favour micronutrient-dense whole foods — colourful vegetables or fruit, legumes, " +
+          "whole grains, good proteins and fats. (5) Respect dietary restrictions strictly. (6) Name " +
+          g.count + " ingredients — enough for a complete plate, no padding. (7) Name foods ONLY — no amounts, " +
+          "no numbers, no arithmetic. (8) Prefer ingredients that portion cleanly from a normal package; some " +
+          "can't be split (no 1.5 eggs) — pair them with a companion, e.g. whole eggs PLUS egg whites. " +
           "Output ONLY JSON, no prose or code fences: {\"foods\":[\"ingredient\",\"ingredient\",\"ingredient\"]}";
         var carbLine =
           ctx.carbFocus === "high"
             ? "Carbs: this meal carries much of today's carbohydrate — include a whole-food carb (oats, rice, " +
               "potatoes, wholegrain bread, or fruit).\n"
           : ctx.carbFocus === "low"
-            ? "Carbs: LOW-carb meal — no starches or sugary fruit. Use protein, healthy fat, non-starchy " +
-              "vegetables and fibre helpers (leafy greens, psyllium husk, chia, flax) to reach the fibre target.\n"
+            ? "Carbs: LOW-carb meal — no bread, rice, potatoes, pasta or sugary fruit. Build it from a real " +
+              "protein, plenty of non-starchy vegetables and healthy fats; fibre helpers (leafy greens, chia, " +
+              "flax, psyllium) may top up fibre but are NOT the meal.\n"
           : "";
         var usr = "Meal: " + nm + "\nCountry: " + (ctx.country || "unknown") + "\n" +
           (g.isBreakfast ? "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" : "") +
@@ -1145,7 +1262,12 @@
           " g fat and " + Math.round(t.fiber || 0) + " g fibre in this meal, so pick foods substantial " +
           "and protein-/fibre-rich enough to reach that.\n" + carbLine +
           ((ctx.usedFoods && ctx.usedFoods.length)
-            ? "Already used earlier today — choose DIFFERENT foods for variety: " + ctx.usedFoods.join(", ") + "\n"
+            ? "Do NOT reuse any of these foods already eaten earlier today — choose different proteins and " +
+              "vegetables so the day stays varied: " + ctx.usedFoods.join(", ") + "\n"
+            : "") +
+          (ctx.feedback
+            ? "Your previous attempt was rejected: " + ctx.feedback + " Fix this and design a better, " +
+              "balanced whole-food plate.\n"
             : "") +
           "Design the " + nm + " now.";
         // 256 tokens is plenty to name 3–5 foods; a tight cap keeps the KV cache

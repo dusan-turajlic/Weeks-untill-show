@@ -298,9 +298,9 @@ function run() {
         }).then(function () {
           var lunchPrompt = prompts.filter(function (p) { return /^Meal:\s*Lunch/m.test(p); })[0] || "";
           var breakfastPrompt = prompts.filter(function (p) { return /^Meal:\s*Breakfast/m.test(p); })[0] || "";
-          ok("variety: first meal has no 'already used' line", !/already used earlier today/i.test(breakfastPrompt));
+          ok("variety: first meal has no 'already eaten' line", !/already eaten earlier today/i.test(breakfastPrompt));
           ok("variety: later meals are told the foods earlier meals used",
-             /already used earlier today/i.test(lunchPrompt) && /oats/i.test(lunchPrompt), lunchPrompt.split("\n").slice(-3).join(" | "));
+             /already eaten earlier today/i.test(lunchPrompt) && /oats/i.test(lunchPrompt), lunchPrompt.split("\n").slice(-3).join(" | "));
         });
       }).then(function () {
         // 9) iOS memory caps: the engine must hand WebLLM a tight context window AND

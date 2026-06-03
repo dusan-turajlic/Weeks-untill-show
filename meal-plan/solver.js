@@ -138,23 +138,46 @@
       return foods.map(function (f) { return f[k] / 100; });
     });
 
-    // Active-set non-negative least squares: start with every food active, solve,
-    // and if any gram is negative, drop the most-negative food (clamp to 0) and
-    // re-solve. Bounded by the number of foods.
+    // Active-set bounded least squares. Start with every food active, solve, and:
+    //   • if any gram is negative, drop the most-negative food (clamp to 0);
+    //   • else if any gram exceeds its cap, fix that food AT its cap and re-solve
+    //     the rest against the remaining target (so no single ingredient balloons
+    //     to an inedible 291 g — the planner caps each food per meal);
+    //   • else accept. Bounded by twice the food count (each food can hit at most
+    //     one bound). opts.maxGrams is a number (uniform) or a per-food array;
+    //     absent → no upper bound, identical to the original behaviour.
+    var maxG = opts.maxGrams;
+    function capOf(i) {
+      if (maxG == null) return Infinity;
+      var c = (typeof maxG === "number") ? maxG : maxG[i];
+      return (c == null || !isFinite(c)) ? Infinity : c;
+    }
     var active = foods.map(function (_, i) { return i; });
     var grams = foods.map(function () { return 0; });
-    for (var pass = 0; pass < foods.length + 1 && active.length; pass++) {
-      var g = leastSquares(T, t, active);
+    var fixedHi = foods.map(function () { return false; }); // clamped at its cap
+    for (var pass = 0; pass < 2 * foods.length + 2 && active.length; pass++) {
+      // Reduced target: subtract the contribution of foods already fixed at cap.
+      var tr = t.slice();
+      for (var fi = 0; fi < foods.length; fi++) {
+        if (fixedHi[fi]) { for (var mr = 0; mr < tr.length; mr++) tr[mr] -= T[mr][fi] * grams[fi]; }
+      }
+      var g = leastSquares(T, tr, active);
       if (!g) break; // singular — bail, verification will flag the gaps
       var worst = -1, worstVal = 0;
       for (var i = 0; i < active.length; i++) {
         if (g[i] < worstVal) { worstVal = g[i]; worst = i; }
       }
-      if (worst === -1) { // all non-negative — accept
-        active.forEach(function (col, k) { grams[col] = Math.max(0, g[k]); });
-        break;
+      if (worst !== -1) { active.splice(worst, 1); continue; } // drop most-negative, re-solve
+      var over = -1, overBy = 1e-6;
+      for (var i2 = 0; i2 < active.length; i2++) {
+        var excess = g[i2] - capOf(active[i2]);
+        if (excess > overBy) { overBy = excess; over = i2; }
       }
-      active.splice(worst, 1); // drop the most-negative food, re-solve
+      if (over !== -1) { // fix the most-over-cap food at its cap, re-solve the rest
+        var col = active[over]; grams[col] = capOf(col); fixedHi[col] = true; active.splice(over, 1); continue;
+      }
+      active.forEach(function (c2, k) { grams[c2] = Math.max(0, g[k]); }); // all within [0, cap]
+      break;
     }
 
     var totals = mealTotals(foods, grams);
