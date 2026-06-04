@@ -233,6 +233,61 @@
     return { ok: true, setKey: setKey };
   }
 
+  // ---- portion labels: annotate grams with a human unit ("70 g (~2 slices)") ---
+  // Grams stay the source of truth (the solver works in grams); this only adds a
+  // friendlier hint so a plate reads like food, not lab weights. A unit comes from
+  // the catalog's own servingUnit/servingSize when it's a real discrete unit, else
+  // from this guesstimate table of foods people eat in whole pieces. `half: true`
+  // foods may show a half (½ banana); the rest snap to whole units (never ½ egg).
+  var UNIT_FOODS = [
+    { re: /\b(crispbread|knackebrod|knäckebröd)\b/, unit: "crispbread", grams: 10, half: false },
+    { re: /\b(bread|toast|sourdough|rye|baguette|roll|bun|bagel)\b/, not: /crumb|stuffing/, unit: "slice", grams: 35, half: false },
+    { re: /\beggs?\b/, not: /egg\s?(plant|white|noodle|nog)/, unit: "egg", grams: 50, half: false },
+    { re: /\b(tortilla|wrap|flatbread|pita|naan)\b/, unit: "wrap", grams: 60, half: true },
+    { re: /\brice cakes?\b/, unit: "rice cake", grams: 9, half: false },
+    { re: /\bbananas?\b/, not: /bread|chip/, unit: "banana", grams: 118, half: true },
+    { re: /\bapples?\b/, not: /sauce|juice|cider/, unit: "apple", grams: 180, half: true },
+    { re: /\b(oranges?|clementines?|mandarins?|satsumas?)\b/, not: /juice/, unit: "orange", grams: 130, half: true },
+    { re: /\bavocados?\b/, unit: "avocado", grams: 150, half: true },
+    { re: /\bkiwis?\b/, unit: "kiwi", grams: 75, half: false },
+    { re: /\b(sausages?|bratwurst|hot\s?dogs?)\b/, unit: "sausage", grams: 50, half: false }
+  ];
+  var MASS_UNITS = { g: 1, gram: 1, grams: 1, gr: 1, kg: 1, ml: 1, milliliter: 1, millilitre: 1, l: 1, liter: 1, litre: 1, cl: 1, dl: 1, oz: 1, "": 1 };
+  function tableUnit(name) {
+    var low = String(name || "").toLowerCase();
+    for (var i = 0; i < UNIT_FOODS.length; i++) {
+      var u = UNIT_FOODS[i];
+      if (u.re.test(low) && !(u.not && u.not.test(low))) return { unit: u.unit, grams: u.grams, half: u.half };
+    }
+    return null;
+  }
+  function catalogUnit(rec) {
+    if (!rec) return null;
+    var u = String(rec.servingUnit == null ? "" : rec.servingUnit).trim().toLowerCase();
+    var sz = num(rec.servingSize);
+    if (MASS_UNITS[u] || !(sz >= 3 && sz <= 600)) return null; // mass/volume or implausible per-unit weight
+    return { unit: u, grams: sz, half: false };
+  }
+  function pluralizeUnit(unit) { return /s$/.test(unit) ? unit : unit + "s"; }
+  function countStr(n) {
+    var whole = Math.floor(n + 1e-9), frac = n - whole >= 0.5 ? "½" : "";
+    return whole > 0 ? whole + frac : (frac || "0");
+  }
+  // Build the "<g> g" string, with a "(~N unit)" hint when the food is eaten in
+  // discrete pieces and the rounded unit count honestly reflects the grams.
+  function portionLabel(name, rec, grams) {
+    var g = Math.round(num(grams)), base = g + " g";
+    var info = catalogUnit(rec) || tableUnit(name);
+    if (!info || !(info.grams > 0)) return base;
+    var raw = num(grams) / info.grams;
+    var n = info.half ? Math.round(raw * 2) / 2 : Math.round(raw);
+    if (n < (info.half ? 0.5 : 1)) n = info.half ? 0.5 : 1; // at least the smallest sensible piece
+    // Skip the hint if the whole-unit rounding is more than ~half a unit off the
+    // real grams (so we never label 12 g as "1 egg").
+    if (Math.abs(n * info.grams - num(grams)) > 0.5 * info.grams + 8) return base;
+    return base + " (~" + countStr(n) + " " + (n <= 1 ? info.unit : pluralizeUnit(info.unit)) + ")";
+  }
+
   // Split a day's solved foods across `meals` meals. Deterministic: each food's
   // grams are divided evenly across the meals, so every meal is nutritionally
   // balanced. Foods under ~5 g are dropped as noise.
@@ -249,7 +304,7 @@
         var grams = round(f.grams / n);
         var t = FL.buildMealTotals([{ code: f.code, grams: grams, fiber100: f.fiber100 }], products).totals;
         return {
-          food: f.name, amount: grams + " g",
+          food: f.name, amount: portionLabel(f.name, null, grams),
           kcal: Math.round(t.kcal), protein: round(t.protein),
           fat: round(t.fat), carbs: round(t.carbs), fiber: round(t.fiber)
         };
@@ -393,7 +448,7 @@
         var t = FL.buildMealTotals([{ code: f.code, grams: g, fiber100: f.fiber }], products);
         if (t.estimated) estimated = true;
         items.push({
-          food: f.name, amount: Math.round(g) + " g",
+          food: f.name, amount: portionLabel(f.name, recsByCode[f.code], g),
           kcal: Math.round(t.totals.kcal), protein: round(t.totals.protein),
           fat: round(t.totals.fat), carbs: round(t.totals.carbs), fiber: round(t.totals.fiber)
         });
@@ -1394,6 +1449,7 @@
     browserBrotli: browserBrotli,
     DEFAULT_STAPLES: DEFAULT_STAPLES,
     macroRow: macroRow,
+    portionLabel: portionLabel,
     splitIntoMeals: splitIntoMeals,
     splitDayTargets: splitDayTargets,
     gatherFoods: gatherFoods

@@ -173,6 +173,7 @@ node test/webllm.test.js       # on-device engine: streaming, memory caps, per-m
 node test/distribution.test.js # per-meal calorie/carb split + workout-aware timing
 node test/chatstore.test.js    # resumable IndexedDB chat cache (resume / partial resume)
 node test/balance.test.js      # whole-food critic loop + portion realism guards
+node test/portion.test.js      # discrete-unit portion labels ("70 g (~2 slices)")
 ```
 
 ## Meal planning
@@ -226,6 +227,13 @@ the whole day is shaped by one extra prompt up front:
   below 15 g is dropped and the meal re-solved (no "7 g of chicken" garnish).
   Supplements are also barred from the deterministic macro-repair, so a
   protein-short meal is patched with real food, never with whey.
+- **Human portions** — foods eaten in discrete pieces are annotated with a unit
+  hint, so a plate reads `70 g (~2 slices)` or `100 g (~2 eggs)` rather than bare
+  weights. The unit comes from the catalog's own `servingUnit`/`servingSize` when
+  it's a real piece-unit, otherwise from a small guesstimate table (bread → slice,
+  egg, banana, tortilla…). Grams stay the source of truth; splittable foods may
+  show a half (`½ banana`), and the hint is dropped when the rounding wouldn't be
+  honest (12 g is never "1 egg").
 
 To keep memory flat across a many-meal build (phones OOM-crash the tab if a single
 generation peaks too high), the on-device path caps each prompt's size, sets a

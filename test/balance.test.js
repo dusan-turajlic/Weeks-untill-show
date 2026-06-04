@@ -45,7 +45,7 @@ function build(engine) {
     io: { catalog: catalog, fetch: noFetch }, engine: engine
   });
 }
-function grams(s) { return parseFloat(String(s).replace(/[^0-9.]/g, "")) || 0; }
+function grams(s) { return parseFloat(s) || 0; } // amounts start with "<g> g …"
 function items(mp) {
   var out = [];
   mp.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { out.push(it); }); });
