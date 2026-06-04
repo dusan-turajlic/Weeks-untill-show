@@ -131,6 +131,23 @@
     return scored.slice(0, limit || 20).map(function (x) { return x.rec; });
   }
 
+  // Like searchFoods, but score each record against the BEST of several queries.
+  // Used to find one food by its English name AND its local-language synonyms at
+  // once ("rolled oats" + "kaurahiutaleet" + "puuro"), so a plan built by an
+  // English-naming model still matches a catalog whose product names are local.
+  function searchFoodsMulti(catalog, queries, limit) {
+    var qs = (queries || []).map(normalize).filter(Boolean);
+    if (!qs.length) return [];
+    var scored = [];
+    for (var i = 0; i < (catalog || []).length; i++) {
+      var best = 0;
+      for (var j = 0; j < qs.length; j++) { var s = scoreMatch(catalog[i], qs[j]); if (s > best) best = s; }
+      if (best > 0) scored.push({ rec: catalog[i], s: best });
+    }
+    scored.sort(function (a, b) { return b.s - a.s; });
+    return scored.slice(0, limit || 20).map(function (x) { return x.rec; });
+  }
+
   // ---- buildMealTotals (pure) ---------------------------------------------
   // The deterministic summation the model is forbidden from doing. Items are
   // [{code, grams}]; products is a map code -> product JSON (from fetchProducts).
@@ -378,6 +395,7 @@
     parseCatalogLine: parseCatalogLine,
     parseCatalog: parseCatalog,
     searchFoods: searchFoods,
+    searchFoodsMulti: searchFoodsMulti,
     scoreMatch: scoreMatch,
     buildMealTotals: buildMealTotals,
     decodeBrotli: decodeBrotli,

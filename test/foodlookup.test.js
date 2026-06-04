@@ -49,6 +49,22 @@ ok("descriptive 'grilled whole milk' still finds it (cooking words ignored)",
    (fl.searchFoods(cat, "grilled whole milk")[0] || {}).name === "Whole milk");
 ok("no match returns empty", fl.searchFoods(cat, "zzzz").length === 0);
 
+// searchFoodsMulti: a food found by its English name OR a local-language synonym.
+// This is the language bridge — the model names "rolled oats" but a Finnish shelf
+// says "kaurahiutaleet"; matching must succeed via the local term.
+var FI = fl.parseCatalog([
+  '["k1","Kaurahiutaleet","Elovena","fi",100,"g",10,60,7,13]',  // = rolled oats
+  '["k2","Broilerin rintafilee","Kariniemen","fi",100,"g",0,0,2,23]', // = chicken breast
+  '["k3","Rasvaton maitojuoma","Valio","fi",100,"ml",0,5,0.1,3.4]'    // = skimmed milk
+].join("\n"));
+ok("English-only query misses the Finnish shelf (the bug)", fl.searchFoods(FI, "rolled oats").length === 0);
+ok("multi-search finds it via the local synonym",
+   (fl.searchFoodsMulti(FI, ["rolled oats", "kaurahiutaleet", "kaura"], 1)[0] || {}).code === "k1");
+ok("multi-search still works when only the English term is given a match elsewhere",
+   (fl.searchFoodsMulti(FI, ["chicken breast", "broileri", "kanan rintafilee"], 1)[0] || {}).code === "k2");
+ok("multi-search with no usable term returns empty", fl.searchFoodsMulti(FI, ["zzz", "qqq"], 1).length === 0);
+ok("multi-search tolerates an empty/blank query list", fl.searchFoodsMulti(FI, ["", null], 1).length === 0);
+
 // ---- buildMealTotals ----
 console.log("\n== buildMealTotals ==");
 var products = {

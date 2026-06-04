@@ -222,6 +222,19 @@ the whole day is shaped by one extra prompt up front:
   that repeats an earlier one — and re-asks the model with targeted feedback (up to
   two revisions). Only an **accepted** plate is cached, so a retry never replays a
   bad meal.
+- **Local-language matching** — the model names foods in English, but a country's
+  Open Food Facts catalog stores **product names in the local language** (`rolled
+  oats` vs. `kaurahiutaleet`). A plain English search barely hits a Finnish or
+  French shelf, so most foods would fall back to AI macro-guesses and the plan
+  collapses onto the few English-ish matches (endless chicken). To fix it, foods
+  that miss the English search are run through one batched `localizeFoods` call —
+  the **same loaded model**, which already knows the language, returns a few local
+  grocery terms per food (`kaurahiutaleet`, `kaura`, `puuro`) — and the catalog is
+  re-searched against the English name **and** those synonyms. Real local products
+  surface (and display under their real shelf names), which is what gives the plan
+  its variety. It only ever *adds* matches: a failed or empty call just leaves the
+  English/AI-guess path untouched, and English-catalog countries skip the call
+  entirely. Languages are mapped per country code in `CATALOG_LANGS`.
 - **Portion realism** — the solver that sizes each plate is bounded: no single
   ingredient may exceed 250 g (no 291 g pile of spinach), and any food it sizes
   below 15 g is dropped and the meal re-solved (no "7 g of chicken" garnish).

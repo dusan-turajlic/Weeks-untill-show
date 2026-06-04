@@ -376,6 +376,80 @@ function run() {
         }, function (err) {
           ok("safety-net: weak model still yields meals (no hard fail)", false, "rejected: " + (err && err.message));
         });
+      }).then(function () {
+        // 12) Language bridge — localizeFoods turns English food names into local
+        //     search terms so a Finnish-named catalog is actually reachable.
+        var locPrompts = [];
+        var locWeb = fakeWebLLM({ reply: function (messages) {
+          var sys = (messages[0] && messages[0].content) || "";
+          if (/translate everyday food/i.test(sys)) {
+            locPrompts.push(sys);
+            return JSON.stringify({ "rolled oats": ["kaurahiutaleet", "kaura"], "chicken breast": ["broilerin rintafilee", "broileri"] });
+          }
+          return "{}";
+        } });
+        var locEng = planner.createWebLLMEngine(Object.assign({ webllm: locWeb }, fast));
+        return locEng.localizeFoods({ foods: ["rolled oats", "chicken breast"], languages: ["Finnish", "Swedish"], country: "Finland" })
+          .then(function (r) {
+            ok("localizeFoods: returns local terms keyed by the English food",
+               r && r.terms && r.terms["rolled oats"][0] === "kaurahiutaleet" && r.terms["chicken breast"].length === 2, JSON.stringify(r));
+            ok("localizeFoods: prompt names the catalog language(s)",
+               locPrompts.length === 1 && /Finnish or Swedish/.test(locPrompts[0]));
+            // No languages (English catalog) -> resolves empty WITHOUT loading the model.
+            var w2 = fakeWebLLM({ reply: function () { return "{}"; } });
+            var e2 = planner.createWebLLMEngine(Object.assign({ webllm: w2 }, fast));
+            return e2.localizeFoods({ foods: ["oats"], languages: [] }).then(function (r2) {
+              ok("localizeFoods: English catalog (no languages) -> skipped, model never loaded",
+                 r2.terms && !Object.keys(r2.terms).length && !w2._engine, JSON.stringify({ r: r2, loaded: !!w2._engine }));
+            });
+          }).then(function () {
+            // 12b) End-to-end rescue: an English-naming model + a Finnish-named catalog.
+            //      Without the bridge every food misses and collapses to staples/guesses;
+            //      with it, the plan is built from the REAL local products.
+            var FIC = [
+              ["f1", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+              ["f2", "Broilerin rintafilee", "Kariniemen", "fi", 100, "g", 0, 0, 2, 23],
+              ["f3", "Pinaatti", "Findus", "fi", 100, "g", 2, 1, 0.4, 3],
+              ["f4", "Oliiviöljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+              ["f5", "Ruskea riisi", "Risella", "fi", 100, "g", 1.8, 23, 0.9, 2.6]
+            ].map(function (a) { return JSON.stringify(a); }).join("\n");
+            var TERMS = {
+              "rolled oats": ["kaurahiutaleet"], "chicken breast": ["broilerin rintafilee", "broileri"],
+              "spinach": ["pinaatti"], "olive oil": ["oliiviöljy"], "brown rice": ["ruskea riisi", "riisi"]
+            };
+            var fiWeb = fakeWebLLM({ reply: function (messages) {
+              var sys = (messages[0] && messages[0].content) || "";
+              var usr = (messages[1] && messages[1].content) || "";
+              if (/translate everyday food/i.test(sys)) {
+                var out = {};
+                (usr.match(/^- (.+)$/gm) || []).forEach(function (line) {
+                  var f = line.replace(/^- /, "").trim(); if (TERMS[f]) out[f] = TERMS[f];
+                });
+                return JSON.stringify(out);
+              }
+              if (/nutrition database/i.test(sys)) return JSON.stringify({ kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 });
+              var meal = (usr.match(/^Meal:\s*(.+)$/m) || [])[1] || "";
+              return JSON.stringify({ foods: ({
+                Breakfast: ["rolled oats", "chicken breast", "spinach"],
+                Lunch: ["chicken breast", "brown rice", "olive oil"],
+                Dinner: ["chicken breast", "spinach", "olive oil"]
+              })[meal] || [] });
+            } });
+            var fiEng = planner.createWebLLMEngine(Object.assign({ webllm: fiWeb }, fast));
+            return planner.buildPlan({
+              dayTargets: [{ label: "Day", count: 7, kcal: 1700, protein: 120, fat: 55, carbs: 170, fiber: 30 }],
+              cc: "fi", country: "Finland", prefs: "", breakfast: "savory", mealsPerDay: 3,
+              io: { catalog: fl.parseCatalog(FIC), fetch: function () { return Promise.resolve({ ok: false, status: 404 }); } }, engine: fiEng
+            }).then(function (mp) {
+              var foods = mp.days[0].meals.reduce(function (a, m) { return a.concat(m.items.map(function (it) { return it.food; })); }, []);
+              ok("rescue: plan is built from REAL Finnish catalog products (not ai-guesses)",
+                 foods.length > 0 && foods.every(function (f) { return /Kaurahiutaleet|Broilerin|Pinaatti|Oliivi|riisi/i.test(f); }), foods.join(" | "));
+              ok("rescue: the model's English 'chicken breast' resolved to the local broiler product",
+                 foods.some(function (f) { return /Broilerin rintafilee/i.test(f); }), foods.join(" | "));
+              ok("rescue: no ai:-guessed placeholder foods leaked into the plan",
+                 foods.every(function (f) { return !/^ai:/.test(f); }), foods.join(" | "));
+            });
+          });
       });
     });
   });

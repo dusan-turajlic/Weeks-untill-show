@@ -33,6 +33,18 @@
     "black beans", "lentils", "broccoli", "spinach", "carrots"
   ];
 
+  // The language(s) a country's Open Food Facts catalog names products in. The
+  // model picks foods in English, so for these catalogs we ask it (see the engine's
+  // localizeFoods) for local-language search terms before matching — otherwise an
+  // English query barely hits a Finnish or French shelf. English-catalog countries
+  // (gb, ie, us, ca, au, nz) aren't listed: their names already match, so no call.
+  var CATALOG_LANGS = {
+    fi: ["Finnish", "Swedish"], se: ["Swedish"], no: ["Norwegian"], dk: ["Danish"],
+    de: ["German"], fr: ["French"], es: ["Spanish"], it: ["Italian"],
+    nl: ["Dutch"], be: ["Dutch", "French"], pl: ["Polish"], pt: ["Portuguese"]
+  };
+  function catalogLanguages(cc) { return CATALOG_LANGS[String(cc || "").toLowerCase()] || []; }
+
   function num(x) { var n = typeof x === "string" ? parseFloat(x) : x;
                     return typeof n === "number" && isFinite(n) ? n : 0; }
   function round(x) { return Math.round(num(x) * 10) / 10; }
@@ -699,6 +711,46 @@
 
         selectP = chainP.then(function () {
           if (!names.length) aiReject(new Error("The model designed no meals."));
+
+          // Language rescue: foods that missed the English catalog search may live
+          // in the catalog under a LOCAL-language name. Ask the loaded model for
+          // local search terms and retry the match, turning ai:guesses into real
+          // local products — the fix for monotonous plans on non-English catalogs,
+          // where English queries barely hit the (e.g. Finnish-named) shelf. A
+          // failure just leaves the English/ai path, so this can only add matches.
+          var rescueP = Promise.resolve();
+          var langs = catalogLanguages(opts.cc);
+          if (langs.length && unmatched.length && opts.engine.localizeFoods) {
+            var rByCode = {}, rOrder = [];
+            unmatched.forEach(function (u) { if (!rByCode[u.code]) { rByCode[u.code] = u.name; rOrder.push(u.code); } });
+            var locKey = "localize:" + langs.join(",") + ":" + rOrder.map(function (c) { return rByCode[c]; }).sort().join("|");
+            report("choose", "Finding local product names…");
+            rescueP = cached(locKey, function () {
+              return Promise.resolve(opts.engine.localizeFoods({
+                foods: rOrder.map(function (c) { return rByCode[c]; }), languages: langs, country: opts.country
+              }));
+            }).then(function (loc) {
+              var terms = (loc && loc.terms) || {}, remap = {};
+              rOrder.forEach(function (code) {
+                var nm = rByCode[code];
+                var hit = FL.searchFoodsMulti(catalog, [nm].concat(terms[nm] || []), 1)[0];
+                if (hit && hit.code && !isSupplementName(hit.name)) {
+                  remap[code] = hit.code;
+                  if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
+                }
+              });
+              if (Object.keys(remap).length) {
+                mealCodes = mealCodes.map(function (cl) {
+                  var seenC = {}, out = [];
+                  cl.forEach(function (c) { var nc = remap[c] || c; if (!seenC[nc]) { seenC[nc] = 1; out.push(nc); } });
+                  return out;
+                });
+                unmatched = unmatched.filter(function (u) { return !remap[u.code]; });
+              }
+            }, function () { /* localization failed — keep the English/ai path */ });
+          }
+
+          return rescueP.then(function () {
           // De-dupe unmatched foods, then resolve them with ONE macro-guess call.
           var byCode = {}, order = [];
           unmatched.forEach(function (u) { if (!byCode[u.code]) { byCode[u.code] = u.name; order.push(u.code); } });
@@ -768,6 +820,7 @@
             if (!recs.length) aiReject(new Error("No catalog foods are available for this country."));
             return { recs: recs, recsByCode: recsByCode, dayShape: dayShape,
                      layout: { names: names, mealCodes: mealCodes }, guessedProducts: guessedProducts };
+          });
           });
         }, aiReject);
       } else if (opts.engine && opts.engine.suggestFoods) {
@@ -1391,6 +1444,40 @@
           });
         });
         return p.then(function () { return { macros: out }; });
+      },
+      // Bridge the language gap. The model names foods in English, but a country's
+      // catalog stores product names in the LOCAL language ("rolled oats" vs
+      // "kaurahiutaleet"), so an English search misses most of the shelf and the
+      // plan collapses onto the few English-ish hits (endless chicken). Here the
+      // SAME loaded model — which already knows the language — turns each English
+      // food into a few local-language grocery terms the catalog search can try
+      // alongside the English. ONE batched call; on failure the planner just keeps
+      // the English query (today's behaviour), so this can only ADD matches.
+      localizeFoods: function (ctx) {
+        var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); }).slice(0, 16);
+        var langs = (ctx.languages || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+        if (!foods.length || !langs.length) return Promise.resolve({ terms: {} });
+        var langList = langs.join(" or ");
+        var sys = "You translate everyday food names into the words a " + langList + " grocery shopper or " +
+          "food label uses, for searching a product database. For EACH English food, give 2–4 short " + langList +
+          " search terms: the plain grocery noun plus a common synonym or the base word without endings " +
+          "(e.g. \"rolled oats\" → \"kaurahiutaleet\", \"kaura\", \"puuro\"). Real, correctly spelled " + langList +
+          " words only — no English, no brand names, no explanations. Output ONLY JSON, no prose or code fences: " +
+          "{\"<english food>\":[\"term\",\"term\"], ...} with one entry per food, keyed by the EXACT English food given.";
+        var usr = "Catalog language: " + langList + "\nFoods:\n- " + foods.join("\n- ") +
+          "\nGive the " + langList + " search terms for each food.";
+        return chatJSON(sys, usr, "Finding local food names", 400).then(function (o) {
+          var terms = {};
+          foods.forEach(function (f) {
+            var v = o && o[f];
+            if (Array.isArray(v)) {
+              var t = v.filter(function (x) { return typeof x === "string" && x.trim(); })
+                       .map(function (x) { return x.trim(); }).slice(0, 4);
+              if (t.length) terms[f] = t;
+            }
+          });
+          return { terms: terms };
+        }, function () { return { terms: {} }; });
       },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
