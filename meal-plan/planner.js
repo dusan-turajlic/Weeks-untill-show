@@ -597,11 +597,18 @@
 
         // Match the model's food names to the catalog (carrying per-100 g macros);
         // anything the catalog lacks becomes an ai: code resolved by a macro guess.
+        var planBans = dietBans(opts.prefs);
         function matchFoods(raw) {
           return (raw || []).map(function (fname) {
             if (typeof fname !== "string" || !fname.trim()) return null;
             fname = fname.trim();
             var hit = FL.searchFoods(catalog, fname, 1)[0];
+            // Deterministic dietary backstop: drop a pick whose name (or the product
+            // it matched) breaks a stated restriction, so a model that ignores the
+            // prompt can't slip e.g. chicken onto a vegan plan. Whole-category bans
+            // only (vegan/veg/pescatarian/dairy/egg/nut/soy-free) — the critic then
+            // re-asks and, failing that, diet-safe staples seed the meal.
+            if (violatesBans(fname, planBans) || (hit && violatesBans(hit.name, planBans))) return null;
             if (hit && hit.code) return { raw: fname, name: hit.name, code: hit.code, rec: hit, isAI: false };
             return { raw: fname, name: fname, code: aiCode(fname), rec: null, isAI: true };
           }).filter(Boolean);
@@ -828,7 +835,9 @@
             dayTargets: opts.dayTargets, prefs: opts.prefs,
             country: opts.country, mealsPerDay: nMeals
           })).then(function (list) {
-            var q = (list || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+            var flatBans = dietBans(opts.prefs);
+            var q = (list || []).filter(function (x) { return typeof x === "string" && x.trim(); })
+                                .filter(function (x) { return !violatesBans(x, flatBans); }); // dietary backstop
             if (!q.length) aiReject(new Error("The model returned no foods."));
             return q;
           }, aiReject).then(flatSelect);
@@ -981,6 +990,46 @@
     if (/no\s+soy|soy[- ]?free/.test(p)) b.soy = 1;
     return b;
   }
+
+  // Classify a free-text food NAME into the diet categories dietBans can forbid
+  // (meat/fish/dairy/egg/nut/soy), so the model's OWN picks can be screened — not
+  // just the staple list. Keyword-based with guards against the usual false
+  // positives: plant "milks/butters/cheeses" aren't dairy, and coconut/butternut/
+  // nutmeg aren't tree nuts (the nut list is specific, never a bare "nut").
+  var DIET_PATTERNS = {
+    meat: /\b(meat|beef|pork|bacon|ham|gammon|lamb|veal|mutton|venison|game|steak|mince|sausage|salami|chorizo|prosciutto|pancetta|pepperoni|meatball|chicken|turkey|poultry|duck|goose|liver|jerky)\b/,
+    fish: /\b(fish|salmon|tuna|cod|haddock|pollock|pollack|mackerel|sardine|herring|anchov|trout|halibut|tilapia|snapper|shrimp|prawn|crab|lobster|mussel|oyster|clam|scallop|squid|octopus|seafood|shellfish|caviar|\broe\b)\b/,
+    egg:  /\begg/,
+    soy:  /\b(soy|soya|tofu|tempeh|edamame|miso)\b/,
+    nut:  /\b(peanut|almond|walnut|cashew|pecan|pistachio|hazelnut|macadamia|brazil nut|pine nut|nut butter|mixed nuts)\b/,
+    dairy:/\b(milk|cheese|yogurt|yoghurt|quark|skyr|kefir|ghee|curd|whey|casein|custard|paneer|ricotta|mozzarella|parmesan|cheddar|feta|cottage|cr[eè]me fra)\b/
+  };
+  // Plant-based versions of dairy words — never count these as dairy.
+  var PLANT_DAIRY = /\b(oat|soy|soya|almond|coconut|rice|cashew|hemp|pea|hazelnut|nut)\s*(milk|cream|yogurt|yoghurt|cheese|butter)\b/;
+  var NUT_SEED_BUTTER = /\b(peanut|almond|cashew|hazelnut|nut|sun[- ]?flower|seed|tahini)\s*butter\b/;
+  function foodDietTags(name) {
+    var s = " " + String(name || "").toLowerCase().replace(/[_]/g, " ") + " ";
+    var tags = [];
+    if (DIET_PATTERNS.meat.test(s)) tags.push("meat");
+    if (DIET_PATTERNS.fish.test(s)) tags.push("fish");
+    if (DIET_PATTERNS.egg.test(s)) tags.push("egg");
+    if (DIET_PATTERNS.soy.test(s)) tags.push("soy");
+    if (DIET_PATTERNS.nut.test(s)) tags.push("nut");
+    // "butter" is the one dairy word that's often a nut/seed paste; plant
+    // milks/creams aren't dairy either — exclude both before tagging dairy.
+    var isPlant = PLANT_DAIRY.test(s);
+    var isButter = /\bbutter\b/.test(s) && !NUT_SEED_BUTTER.test(s);
+    if (!isPlant && (DIET_PATTERNS.dairy.test(s) || isButter)) tags.push("dairy");
+    return tags;
+  }
+  // True if a food's name implies a category the user has banned — the deterministic
+  // backstop for when the model ignores a stated restriction (e.g. names chicken on a
+  // vegan plan). Conservative: only the dietBans categories, never specific items.
+  function violatesBans(name, bans) {
+    if (!bans) return false;
+    return foodDietTags(name).some(function (t) { return bans[t]; });
+  }
+
   // Repair queries for a constraint, filtered to what the diet allows.
   function repairQueries(constraint, prefs) {
     var bans = dietBans(prefs);
@@ -1539,7 +1588,9 @@
     portionLabel: portionLabel,
     splitIntoMeals: splitIntoMeals,
     splitDayTargets: splitDayTargets,
-    gatherFoods: gatherFoods
+    gatherFoods: gatherFoods,
+    dietBans: dietBans,
+    foodDietTags: foodDietTags
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -217,6 +217,22 @@ planner.buildPlan({
     });
   });
 }).then(function () {
+  // Dietary backstop: the food-name classifier must catch a model's own picks,
+  // with no false positives on lookalike names (the cost of a wrong drop is a
+  // thinner meal; the cost of a miss is a banned food on the plate).
+  var fdt = planner.foodDietTags;
+  ok("classifier: chicken is meat", fdt("grilled chicken breast").indexOf("meat") >= 0);
+  ok("classifier: salmon is fish", fdt("smoked salmon").indexOf("fish") >= 0);
+  ok("classifier: greek yogurt is dairy", fdt("greek yogurt").indexOf("dairy") >= 0);
+  ok("classifier: tofu is soy", fdt("firm tofu").indexOf("soy") >= 0);
+  ok("classifier: peanut butter is nut, not dairy", fdt("peanut butter").join() === "nut");
+  ok("classifier: oat & soy milk are not dairy", fdt("oat milk").length === 0 && fdt("soy milk").join() === "soy");
+  ok("classifier: coconut/butternut/nutmeg are not nuts",
+     fdt("coconut").length === 0 && fdt("butternut squash").length === 0 && fdt("nutmeg").length === 0);
+  ok("classifier: plain veg/carbs untagged", fdt("broccoli").length === 0 && fdt("brown rice").length === 0);
+  var vb = planner.dietBans("vegan");
+  ok("dietBans: vegan forbids meat/fish/dairy/egg", !!(vb.meat && vb.fish && vb.dairy && vb.egg));
+}).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (e) {

@@ -449,6 +449,31 @@ function run() {
               ok("rescue: no ai:-guessed placeholder foods leaked into the plan",
                  foods.every(function (f) { return !/^ai:/.test(f); }), foods.join(" | "));
             });
+          }).then(function () {
+            // 13) Dietary backstop: the model ignores "vegan" and names chicken every
+            //     meal. The deterministic screen must drop it, and the plan must end up
+            //     with NO meat/fish/dairy/egg — seeded from vegan-safe catalog staples.
+            var VG = [
+              ["g1", "Chicken breast", "F", "fi", 100, "g", 0, 0, 3.6, 31],
+              ["g2", "Tofu", "B", "fi", 100, "g", 1.5, 1.9, 8, 15],
+              ["g3", "Lentils", "L", "fi", 100, "g", 8, 20, 0.4, 9],
+              ["g4", "Brown rice", "M", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+              ["g5", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0],
+              ["g6", "Broccoli", "V", "fi", 100, "g", 2.6, 7, 0.4, 2.8]
+            ].map(function (a) { return JSON.stringify(a); }).join("\n");
+            var vgWeb = fakeWebLLM({ reply: mealReply({ meals: { _default: ["chicken breast", "chicken thigh", "grilled chicken"] } }) });
+            var vgEng = planner.createWebLLMEngine(Object.assign({ webllm: vgWeb }, fast));
+            return planner.buildPlan({
+              dayTargets: [{ label: "Day", count: 7, kcal: 1600, protein: 100, fat: 50, carbs: 160, fiber: 30 }],
+              country: "Finland", prefs: "vegan", breakfast: "savory", mealsPerDay: 3,
+              io: { catalog: fl.parseCatalog(VG), fetch: function () { return Promise.resolve({ ok: false, status: 404 }); } }, engine: vgEng
+            }).then(function (mp) {
+              var foods = mp.days[0].meals.reduce(function (a, m) { return a.concat(m.items.map(function (it) { return it.food; })); }, []);
+              ok("backstop: the model's chicken is kept off a VEGAN plate",
+                 foods.length > 0 && foods.every(function (f) { return !/chicken|broiler/i.test(f); }), foods.join(" | "));
+              ok("backstop: plate is rebuilt from vegan-safe catalog staples",
+                 foods.every(function (f) { return /tofu|lentil|rice|olive|broccoli/i.test(f); }), foods.join(" | "));
+            });
           });
       });
     });

@@ -176,6 +176,15 @@ node test/balance.test.js      # whole-food critic loop + portion realism guards
 node test/portion.test.js      # discrete-unit portion labels ("70 g (~2 slices)")
 ```
 
+The `webllm`/`planner`/`foodlookup` suites cover the **local-language bridge**
+(`localizeFoods` → `searchFoodsMulti`) and the **dietary backstop** with fake
+engines — no GPU. To eyeball whether a *real* on-device model actually translates
+food names for a given catalog language, open **`docs/localize-smoke.html`** over
+HTTP in a WebGPU browser: it loads a real model and prints `localizeFoods` output,
+and can compare English-only vs. English+local matching against the live country
+catalog (how many foods the English query misses, and how many the local terms
+rescue). It's dev-only and not linked from the app.
+
 ## Meal planning
 
 The app can build an LLM-assisted meal plan around your computed calorie/macro
@@ -222,6 +231,15 @@ the whole day is shaped by one extra prompt up front:
   that repeats an earlier one — and re-asks the model with targeted feedback (up to
   two revisions). Only an **accepted** plate is cached, so a retry never replays a
   bad meal.
+- **Dietary backstop** — the model is told the restrictions ("strict") in every
+  food-choosing prompt, but that's trust-the-prompt; a weak model can still slip a
+  banned food through. So the model's *own* picks are also screened deterministically
+  against `dietBans` (vegan / vegetarian / pescatarian / dairy-, egg-, nut-, soy-free):
+  a name-classifier (`foodDietTags`) tags each pick by category — with guards against
+  the obvious false positives (plant "milks/butters" aren't dairy; coconut, butternut
+  and nutmeg aren't tree nuts) — and any food whose tag is banned is dropped before it
+  reaches the plate (the critic re-asks, and diet-safe staples seed the meal). Whole
+  categories only; a specific "no pork"-style exclusion stays with the prompt.
 - **Local-language matching** — the model names foods in English, but a country's
   Open Food Facts catalog stores **product names in the local language** (`rolled
   oats` vs. `kaurahiutaleet`). A plain English search barely hits a Finnish or

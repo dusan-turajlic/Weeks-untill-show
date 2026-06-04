@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>localizeFoods smoke test</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 920px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 20px; }
+  p.note { color: #666; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  input, textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; }
+  textarea { min-height: 110px; }
+  button { font: inherit; padding: 8px 16px; margin: 14px 8px 0 0; cursor: pointer; }
+  #status { margin: 12px 0; padding: 8px 12px; background: rgba(127,127,127,.12); border-radius: 6px; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid rgba(127,127,127,.3); vertical-align: top; }
+  th { font-size: 13px; color: #666; }
+  code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+  .miss { color: #b00; }
+  .hit { color: #0a7; }
+</style>
+<!-- Same UMD modules the app uses. Order matters: solver + food-lookup before planner. -->
+<script src="../meal-plan/solver.js"></script>
+<script src="../meal-plan/food-lookup.js"></script>
+<script src="../meal-plan/planner.js"></script>
+</head>
+<body>
+<h1>localizeFoods smoke test</h1>
+<p class="note">
+  Dev-only, opt-in (not linked from the app). Loads a <strong>real</strong> on-device model
+  in this browser and shows what <code>engine.localizeFoods()</code> actually returns for a
+  catalog language — so you can eyeball whether the model can translate English food names
+  into local grocery terms. Needs WebGPU and network to the model CDN. The first run downloads
+  the model (up to a few GB). Optionally also checks the <em>real</em> country catalog to show
+  how many foods the English query misses vs. how many the local terms rescue.
+</p>
+
+<label for="langs">Catalog language(s) (comma-separated)</label>
+<input id="langs" value="Finnish, Swedish">
+
+<label for="foods">Foods (one per line)</label>
+<textarea id="foods">rolled oats
+chicken breast
+greek yogurt
+salmon fillet
+brown rice
+spinach
+olive oil
+lentils
+banana
+cottage cheese
+whole wheat bread
+almonds</textarea>
+
+<label for="model">Model id override (optional — blank = auto-pick best for this device)</label>
+<input id="model" placeholder="e.g. Llama-3.2-3B-Instruct-q4f16_1-MLC">
+
+<label for="cc">Country code for the real-catalog check (optional — e.g. fi, se, de, fr)</label>
+<input id="cc" value="fi">
+
+<div>
+  <button id="run">Translate (localizeFoods)</button>
+  <button id="check" title="Loads the real country catalog and compares English-only vs English+local matching">Translate + check real catalog</button>
+</div>
+
+<div id="status">Idle. Press a button to load the model.</div>
+<div id="out"></div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var status = $("status"), out = $("out");
+  function setStatus(s) { status.textContent = s; }
+  function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  function parseList(v) { return String(v || "").split(/[\n,]/).map(function (x) { return x.trim(); }).filter(Boolean); }
+
+  var engineP = null;
+  function getEngine() {
+    if (engineP) return engineP;
+    var modelOverride = $("model").value.trim();
+    engineP = Promise.resolve(YdinPlanner.createWebLLMEngine({
+      model: modelOverride || undefined,
+      onProgress: function (stage, text) { setStatus("[" + stage + "] " + text); },
+      onPick: function (picked, caps, info) {
+        setStatus("Picked model: " + picked + "  (RAM ~" + (info.deviceMemory || "?") + " GB, budget " + info.budgetMB + " MB)\nDownloading…");
+      }
+    }));
+    return engineP;
+  }
+
+  function renderTerms(foods, terms) {
+    function fmt(t) { return t.length ? t.map(function (x) { return "<code>" + esc(x) + "</code>"; }).join(" ") : "— (no terms)"; }
+    var rows = foods.map(function (f) {
+      var t = terms[f] || [];
+      return "<tr><td>" + esc(f) + "</td><td class='" + (t.length ? "hit" : "miss") + "'>" + fmt(t) + "</td></tr>";
+    }).join("");
+    out.innerHTML = "<table><thead><tr><th>English food</th><th>Local search terms</th></tr></thead><tbody>" + rows + "</tbody></table>";
+  }
+
+  function run(withCatalog) {
+    out.innerHTML = "";
+    var foods = parseList($("foods").value);
+    var langs = parseList($("langs").value);
+    if (!foods.length || !langs.length) { setStatus("Add at least one food and one language."); return; }
+    setStatus("Loading model (first run downloads it)…");
+    getEngine().then(function (engine) {
+      setStatus("Model ready (" + engine.getModel() + "). Translating " + foods.length + " foods into " + langs.join(" / ") + "…");
+      return engine.localizeFoods({ foods: foods, languages: langs, country: "" }).then(function (r) {
+        var terms = (r && r.terms) || {};
+        var hits = foods.filter(function (f) { return (terms[f] || []).length; }).length;
+        setStatus("Done. Model returned terms for " + hits + "/" + foods.length + " foods.");
+        renderTerms(foods, terms);
+        if (withCatalog) return checkCatalog(foods, terms);
+      });
+    }).catch(function (e) {
+      setStatus("Error: " + (e && e.message || e) + "\n(WebGPU missing, model didn't fit, or CDN unreachable.)");
+    });
+  }
+
+  function checkCatalog(foods, terms) {
+    var cc = $("cc").value.trim().toLowerCase();
+    if (!cc) return;
+    setStatus(status.textContent + "\nLoading the " + cc + " catalog…");
+    var FL = YdinFoodLookup;
+    return FL.loadCountryCatalog(cc, { brotliDecode: YdinPlanner.browserBrotli }).then(function (catalog) {
+      var enHits = 0, locHits = 0;
+      var rows = foods.map(function (f) {
+        var en = FL.searchFoods(catalog, f, 1)[0];
+        var loc = FL.searchFoodsMulti(catalog, [f].concat(terms[f] || []), 1)[0];
+        if (en) enHits++;
+        if (loc) locHits++;
+        var rescued = !en && loc;
+        return "<tr><td>" + esc(f) + "</td>" +
+          "<td class='" + (en ? "hit" : "miss") + "'>" + (en ? esc(en.name) : "— miss") + "</td>" +
+          "<td class='" + (loc ? "hit" : "miss") + "'>" + (loc ? esc(loc.name) : "— miss") + (rescued ? " <strong>(rescued)</strong>" : "") + "</td></tr>";
+      }).join("");
+      out.innerHTML += "<h3>Real " + esc(cc) + " catalog (" + catalog.length + " products)</h3>" +
+        "<p>English-only matched <strong>" + enHits + "/" + foods.length + "</strong>; with local terms <strong>" + locHits + "/" + foods.length + "</strong>.</p>" +
+        "<table><thead><tr><th>English food</th><th>English-only match</th><th>English + local match</th></tr></thead><tbody>" + rows + "</tbody></table>";
+      setStatus(status.textContent.split("\n")[0] + "\nCatalog check: English " + enHits + "/" + foods.length + " → +local " + locHits + "/" + foods.length + ".");
+    }).catch(function (e) {
+      out.innerHTML += "<p class='miss'>Catalog check failed: " + esc(e && e.message || e) + "</p>";
+    });
+  }
+
+  $("run").addEventListener("click", function () { run(false); });
+  $("check").addEventListener("click", function () { run(true); });
+})();
+</script>
+</body>
+</html>
