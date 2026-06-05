@@ -465,15 +465,37 @@
   </div>
 </div>
 
+<!-- Invite gate — the whole app is invite-only. This client screen is the
+     front door; the real spend control is the server token check on the
+     server-AI meal-plan endpoint. -->
+<div class="modal full" id="gateModal" hidden>
+  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+   <div class="sheetinner">
+    <h2 id="gateTitle">You’re invited</h2>
+    <p class="sub" style="margin:0 0 10px">Weeks-until-show is invite-only for now. Enter the code you were given to unlock the app on this device.</p>
+    <label class="field"><span class="flabel">Invite code</span>
+      <div class="ibox"><input id="gateCode" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. 3f9a2c7b10e4"></div>
+    </label>
+    <span class="hint mealmsg" id="gateMsg" hidden></span>
+    <div class="actions">
+      <button type="button" class="mbtn go" id="gateSubmit">Unlock</button>
+    </div>
+   </div>
+  </div>
+</div>
+
 <!-- On-device meal-plan wizard (Path A). Shown only when WebGPU is available. -->
 <div class="modal full" id="wizModal" hidden>
   <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
    <div class="sheetinner">
     <h2 id="wizTitle">Build a plan on this device</h2>
-    <p class="sub" style="margin:0 0 4px">Private — an in-browser AI picks foods from your country's catalog and the on-device solver sizes every portion to hit your macro &amp; fibre targets. Nothing leaves this device. This plan is <strong>nutrition-only — it is not price-aware</strong> (an offline model can't know current prices); for a budget- and price-based plan, use <strong>Copy prompt</strong> instead. The model downloads once (up to a few GB) and runs locally, so the first build can take several minutes.</p>
+    <p class="sub" id="wizIntro" style="margin:0 0 4px">Private — an in-browser AI picks foods from your country's catalog and the on-device solver sizes every portion to hit your macro &amp; fibre targets. Nothing leaves this device. This plan is <strong>nutrition-only — it is not price-aware</strong> (an offline model can't know current prices); for a budget- and price-based plan, use <strong>Copy prompt</strong> instead. The model downloads once (up to a few GB) and runs locally, so the first build can take several minutes.</p>
     <div id="wizForm">
       <label class="field"><span class="flabel">Country</span>
         <div class="ibox"><select id="wizCountry" style="flex:1;border:none;outline:none;background:transparent;font-size:18px;font-family:var(--serif);color:var(--ink);padding:11px 0"></select></div>
+      </label>
+      <label class="field" id="wizBudgetField" hidden><span class="flabel">Weekly food budget (<span id="wizCurr">EUR</span>)</span>
+        <div class="ibox"><input id="wizBudget" type="number" min="0" step="1" inputmode="numeric" placeholder="optional, e.g. 70"></div>
       </label>
       <label class="field"><span class="flabel">Dietary preferences / restrictions</span>
         <div class="ibox"><input id="wizPrefs" type="text" placeholder="e.g. vegetarian, halal, no nuts (optional)"></div>
@@ -829,6 +851,25 @@
   // ---- settings (localStorage) + shareable link (URL incl. full history) --
   var LS_SETTINGS = "wp:settings";
   var LS_MEAL     = "wp:mealplan";
+  var LS_INVITE   = "wp:invite";
+  // Backend that holds the ANTHROPIC_API_KEY and validates invite codes — the
+  // same Hono API as the Ydin app. Overridable for local dev by setting
+  // window.YDIN_API_BASE before this script runs.
+  var API_BASE = String((typeof window!=="undefined" && window.YDIN_API_BASE) || "https://api.ydin.dev").replace(/\/+$/,"");
+
+  // ---- invite gate: token storage -----------------------------------------
+  // The whole app sits behind a single-use invite code. Redeeming a code mints
+  // an opaque access token (kept here, NOT in the shareable URL) that the
+  // server-AI meal-plan endpoint checks on every call. The real spend control
+  // is server-side; this client gate is just the front door.
+  function loadInviteToken(){
+    try{ var o=JSON.parse(localStorage.getItem(LS_INVITE)||"null"); return (o&&o.token)?o.token:null; }catch(e){ return null; }
+  }
+  function saveInviteToken(t){
+    try{ if(t) localStorage.setItem(LS_INVITE, JSON.stringify({token:t, at:Date.now()})); else localStorage.removeItem(LS_INVITE); }catch(e){}
+  }
+  function gateUnlocked(){ return !!loadInviteToken(); }
+  // ---- invite gate: end ----------------------------------------------------
 
   // ---- meal plan: parse / validate / (de)serialise ------------------------
   // A plan is whatever the LLM produced from the meal-plan prompt, parsed from
@@ -1949,7 +1990,13 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
       '<path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg>'+
       '<span>Build a plan on this device (private)</span></button>';
-    ec.innerHTML=head+'<div class="card">'+body+note+promptBtn+localBtn+'</div>';
+    // Server path (Path C): the backend calls Anthropic's Hiku model. Always
+    // available (no WebGPU needed); gated by the invite token, server-side.
+    var serverBtn='<button type="button" id="mealServerBtn" class="promptbtn" style="margin-top:10px">'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
+      '<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.34 9.5 4 4 0 0 0 7 17.5"/><path d="M12 12v6M9.5 14.5 12 12l2.5 2.5"/></svg>'+
+      '<span>Generate with Hiku (server AI)</span></button>';
+    ec.innerHTML=head+'<div class="card">'+body+note+promptBtn+localBtn+serverBtn+'</div>';
   }
 
   function render(){
@@ -2104,7 +2151,8 @@
       });
       return;
     }
-    if(e.target.closest("#mealLocalBtn")){ openWizard(); return; }
+    if(e.target.closest("#mealLocalBtn")){ openWizard("device"); return; }
+    if(e.target.closest("#mealServerBtn")){ openWizard("server"); return; }
   });
   var promptTimer;
 
@@ -2159,8 +2207,17 @@
     ["pl","Poland","PLN"],["pt","Portugal","EUR"],["us","United States","USD"],["ca","Canada","CAD"],
     ["au","Australia","AUD"],["nz","New Zealand","NZD"]
   ];
-  var wizMeals=3, wizBreakfast="savory";
-  function openWizard(){
+  var wizMeals=3, wizBreakfast="savory", wizMode="device";
+  var WIZ_DEVICE_INTRO="Private — an in-browser AI picks foods from your country's catalog and the on-device solver sizes every portion to hit your macro &amp; fibre targets. Nothing leaves this device. This plan is <strong>nutrition-only — it is not price-aware</strong> (an offline model can't know current prices); for a budget- and price-based plan, use <strong>Copy prompt</strong> instead. The model downloads once (up to a few GB) and runs locally, so the first build can take several minutes.";
+  var WIZ_SERVER_INTRO="A fast cloud model (Anthropic's Hiku) picks foods for your country and budget and lays out meals to hit your macro &amp; fibre targets. Your weight and personal details stay on this device — only the macro targets, country and preferences are sent. Uses one of your daily server credits.";
+  function updateWizCurrency(){
+    var sel=$("wizCountry"); if(!sel) return;
+    var opt=sel.options[sel.selectedIndex];
+    var cur=(opt&&opt.dataset)?opt.dataset.curr:"";
+    var el=$("wizCurr"); if(el&&cur) el.textContent=cur;
+  }
+  function openWizard(mode){
+    wizMode = (mode==="server") ? "server" : "device";
     if(!buildDayTargets()){ alert("Add your details on the Projection tab first, so I have your targets."); return; }
     var sel=$("wizCountry");
     if(sel && !sel.options.length){
@@ -2169,7 +2226,16 @@
         sel.appendChild(o);
       });
     }
-    try{ var env=YdinPlanner.browserEnv(); var w=$("wizMobileWarn"); if(w) w.hidden=!env.isMobile; }catch(e){}
+    var server = wizMode==="server";
+    var t=$("wizTitle"), intro=$("wizIntro"), bf=$("wizBudgetField"), start=$("wizStart"), note=$("wizNote");
+    if(t) t.textContent = server ? "Generate a plan with server AI" : "Build a plan on this device";
+    if(intro) intro.innerHTML = server ? WIZ_SERVER_INTRO : WIZ_DEVICE_INTRO;
+    if(bf) bf.hidden = !server;
+    if(note) note.hidden = server;            // on-device-only caveat
+    if(start) start.textContent = server ? "Generate my plan" : "Build my plan";
+    updateWizCurrency();
+    // Mobile-memory warning is on-device only (a cloud call has no such limit).
+    if(!server){ try{ var env=YdinPlanner.browserEnv(); var w=$("wizMobileWarn"); if(w) w.hidden=!env.isMobile; }catch(e){} }
     $("wizModal").hidden=false;
   }
   $("wizMeals").addEventListener("click", function(e){
@@ -2184,6 +2250,7 @@
   });
   $("wizCancel").addEventListener("click", function(){ $("wizModal").hidden=true; });
   $("wizModal").addEventListener("click", function(e){ if(e.target===this) this.hidden=true; });
+  $("wizCountry").addEventListener("change", updateWizCurrency);
 
   // Session cache so repeat builds don't refetch the catalog/products.
   var mpCache={_c:{}, get:function(k){return this._c[k];}, set:function(k,v){this._c[k]=v;}};
@@ -2224,17 +2291,34 @@
   window.addEventListener("unhandledrejection", function(e){
     if(buildActive) e.preventDefault();
   });
-  $("buildClose").addEventListener("click", function(){ buildActive=false; $("buildModal").hidden=true; });
+  $("buildClose").addEventListener("click", function(){ buildActive=false; serverRetryArmed=false; $("buildModal").hidden=true; });
   var lastWizAnswers=null;
+  // Server path (Path C) state. serverRetryArmed routes the shared "Try again"
+  // button to the server build instead of the on-device walk.
+  var lastServerAns=null, serverRetryArmed=false;
   // Manual retry starts fresh: clear the persisted blocklist so every model gets
   // another chance (the earlier failure may have been transient).
   $("buildRetry").addEventListener("click", function(){
+    if(serverRetryArmed){ serverRetryArmed=false; if(lastServerAns) runServerBuild(lastServerAns); return; }
     try{ localStorage.removeItem(LS_BADMODELS); }catch(e){}
     if(lastWizAnswers) runBuild(lastWizAnswers);
   });
 
   $("wizStart").addEventListener("click", function(){
     var sel=$("wizCountry"), opt=sel.options[sel.selectedIndex];
+    if(wizMode==="server"){
+      var budget=parseFloat(($("wizBudget").value||"").trim());
+      lastServerAns={
+        cc: sel.value, country: opt?opt.textContent:sel.value,
+        currency: (opt&&opt.dataset?opt.dataset.curr:"")||"EUR",
+        weeklyBudget: (isFinite(budget)&&budget>0)?budget:0,
+        prefs: ($("wizPrefs").value||"").trim(),
+        mealsPerDay: wizMeals
+      };
+      $("wizModal").hidden=true;
+      runServerBuild(lastServerAns);
+      return;
+    }
     // On-device is nutrition-only: no budget/currency (an offline model can't
     // know prices — that lives in the copy-prompt path).
     lastWizAnswers={
@@ -2359,6 +2443,99 @@
     attempt();
   }
 
+  // ---- server meal plan (Path C): Anthropic Hiku via the backend ----------
+  // Same fixed targets as the other two paths; the server builds the prompt,
+  // calls Hiku, and returns plan JSON in the exact shape the import path uses.
+  // ---- server meal plan: request body -------------------------------------
+  function mealPlanRequestBody(ans, dayTargets){
+    return {
+      country: ans.country, currency: ans.currency, weeklyBudget: ans.weeklyBudget||0,
+      prefs: ans.prefs||"", mealsPerDay: ans.mealsPerDay,
+      dayTargets: (dayTargets||[]).map(function(d){
+        return { label:d.label, perWeek:d.perWeek||d.count||7,
+                 kcal:d.kcal, protein:d.protein, fat:d.fat, carbs:d.carbs, fiber:d.fiber };
+      })
+    };
+  }
+  // ---- server meal plan: end ----------------------------------------------
+  function serverBuildError(msg){
+    var err=$("buildErr");
+    $("buildModal").hidden=false;
+    $("buildTitle").textContent="Couldn’t generate the plan";
+    setBuildProgress("error","Stopped.",0);
+    if(err){ err.hidden=false; err.textContent=msg; }
+    var r=$("buildRetry"); if(r) r.hidden=false;
+    serverRetryArmed=true;
+  }
+  function runServerBuild(ans){
+    var token=loadInviteToken();
+    if(!token){ showGate("Please enter your invite code to use the server AI."); return; }
+    var dayTargets=buildDayTargets();
+    if(!dayTargets){ return; }
+    lastServerAns=ans; serverRetryArmed=false;
+    buildActive=false;                 // not the on-device path; keep its error swallow off
+    $("buildErr").hidden=true; $("buildRetry").hidden=true;
+    $("buildTitle").textContent="Generating your plan…";
+    $("buildModal").hidden=false;
+    setBuildProgress("start","Asking the server AI…",null);
+
+    fetch(API_BASE+"/meal-plans", {
+      method:"POST",
+      headers:{ "content-type":"application/json", "authorization":"Bearer "+token },
+      body:JSON.stringify(mealPlanRequestBody(ans, dayTargets))
+    }).then(function(res){
+      return res.json().catch(function(){ return null; }).then(function(j){ return { status:res.status, body:j }; });
+    }).then(function(r){
+      if(r.status===401){ saveInviteToken(null); $("buildModal").hidden=true; showGate("Your invite needs to be re-entered."); return; }
+      if(r.status===429){ serverBuildError("You’ve reached today’s plan limit. Try again tomorrow, or use Copy prompt."); return; }
+      if(r.status!==200 || !r.body){ serverBuildError("The server couldn’t generate a plan just now. Tap Try again, or use Copy prompt."); return; }
+      var norm=normalizeMealPlan(r.body);
+      if(!norm){ serverBuildError("The plan came back empty. Tap Try again, or use Copy prompt."); return; }
+      mealPlan=norm; mealDay=0; mealEditor=null;
+      persist(); renderMealPlan();
+      setBuildProgress("done","Done — opening your plan.",100);
+      $("buildModal").hidden=true;
+      setView("meal");
+      setImportOk("Plan generated with Hiku (server AI) and saved to this device.");
+    }).catch(function(){
+      serverBuildError("Couldn’t reach the server. Check your connection and tap Try again.");
+    });
+  }
+
+  // ---- invite gate: screen + redemption -----------------------------------
+  function showGate(msg){
+    var g=$("gateModal"); if(!g) return;
+    var m=$("gateMsg");
+    if(m){ if(msg){ m.hidden=false; m.textContent=msg; } else { m.hidden=true; } }
+    g.hidden=false;
+    setTimeout(function(){ var i=$("gateCode"); if(i) i.focus(); }, 50);
+  }
+  function hideGate(){ var g=$("gateModal"); if(g) g.hidden=true; }
+  function redeemInvite(){
+    var input=$("gateCode"), btn=$("gateSubmit"), msg=$("gateMsg");
+    var code=(input&&input.value||"").trim();
+    if(!code){ if(msg){ msg.hidden=false; msg.textContent="Enter your invite code."; } return; }
+    if(btn){ btn.disabled=true; btn.textContent="Checking…"; }
+    fetch(API_BASE+"/invites/redeem", {
+      method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ code:code })
+    }).then(function(res){
+      return res.json().catch(function(){ return {}; }).then(function(body){ return { status:res.status, body:body }; });
+    }).then(function(r){
+      if(r.status===200 && r.body && r.body.token){ saveInviteToken(r.body.token); hideGate(); return; }
+      var m = r.status===404 ? "That invite code isn’t valid." :
+              r.status===409 ? "That code has already been used." :
+              r.status===410 ? "That invite code has expired." :
+              "Couldn’t check that code — please try again.";
+      if(msg){ msg.hidden=false; msg.textContent=m; }
+    }).catch(function(){
+      if(msg){ msg.hidden=false; msg.textContent="Couldn’t reach the server. Check your connection and try again."; }
+    }).then(function(){
+      if(btn){ btn.disabled=false; btn.textContent="Unlock"; }
+    });
+  }
+  $("gateSubmit").addEventListener("click", redeemInvite);
+  $("gateCode").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); redeemInvite(); } });
+
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;
   copyBtn.addEventListener("click", function(){
     copyText(buildShareUrl(state, logHistory), function(ok){
@@ -2460,6 +2637,7 @@
   function init(){
     setInputs();
     setView("projection");
+    if(!gateUnlocked()) showGate();    // whole-app invite gate (front door)
     renderMealPlan();                  // restore any saved / shared meal plan
     render();                          // settings + countdown visible immediately
 

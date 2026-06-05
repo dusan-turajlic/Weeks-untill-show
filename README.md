@@ -35,6 +35,10 @@ dependencies.
   "Copy shareable link" button).
 - **Installable & offline** — it's a PWA with a web app manifest and a service
   worker, so it can be added to your home screen and works offline.
+- **Invite-only** — the app is gated behind a single-use invite code on first
+  launch. The code is redeemed against the backend, which stores a token on this
+  device so return visits skip the gate. (The gate is the front door; spend on
+  the server meal-plan feature below is enforced server-side by that token.)
 
 ## Running it
 
@@ -169,6 +173,8 @@ node test/energy.test.js       # maintenance, macros, deficit cap & steps
 node test/solver.test.js       # deterministic meal-plan portion solver
 node test/foodlookup.test.js   # country catalog parse/search + buildMealTotals
 node test/planner.test.js      # on-device planner: catalog -> solver -> import JSON
+node test/invite-gate.test.js  # invite-token storage / gate unlock
+node test/mealplan-server.test.js # server-path request body + response import
 ```
 
 ## Meal planning
@@ -179,7 +185,7 @@ narrates**; all arithmetic and constraint-solving is deterministic code in
 `meal-plan/`. See [`docs/meal-plan-prompt.md`](docs/meal-plan-prompt.md) for the
 prompt, the import JSON shape, and the catalog/product data contracts.
 
-Two paths, offered from the **Calories & macros** section on the Projection tab:
+Three paths, offered from the **Calories & macros** section on the Projection tab:
 
 - **Copy prompt** — export the prompt (with your targets filled in) and run it in
   any frontier LLM, then paste the JSON back. Always available; best quality.
@@ -188,3 +194,11 @@ Two paths, offered from the **Calories & macros** section on the Projection tab:
   preferences and meals/day, then the on-device planner picks foods from the
   country catalog and the solver sizes every portion. Needs the country catalog
   (`catalog.ydin.app`) reachable online the first time.
+- **Generate with Hiku (server AI)** — a one-tap path that calls a backend which
+  runs Anthropic's **Haiku** model and returns the plan automatically (no copy/paste,
+  no large local model download). The same wizard collects country, budget, dietary
+  preferences and meals/day; only your macro targets and those preferences are sent —
+  your weight and personal details stay on this device. Gated by your invite (the
+  backend holds the API key and enforces a per-token daily limit). The backend lives
+  in the `app-ydin` API (`api.ydin.dev`); override its base URL for local dev by
+  setting `window.YDIN_API_BASE` before the app script runs.
