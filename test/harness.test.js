@@ -82,6 +82,31 @@ function ok(name, cond, extra) {
   ok("buildPortionClass keys unit foods by code, omits bulk", !!pc.t1 && pc.t1.one === "can" && !pc.r1);
 })();
 
+// ---- 2c) calorie split + question mechanism (pure) ----------------------
+(function () {
+  var W = planner.calorieWeights;
+  var even = W("even", ["Breakfast", "Lunch", "Dinner"]);
+  ok("even split weights all mains equally", Math.abs(even[0] - even[2]) < 1e-9 && Math.abs(even[0] - 1 / 3) < 1e-9);
+  var din = W("dinner", ["Breakfast", "Lunch", "Dinner"]);
+  ok("dinner split ramps toward the evening", din[2] > din[1] && din[1] > din[0], din.join(","));
+  var bfast = W("breakfast", ["Breakfast", "Lunch", "Dinner"]);
+  ok("breakfast split front-loads the morning", bfast[0] > bfast[1] && bfast[1] > bfast[2], bfast.join(","));
+  var withSnack = W("even", ["Breakfast", "Lunch", "Dinner", "Snack"]);
+  ok("snacks are always lighter than mains", withSnack[3] < withSnack[0], withSnack.join(","));
+
+  var d = planner.distributeBulk(200, [0, 1], { 0: 0.25, 1: 0.75 });
+  ok("weighted distributeBulk tilts to the heavier meal and sums exactly", d[1] > d[0] && (d[0] + d[1] === 200), JSON.stringify(d));
+
+  ok("sanitizeQuestion drops a question with no real choices", planner.sanitizeQuestion({ prompt: "Type your goal", options: [] }) === null);
+  ok("sanitizeQuestion drops a promptless question", planner.sanitizeQuestion({ options: [{ label: "a" }, { label: "b" }] }) === null);
+  var sq = planner.sanitizeQuestion({ prompt: "Pick one", options: [{ label: "A" }, { label: "A" }, { label: "B" }] });
+  ok("sanitizeQuestion cleans + dedupes options, deriving ids", !!sq && sq.options.length === 2 && sq.options[0].id === "a");
+  var cq = planner.buildCalorieSplitQuestion();
+  ok("calorie question is options-only with 4 choices", !!cq && cq.id === "calorie-split" && cq.options.length === 4);
+  ok("answerToBuildOpts maps a calorie answer to a rebuild patch",
+     planner.answerToBuildOpts("calorie-split", "dinner").calorieSplit === "dinner");
+})();
+
 // ---- shared mock host ----------------------------------------------------
 function macro(kcal, p, f, c) {
   return { breakdown: { macros: { energy_kcal: kcal, proteins: p, fat: f, carbohydrates: c } } };
@@ -272,7 +297,68 @@ function scenarioReasoning() {
   });
 }
 
-scenarioVoting().then(scenarioPortions).then(scenarioReasoning).then(function () {
+// ---- 5) planQuestions: model-proposed, sanitized, critic-gated, w/ fallback
+function scenarioQuestions() {
+  return planner.planQuestions(null, {}).then(function (qs) {
+    ok("planQuestions falls back to the calorie question with no engine",
+       qs.length === 1 && qs[0].id === "calorie-split");
+    var eng1 = {
+      proposeQuestions: function () { return Promise.resolve({ questions: [
+        { id: "appetite", prompt: "When are you hungriest?", options: [{ label: "Morning" }, { label: "Evening" }] }] }); },
+      critiqueQuestion: function () { return Promise.resolve({ ok: true }); }
+    };
+    return planner.planQuestions(eng1, {}).then(function (qs2) {
+      ok("a good model question is kept AND the calorie split is still offered",
+         qs2.some(function (q) { return q.id === "appetite"; }) && qs2.some(function (q) { return q.id === "calorie-split"; }));
+      var eng2 = { proposeQuestions: function () { return Promise.resolve({ questions: [{ prompt: "Type your favourite food", options: [] }] }); } };
+      return planner.planQuestions(eng2, {}).then(function (qs3) {
+        ok("an un-pickable (free-text) question is dropped, fallback kept", qs3.length === 1 && qs3[0].id === "calorie-split");
+        var eng3 = {
+          proposeQuestions: function () { return Promise.resolve({ questions: [{ id: "x", prompt: "Confusing?", options: [{ label: "A" }, { label: "B" }] }] }); },
+          critiqueQuestion: function () { return Promise.resolve({ ok: false }); }
+        };
+        return planner.planQuestions(eng3, {}).then(function (qs4) {
+          ok("the question critic can veto a proposed question",
+             !qs4.some(function (q) { return q.id === "x"; }) && qs4.some(function (q) { return q.id === "calorie-split"; }));
+        });
+      });
+    });
+  });
+}
+
+// ---- 6) calorie split end-to-end: the day actually tilts to the evening --
+function scenarioCalorie() {
+  var catalog = catalogOf([
+    ["k1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["k2", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["k5", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7]
+  ]);
+  var products = {
+    k1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
+    k2: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    k5: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" })
+  };
+  var FI = { "chicken breast": ["kananrinta"], "olive oil": ["oliivioljy"], "rice": ["riisi"] };
+  var foods = ["chicken breast", "rice", "olive oil"]; // same foods each meal → all bulk span all meals
+  var targets = {};
+  var engine = {
+    designMeal: function (ctx) { targets[ctx.mealName] = ctx.target.kcal; return Promise.resolve({ foods: foods }); },
+    translateFoods: translatorOf(FI)
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1900, protein: 120, fat: 70, carbs: 190, fiber: 20 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 3,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1, calorieSplit: "dinner"
+  }).then(function (plan) {
+    ok("calorie split tilts the per-meal DESIGN targets to the evening",
+       targets.Dinner > targets.Breakfast, JSON.stringify(targets));
+    var kcal = {}; plan.days[0].meals.forEach(function (m) { kcal[m.name] = m.totals.kcal; });
+    ok("the assembled dinner carries more calories than breakfast",
+       kcal.Dinner > kcal.Breakfast, JSON.stringify(kcal));
+  });
+}
+
+scenarioVoting().then(scenarioPortions).then(scenarioReasoning).then(scenarioQuestions).then(scenarioCalorie).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {

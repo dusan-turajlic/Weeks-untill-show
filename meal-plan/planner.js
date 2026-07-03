@@ -337,16 +337,23 @@
     return { drop: false, grams: g };
   }
   // Split a bulk food's day grams across the meals it belongs to, EXACTLY (shares
-  // sum to the day total). Small totals concentrate into the first meal instead of
-  // smearing into slivers; the first meal absorbs the rounding remainder.
-  function distributeBulk(total, meals) {
+  // sum to the day total). `weights` (optional, per meal index) tilts the split so
+  // the user's calorie distribution is honoured — a dinner-heavy day sends more of
+  // each shared food to the evening meal. Small totals concentrate into the
+  // heaviest meal instead of smearing into slivers; that meal absorbs the remainder.
+  function distributeBulk(total, meals, weights) {
     var out = {};
     if (meals.length <= 1) { out[meals[0] != null ? meals[0] : 0] = total; return out; }
-    var base = Math.floor((total / meals.length) / BULK_STEP) * BULK_STEP;
+    var ws = meals.map(function (mi) { var w = weights && weights[mi]; return w > 0 ? w : 1; });
+    var wsum = ws.reduce(function (a, b) { return a + b; }, 0) || meals.length;
+    var heavy = meals[0], hb = -Infinity;
+    meals.forEach(function (mi, k) { if (ws[k] > hb) { hb = ws[k]; heavy = mi; } });
     var sum = 0;
-    if (base >= BULK_MIN) meals.forEach(function (mi) { out[mi] = base; sum += base; });
-    var first = meals[0];
-    out[first] = (out[first] || 0) + (total - sum); // absorb remainder + any dropped shares
+    meals.forEach(function (mi, k) {
+      var g = Math.floor((total * ws[k] / wsum) / BULK_STEP) * BULK_STEP;
+      if (g >= BULK_MIN) { out[mi] = g; sum += g; }
+    });
+    out[heavy] = (out[heavy] || 0) + (total - sum); // heaviest meal absorbs remainder + dropped shares
     return out;
   }
   function emptyTotals() { return { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 }; }
@@ -403,6 +410,118 @@
     return out;
   }
 
+  // Run fn over each item SEQUENTIALLY (one engine, one generation at a time),
+  // collecting results in order; an individual failure resolves to `onErr`.
+  function seqMap(items, fn, onErr) {
+    var out = [], p = Promise.resolve();
+    (items || []).forEach(function (x, i) {
+      p = p.then(function () {
+        return Promise.resolve(fn(x, i)).then(function (r) { out.push(r); },
+          function () { out.push(typeof onErr === "function" ? onErr(x, i) : onErr); });
+      });
+    });
+    return p.then(function () { return out; });
+  }
+
+  // ---- calorie distribution across meals ----------------------------------
+  // The user chooses how the day's calories lean; we turn that into a normalized
+  // weight per meal (snacks always lighter) that drives BOTH the per-meal design
+  // targets (so the model designs a bigger dinner) and how shared foods distribute.
+  var CALORIE_SPLITS = [
+    { id: "even",      label: "Evenly across the day",         hint: "Balanced meals" },
+    { id: "breakfast", label: "Front-load the morning",        hint: "Bigger breakfast, lighter evening" },
+    { id: "lunch",     label: "Biggest meal at midday",        hint: "Lunch is the main meal" },
+    { id: "dinner",    label: "Save calories for the evening", hint: "Lighter day, bigger dinner" }
+  ];
+  function calorieSplitLabel(id) {
+    for (var i = 0; i < CALORIE_SPLITS.length; i++) if (CALORIE_SPLITS[i].id === id) return CALORIE_SPLITS[i].label;
+    return CALORIE_SPLITS[0].label;
+  }
+  // Normalized per-meal weight for a split choice. Snacks are always ~half a main;
+  // main meals tilt along the day (dinner ramps up toward evening, breakfast down,
+  // lunch peaks in the middle). "even" (or unknown) leaves mains equal.
+  function calorieWeights(choice, mealNames) {
+    var names = mealNames || [];
+    var mains = [];
+    names.forEach(function (nm, i) { if (!/snack/i.test(nm)) mains.push(i); });
+    var w = names.map(function (nm) { return /snack/i.test(nm) ? 0.5 : 1; });
+    var n = mains.length;
+    if (n >= 2 && choice && choice !== "even") {
+      mains.forEach(function (idx, k) {
+        var t = n > 1 ? k / (n - 1) : 0.5; // 0 = first main … 1 = last main
+        var f = 1;
+        if (choice === "dinner") f = 0.7 + 0.8 * t;
+        else if (choice === "breakfast") f = 1.5 - 0.8 * t;
+        else if (choice === "lunch") f = 1.5 - 1.6 * Math.abs(t - 0.5);
+        w[idx] = f;
+      });
+    }
+    var sum = w.reduce(function (a, b) { return a + b; }, 0) || 1;
+    return w.map(function (x) { return x / sum; });
+  }
+
+  // ---- ask-the-user questions (always options, never free text) ------------
+  // A question is { id, prompt, options:[{id,label,hint}] }. sanitizeQuestion is
+  // the deterministic gate that GUARANTEES the "options only, no typing" rule the
+  // UI relies on: it drops any question without ≥2 clean option choices and keeps
+  // only fields the UI renders. Used both for the fallback and to validate
+  // whatever the model proposes.
+  function sanitizeQuestion(q) {
+    if (!q || typeof q !== "object") return null;
+    var prompt = typeof q.prompt === "string" ? q.prompt.trim() : "";
+    if (!prompt) return null;
+    var seen = {}, options = [];
+    (Array.isArray(q.options) ? q.options : []).forEach(function (o) {
+      var label = o && typeof o.label === "string" ? o.label.trim() : "";
+      var id = o && typeof o.id === "string" && o.id.trim() ? o.id.trim()
+             : label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!label || !id || seen[id]) return;
+      seen[id] = 1;
+      options.push({ id: id, label: label, hint: (o && typeof o.hint === "string") ? o.hint.trim() : "" });
+    });
+    if (options.length < 2) return null; // no real choice → not askable at all
+    return { id: (typeof q.id === "string" && q.id.trim()) || "q", prompt: prompt, options: options.slice(0, 6) };
+  }
+  // The always-available, deterministic calorie-distribution question.
+  function buildCalorieSplitQuestion() {
+    return sanitizeQuestion({
+      id: "calorie-split",
+      prompt: "How would you like your calories spread across the day?",
+      options: CALORIE_SPLITS.map(function (s) { return { id: s.id, label: s.label, hint: s.hint }; })
+    });
+  }
+  // Turn an answered question into a patch to merge into buildPlan opts (so the
+  // plan is rebuilt to the choice — the whole diet is reshaped before we re-solve).
+  function answerToBuildOpts(questionId, optionId) {
+    if (questionId === "calorie-split") return { calorieSplit: optionId };
+    return {};
+  }
+  // Decide which options-only questions to circle back and ask. Tries the model
+  // (proposeQuestions), sanitizes each candidate, then — if the engine offers one
+  // — runs each through the model's own question critic (critiqueQuestion) before
+  // it's ever shown. The deterministic calorie-split question is ALWAYS offered so
+  // the feature works offline / on iOS / when the model declines.
+  function planQuestions(engine, ctx) {
+    ctx = ctx || {};
+    var fallback = [buildCalorieSplitQuestion()];
+    if (!engine || !engine.proposeQuestions) return Promise.resolve(fallback);
+    return Promise.resolve(engine.proposeQuestions(ctx)).then(function (res) {
+      var cleaned = ((res && res.questions) || []).map(sanitizeQuestion).filter(Boolean);
+      if (!cleaned.length) return fallback;
+      if (!engine.critiqueQuestion) return withFallback(cleaned, fallback);
+      return seqMap(cleaned, function (q) {
+        return Promise.resolve(engine.critiqueQuestion({ question: q }))
+          .then(function (v) { return (v && v.ok !== false) ? q : null; },
+                function () { return q; }); // critic failed → keep the sanitized question
+      }, null).then(function (kept) { return withFallback(kept.filter(Boolean), fallback); });
+    }, function () { return fallback; });
+  }
+  function withFallback(questions, fallback) {
+    var ids = {}; questions.forEach(function (q) { ids[q.id] = 1; });
+    fallback.forEach(function (q) { if (!ids[q.id]) questions.push(q); });
+    return questions.length ? questions : fallback;
+  }
+
   // Build a real, USABLE day from a model-designed layout. Unlike an even
   // per-meal split (which forces every meal to carry a sliver of each food just
   // to balance on its own — the source of "7 g of egg"), this balances at the
@@ -410,7 +529,7 @@
   // meals unevenly: piece foods (eggs, fruit, bread) move in whole/part units and
   // live in ONE meal; bulk foods flex around them. `mealCodes[mi]` is the codes
   // the model put in meal mi. Returns { meals, totals, estimated, unmet, gramsByCode }.
-  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, portionClass) {
+  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, portionClass, mealWeights) {
     var unmet = [], estimated = false;
     function nameOf(c) { return (products[c] && products[c].product_name) || (recsByCode[c] && recsByCode[c].name) || c; }
     function fiberOf(c) { return (recsByCode[c] && num(recsByCode[c].fiber)) || 0; }
@@ -502,8 +621,8 @@
     Object.keys(dayGrams).forEach(function (c) {
       var meals = (mealsByCode[c] || []); if (!meals.length) meals = [mainMeal];
       var alloc;
-      if (pieceFor(c)) { alloc = {}; alloc[meals[0]] = dayGrams[c]; }
-      else alloc = distributeBulk(dayGrams[c], meals);
+      if (pieceFor(c)) { alloc = {}; alloc[meals[0]] = dayGrams[c]; } // pieces stay meal-appropriate
+      else alloc = distributeBulk(dayGrams[c], meals, mealWeights);   // bulk tilts by the calorie split
       Object.keys(alloc).forEach(function (mi) {
         var g = alloc[mi]; if (!(g > 0)) return;
         perMeal[mi][c] = (perMeal[mi][c] || 0) + g;
@@ -635,7 +754,10 @@
         // the catalog lacks are queued for ONE batched AI macro guess afterwards,
         // so the model can name real local dishes we don't stock.
         var t0 = (opts.dayTargets && opts.dayTargets[0]) || {};
-        var weights = mealNames.map(function (nm) { return /snack/i.test(nm) ? 0.6 : 1; });
+        // Per-meal weights come from the user's calorie split (default even), so the
+        // model designs a bigger dinner when they've asked to save calories for the
+        // evening. Normalized (sums to 1), so totalW is 1.
+        var weights = calorieWeights(opts.calorieSplit, mealNames);
         var totalW = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
         var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
         var usedFoods = [], unmatched = [];
@@ -856,7 +978,8 @@
           var days = opts.dayTargets.map(function (target) {
             if (layout) {
               var d = assembleLayoutDay(target, layout.names, layout.mealCodes, products,
-                                        catalog, recsByCode, repairRounds, opts.prefs, portionClass);
+                                        catalog, recsByCode, repairRounds, opts.prefs, portionClass,
+                                        calorieWeights(opts.calorieSplit, layout.names));
               if (d.unmet.length) unmet.push.apply(unmet, d.unmet);
               return {
                 label: target.label || "Every day",
@@ -1425,6 +1548,35 @@
         });
         return p.then(function () { return { foods: out }; });
       },
+      // Circle-back questions: propose ways the user could tailor the plan, as
+      // multiple-choice ONLY (the planner sanitizes + gates these, and always adds
+      // the deterministic calorie-split question, so a weak answer can't break the
+      // "no typing" rule). Skipped on iOS.
+      proposeQuestions: function (ctx) {
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve({ questions: [] });
+        var sys = "You suggest ONE short follow-up question to help tailor a meal plan, answerable ONLY by " +
+          "picking from a few fixed choices — never by typing. Good topics: how to spread calories across the " +
+          "day, appetite in the morning, cooking time on weeknights. Give 3–4 distinct choices. Output ONLY " +
+          "JSON, no prose or code fences: {\"questions\":[{\"id\":\"slug\",\"prompt\":\"...\"," +
+          "\"options\":[{\"id\":\"slug\",\"label\":\"...\",\"hint\":\"...\"}]}]}.";
+        var usr = "Country: " + (ctx.country || "unknown") + "\nDiet: " + (ctx.prefs || "none") +
+          "\nMeals per day: " + (ctx.mealsPerDay || 3) + "\nPropose one useful multiple-choice question.";
+        return chatJSON(sys, usr, "Thinking of a question to ask you", 400).then(function (o) {
+          return { questions: (o && Array.isArray(o.questions)) ? o.questions : [] };
+        }, function () { return { questions: [] }; });
+      },
+      // Question critic: sanity-check a proposed question before it's shown — is it
+      // clear, genuinely useful, and answerable purely by picking an option?
+      critiqueQuestion: function (ctx) {
+        var q = ctx && ctx.question;
+        if (!q) return Promise.resolve({ ok: false });
+        var opts = (q.options || []).map(function (o) { return o.label; }).join(" | ");
+        var sys = "You review ONE multiple-choice question for a meal-plan app. Reply ok:false if it is " +
+          "confusing, useless, leading, or would need typed input; otherwise ok:true. Output ONLY JSON, no " +
+          "prose or code fences: {\"ok\":true}.";
+        return chatJSON(sys, "Question: " + q.prompt + "\nChoices: " + opts, "Reviewing the question", 60)
+          .then(function (o) { return { ok: !o || o.ok !== false }; }, function () { return { ok: true }; });
+      },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var sys = "You are a nutritionist choosing real, locally available whole foods. " +
@@ -1493,7 +1645,14 @@
     snapBulk: snapBulk,
     distributeBulk: distributeBulk,
     classToDescriptor: classToDescriptor,
-    buildPortionClass: buildPortionClass
+    buildPortionClass: buildPortionClass,
+    calorieWeights: calorieWeights,
+    calorieSplitLabel: calorieSplitLabel,
+    CALORIE_SPLITS: CALORIE_SPLITS,
+    sanitizeQuestion: sanitizeQuestion,
+    buildCalorieSplitQuestion: buildCalorieSplitQuestion,
+    answerToBuildOpts: answerToBuildOpts,
+    planQuestions: planQuestions
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
