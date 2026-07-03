@@ -569,13 +569,27 @@
   }
 
   // A short, honest micronutrient note from the deterministic totals.
-  function microNote(dayTotalsList, estimated, unmet) {
+  function microNote(dayTotalsList, estimated, unmet, mealIssues) {
     var bits = [];
     bits.push("Macros and micros are summed deterministically from the catalog; fibre meets the daily floor.");
     if (estimated) bits.push("Some micronutrient values are AI-estimated (flagged in the product data) — treat them as approximate.");
     if (unmet.length) bits.push("Heads up: " + unmet.join("; ") + ". Adjust a portion or swap a food, or use the copy-prompt path for a finer plan.");
+    if (mealIssues && mealIssues.length) bits.push("Meal check — " + mealIssues.join("; ") + ". These read a little off as a plate; swap a food or use the copy-prompt path for a finer plan.");
     bits.push("Retailer names and prices aren't priced on-device — use the copy-prompt path or add the web-search layer for budget detail.");
     return bits.join(" ");
+  }
+
+  // Run fn over each item SEQUENTIALLY (one engine, one generation at a time),
+  // collecting results in order. Individual failures resolve to `onErr`.
+  function seqMap(items, fn, onErr) {
+    var out = [], p = Promise.resolve();
+    (items || []).forEach(function (x, i) {
+      p = p.then(function () {
+        return Promise.resolve(fn(x, i)).then(function (r) { out.push(r); },
+          function () { out.push(typeof onErr === "function" ? onErr(x, i) : onErr); });
+      });
+    });
+    return p.then(function () { return out; });
   }
 
   /**
@@ -917,7 +931,30 @@
               })).catch(function () { return ""; })
             : Promise.resolve("");
 
-          return summaryP.then(function (modelSummary) {
+          // Meal-coherence critic: a reasoning pass that reads each finished meal
+          // and asks "does this hang together as a real, cookable [breakfast] a
+          // person would actually eat?" — catching incoherent combinations or a
+          // snack that's really a full meal, which the macro solver can't see.
+          // Runs on the representative day (day types differ mainly in carbs) so
+          // the cost is bounded, sequentially (one engine), and only flags —
+          // issues are surfaced in the note, never an auto-rewrite that could
+          // break the macro guarantees. Layout path + engine only.
+          var reviewMeals = (layout && days[0] && days[0].meals) || [];
+          var reviewP = (reviewMeals.length && opts.engine && opts.engine.critiqueMeal)
+            ? (report("review", "Checking each meal reads like real food…"),
+               seqMap(reviewMeals, function (m) {
+                 return Promise.resolve(opts.engine.critiqueMeal({
+                   mealName: m.name, items: m.items, country: opts.country, prefs: opts.prefs
+                 })).then(function (rv) {
+                   var issues = (rv && Array.isArray(rv.issues)) ? rv.issues.filter(function (s) { return typeof s === "string" && s.trim(); }) : [];
+                   return issues.length ? (m.name + ": " + issues.join(", ")) : null;
+                 });
+               }, null))
+            : Promise.resolve([]);
+
+          return Promise.all([summaryP, reviewP]).then(function (rr) {
+            var modelSummary = rr[0];
+            var mealIssues = (rr[1] || []).filter(Boolean);
             var plan = {
               type: "weeks-until-show-meal-plan",
               version: 1,
@@ -932,7 +969,7 @@
                 return { label: d.label, perWeek: d.perWeek, meals: d.meals, totals: d.totals };
               }),
               shoppingList: shoppingList(allSolved, recsByCode),
-              micronutrients: microNote(days.map(function (d) { return d.totals; }), estimated, unmet)
+              micronutrients: microNote(days.map(function (d) { return d.totals; }), estimated, unmet, mealIssues)
             };
             report("done", unmet.length ? "Plan ready (some targets approximate)." : "Plan ready.");
             return plan;
@@ -1424,6 +1461,27 @@
           });
         });
         return p.then(function () { return { foods: out }; });
+      },
+      // Meal-coherence critic: read ONE finished meal (its foods + amounts) and
+      // judge whether it hangs together as a real, cookable meal a person would
+      // eat — not just individually-valid ingredients. Returns short issues (empty
+      // = fine). Skipped on iOS (every generation is memory risk in Safari).
+      critiqueMeal: function (ctx) {
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve({ ok: true, issues: [] });
+        var items = (ctx.items || []).map(function (it) { return (it.amount || "") + " " + it.food; }).join(", ");
+        if (!items.trim()) return Promise.resolve({ ok: true, issues: [] });
+        var sys = "You are a chef sanity-checking ONE meal. Given the meal name and its ingredients with " +
+          "amounts, decide if it reads as a real, sensible meal of that kind that a person would actually " +
+          "prepare and eat together. Flag genuine problems only: ingredients that don't go together, a portion " +
+          "that makes no sense, a snack that's really a full meal (or a main meal too sparse to be one), or a " +
+          "clearly missing component. Do NOT nitpick a reasonable meal. Output ONLY JSON, no prose or code " +
+          "fences: {\"ok\":true,\"issues\":[\"short problem\"]}. issues is empty when the meal is fine.";
+        var usr = "Meal: " + (ctx.mealName || "Meal") + "\nCountry: " + (ctx.country || "unknown") +
+          "\nDietary restrictions: " + (ctx.prefs || "none") + "\nIngredients: " + items;
+        return chatJSON(sys, usr, "Reviewing " + (ctx.mealName || "meal"), 220).then(function (o) {
+          var issues = (o && Array.isArray(o.issues)) ? o.issues.filter(function (s) { return typeof s === "string" && s.trim(); }) : [];
+          return { ok: o && o.ok !== false && !issues.length, issues: issues };
+        });
       },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};

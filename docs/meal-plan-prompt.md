@@ -164,6 +164,14 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     already place are sent (known pieces + `OBVIOUS_BULK` skip it); the result is
     clamped/vetoed by `classToDescriptor` so a hallucinated "unit" on a bulk food
     is ignored. Skipped on iOS. Progress stage: `check`.
+  - **Meal-coherence critic** — `engine.critiqueMeal({mealName,items,country,prefs})`
+    reads each finished meal and judges whether it hangs together as a real,
+    cookable meal (not just individually-valid ingredients), catching incoherent
+    combinations or a snack that's really a full meal — things the macro solver
+    can't see. Runs on the representative day (`days[0]`), sequentially, and only
+    FLAGS: issues are folded into the `micronutrients` note by `microNote`, never
+    an auto-rewrite that could break the macro guarantees. Skipped on iOS.
+    Progress stage: `review`.
 
   Tests: `node test/harness.test.js` (voting + translation + portion realism).
 

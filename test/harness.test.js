@@ -272,7 +272,54 @@ function scenarioReasoning() {
   });
 }
 
-scenarioVoting().then(scenarioPortions).then(scenarioReasoning).then(function () {
+// ---- 6) meal-coherence critic: incoherent meals are flagged in the note --
+function scenarioCritic() {
+  var catalog = catalogOf([
+    ["k1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["k2", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["k3", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["k5", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["k6", "Banaani", "Chiquita", "fi", 120, "kpl", 2.6, 23, 0.3, 1.1]
+  ]);
+  var products = {
+    k1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
+    k2: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    k3: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
+    k5: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
+    k6: Object.assign(macro(96, 1.1, 0.3, 23), { product_name: "Banaani" })
+  };
+  var FI = { "rolled oats": ["kaurahiutaleet"], "banana": ["banaani"], "chicken breast": ["kananrinta"],
+             "rice": ["riisi"], "olive oil": ["oliivioljy"] };
+  var byMeal = { Breakfast: ["rolled oats", "banana"], Lunch: ["chicken breast", "rice", "olive oil"] };
+  var reviewed = [];
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["rice"] }); },
+    translateFoods: translatorOf(FI),
+    // Flags Lunch, passes Breakfast — proves only flagged meals reach the note.
+    critiqueMeal: function (ctx) {
+      reviewed.push({ name: ctx.mealName, items: (ctx.items || []).slice() });
+      return Promise.resolve(/lunch/i.test(ctx.mealName)
+        ? { ok: false, issues: ["that's a lot of plain oil for one plate"] }
+        : { ok: true, issues: [] });
+    }
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1700, protein: 110, fat: 60, carbs: 190, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    ok("critiqueMeal ran on each meal of the day", reviewed.length === 2 &&
+       reviewed.some(function (r) { return /breakfast/i.test(r.name); }) &&
+       reviewed.some(function (r) { return /lunch/i.test(r.name); }), reviewed.map(function (r) { return r.name; }).join(","));
+    ok("critic receives the meal's items with amounts",
+       reviewed.every(function (r) { return r.items.length > 0 && r.items[0].amount; }));
+    ok("a flagged meal surfaces in the note", /Meal check/.test(plan.micronutrients) &&
+       /Lunch/.test(plan.micronutrients) && /plain oil/.test(plan.micronutrients), plan.micronutrients);
+    ok("a meal the critic passed is NOT flagged", !/Breakfast:/.test(plan.micronutrients), plan.micronutrients);
+  });
+}
+
+scenarioVoting().then(scenarioPortions).then(scenarioReasoning).then(scenarioCritic).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {
