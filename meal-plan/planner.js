@@ -37,6 +37,82 @@
                     return typeof n === "number" && isFinite(n) ? n : 0; }
   function round(x) { return Math.round(num(x) * 10) / 10; }
 
+  // ---- reliability helpers: fan-out + voting ------------------------------
+  // Run fn(i) n times SEQUENTIALLY (a single WebLLM engine serves one generation
+  // at a time, so parallel calls would just queue or clash) and collect the
+  // fulfilled results. Individual rejections are skipped — one flaky small-model
+  // call shouldn't sink the whole vote — so the result may be shorter than n, and
+  // empty only if EVERY attempt failed (which the caller can treat as a real
+  // failure). Locally tokens are free, so asking K times is the cheapest
+  // reliability we have.
+  function repeatSeq(n, fn) {
+    var out = [], p = Promise.resolve();
+    for (var i = 0; i < Math.max(1, n | 0); i++) {
+      (function (idx) {
+        p = p.then(function () {
+          return Promise.resolve(fn(idx)).then(
+            function (r) { out.push(r); }, function () {});
+        });
+      })(i);
+    }
+    return p.then(function () { return out; });
+  }
+
+  // Consensus over several runs of the same food-naming prompt. A small model is
+  // phrasing- and seed-sensitive; the SAME food named by most runs is real, while
+  // one-off names are usually noise/hallucination. Foods named by >= threshold of
+  // the runs win, kept in first-seen order; if that leaves fewer than opts.min,
+  // backfill with the next most-agreed names so a meal is never starved. Grouping
+  // is case/space-insensitive; the most common spelling of each winner is returned.
+  function voteFoods(lists, opts) {
+    opts = opts || {};
+    lists = (lists || []).filter(function (l) { return Array.isArray(l); });
+    var k = lists.length || 1;
+    var threshold = opts.threshold || Math.ceil(k / 2);
+    var min = opts.min || 0;
+    function keyOf(s) { return String(s == null ? "" : s).trim().toLowerCase().replace(/\s+/g, " "); }
+    var info = {}, order = [];
+    lists.forEach(function (list) {
+      var seenThisRun = {};
+      (list || []).forEach(function (name) {
+        if (typeof name !== "string" || !name.trim()) return;
+        var key = keyOf(name); if (!key) return;
+        if (!info[key]) { info[key] = { count: 0, spellings: {}, first: order.length }; order.push(key); }
+        var sp = name.trim();
+        info[key].spellings[sp] = (info[key].spellings[sp] || 0) + 1;
+        if (!seenThisRun[key]) { seenThisRun[key] = 1; info[key].count++; } // one run = one vote
+      });
+    });
+    function bestSpelling(key) {
+      var sp = info[key].spellings, best = key, bn = -1;
+      Object.keys(sp).forEach(function (s) { if (sp[s] > bn) { bn = sp[s]; best = s; } });
+      return best;
+    }
+    var winners = order.filter(function (key) { return info[key].count >= threshold; });
+    if (winners.length < min) {
+      var have = {}; winners.forEach(function (w) { have[w] = 1; });
+      order.filter(function (key) { return !have[key]; })
+        .sort(function (a, b) { return info[b].count - info[a].count || info[a].first - info[b].first; })
+        .slice(0, min - winners.length)
+        .forEach(function (key) { winners.push(key); });
+    }
+    winners.sort(function (a, b) { return info[a].first - info[b].first; });
+    return winners.map(bestSpelling);
+  }
+
+  // First catalog hit across a list of candidate queries — used so a food can be
+  // searched under several names (e.g. English + local-language translations)
+  // and matched to a real product under whichever spelling the catalog uses.
+  function bestHit(catalog, queries) {
+    for (var i = 0; i < (queries || []).length; i++) {
+      var q = queries[i];
+      if (typeof q !== "string" || !q.trim()) continue;
+      var hit = FL.searchFoods(catalog, q, 1)[0];
+      if (hit && hit.code) return hit;
+    }
+    return null;
+  }
+
   // Browsers' DecompressionStream supports gzip/deflate but (almost universally)
   // NOT brotli, and the catalog .br objects ship with no Content-Encoding — so we
   // decompress in JS, loaded lazily from a CDN only when needed.
@@ -386,22 +462,39 @@
         var names = [], mealCodes = [], recsByCode = {}, recs = [], seen = {};
         var usedFoods = [], unmatched = [];
 
+        // How many times to ask the model per meal, then vote on the consensus
+        // foods. >1 turns a shaky small-model pick into a stable one; 1 keeps the
+        // old single-shot behaviour (and library/test parity). Free locally.
+        var votes = Math.max(1, (opts.votes | 0) || 1);
+
         var chainP = Promise.resolve();
         mealNames.forEach(function (nm, mi) {
           chainP = chainP.then(function () {
-            report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")…");
             var w = weights[mi] / totalW;
             var mealTarget = {
               kcal: (t0.kcal || 0) * w, protein: (t0.protein || 0) * w, fat: (t0.fat || 0) * w,
               carbs: (t0.carbs || 0) * w, fiber: (t0.fiber || 35) * w
             };
-            return Promise.resolve(opts.engine.designMeal({
-              mealName: nm, target: mealTarget, country: opts.country,
-              prefs: opts.prefs, breakfast: opts.breakfast, usedFoods: usedFoods.slice()
-            })).then(function (res) {
+            // Fan out: ask designMeal `votes` times (each a fresh, stateless call),
+            // then keep the foods most runs agreed on. Sequential — one engine.
+            return repeatSeq(votes, function (vi) {
+              report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")" +
+                (votes > 1 ? " · take " + (vi + 1) + "/" + votes : "") + "…");
+              return Promise.resolve(opts.engine.designMeal({
+                mealName: nm, target: mealTarget, country: opts.country,
+                prefs: opts.prefs, breakfast: opts.breakfast, usedFoods: usedFoods.slice()
+              })).then(function (res) {
+                return ((res && res.foods) || []).filter(function (x) { return typeof x === "string"; });
+              });
+            }).then(function (lists) {
+              // Every attempt failed → a real model failure for this meal; reject so
+              // the caller can blocklist this model and try the next (was the old
+              // single-shot behaviour too).
+              if (!lists.length) throw new Error("The model produced no foods for " + nm + ".");
+              var foods = votes > 1 ? voteFoods(lists, { min: 2 }) : lists[0];
               names.push(nm);
               var codes = [];
-              ((res && res.foods) || []).forEach(function (fname) {
+              foods.forEach(function (fname) {
                 if (typeof fname !== "string" || !fname.trim()) return;
                 fname = fname.trim();
                 usedFoods.push(fname);
@@ -426,6 +519,45 @@
           var byCode = {}, order = [];
           unmatched.forEach(function (u) { if (!byCode[u.code]) { byCode[u.code] = u.name; order.push(u.code); } });
           var guessedProducts = {};
+
+          // Fuzzy/translation search. The model designs in English but the catalog
+          // is in the country's language (e.g. Finnish), so a real product like
+          // "Kananrinta" scores zero on "chicken breast" and is lost to an AI macro
+          // guess. Ask the model for local-language search terms, re-search, and
+          // PROMOTE any food that now matches to its real catalog product (barcode,
+          // micros, price) — remapping its ai: code across the meal layout. Only the
+          // genuinely unstocked foods fall through to guessMacros below.
+          report("choose", "Matching foods to local products…");
+          var translateP = (order.length && opts.engine.translateFoods)
+            ? Promise.resolve(opts.engine.translateFoods({
+                foods: order.map(function (c) { return byCode[c]; }), country: opts.country
+              })).then(function (t) {
+                var termsBy = {};
+                ((t && t.terms) || []).forEach(function (e) {
+                  if (e && e.name) termsBy[String(e.name).toLowerCase()] =
+                    (e.queries || []).filter(function (x) { return typeof x === "string" && x.trim(); });
+                });
+                var remap = {}, rescued = {};
+                order.forEach(function (code) {
+                  var nm = byCode[code];
+                  var hit = bestHit(catalog, (termsBy[String(nm).toLowerCase()] || []).concat([nm]));
+                  if (hit && hit.code) {
+                    remap[code] = hit.code; rescued[code] = 1;
+                    if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
+                  }
+                });
+                if (Object.keys(remap).length) {
+                  mealCodes = mealCodes.map(function (cl) {
+                    var out = [];
+                    cl.forEach(function (c) { var real = remap[c] || c; if (out.indexOf(real) < 0) out.push(real); });
+                    return out;
+                  });
+                  order = order.filter(function (c) { return !rescued[c]; }); // matched → don't guess
+                }
+              }, function () { /* translation failed — all fall through to guessMacros */ })
+            : Promise.resolve();
+
+          return translateP.then(function () {
           var guessP = (order.length && opts.engine.guessMacros)
             ? Promise.resolve(opts.engine.guessMacros({
                 foods: order.map(function (c) { return byCode[c]; }),
@@ -486,6 +618,7 @@
             if (!recs.length) aiReject(new Error("No catalog foods are available for this country."));
             return { recs: recs, recsByCode: recsByCode,
                      layout: { names: names, mealCodes: mealCodes }, guessedProducts: guessedProducts };
+          });
           });
         }, aiReject);
       } else if (opts.engine && opts.engine.suggestFoods) {
@@ -1039,6 +1172,33 @@
         });
         return p.then(function () { return { macros: out }; });
       },
+      // Fuzzy/translation search helper: map an English food name to the term(s) it
+      // is sold under in the user's country, so the catalog (in the local language)
+      // can be searched under a name that actually matches. ONE food per call — a
+      // single tiny JSON object is what even the 360M model iOS forces on us
+      // produces reliably; a batched array rambles toward the cap and stalls.
+      translateFoods: function (ctx) {
+        var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); }).slice(0, 12);
+        if (!foods.length) return Promise.resolve({ terms: [] });
+        var country = ctx.country || "the local market";
+        var sys = "You translate a food into what it is called on grocery products in a given country, " +
+          "for searching a local product catalog. Give the LOCAL-LANGUAGE generic name(s) and common " +
+          "synonyms as printed on packaging (brand-neutral). Output ONLY JSON, no prose or code fences: " +
+          "{\"queries\":[\"term\",\"term\"]} — 2–4 short terms, most likely first.";
+        var out = [];
+        var p = Promise.resolve();
+        foods.forEach(function (food) {
+          p = p.then(function () {
+            return chatJSON(sys, "Country: " + country + "\nFood (English): " + food, "Translating " + food, 80)
+              .then(function (o) {
+                var qs = Array.isArray(o.queries)
+                  ? o.queries.filter(function (x) { return typeof x === "string" && x.trim(); }) : [];
+                out.push({ name: food, queries: qs });
+              }, function () { out.push({ name: food, queries: [] }); });
+          });
+        });
+        return p.then(function () { return { terms: out }; });
+      },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var sys = "You are a nutritionist choosing real, locally available whole foods. " +
@@ -1097,7 +1257,10 @@
     DEFAULT_STAPLES: DEFAULT_STAPLES,
     macroRow: macroRow,
     splitIntoMeals: splitIntoMeals,
-    gatherFoods: gatherFoods
+    gatherFoods: gatherFoods,
+    voteFoods: voteFoods,
+    repeatSeq: repeatSeq,
+    bestHit: bestHit
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
