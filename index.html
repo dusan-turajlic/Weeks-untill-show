@@ -2303,10 +2303,16 @@
         });
       }catch(err){ stopWatch(); showBuildError(aiErr); return; }
 
+      // Ask the model several times per meal and vote on the foods most runs agree
+      // on — a small on-device model is seed/phrasing-sensitive, and locally tokens
+      // are free. Keep it to a single pass on iOS, where every extra generation is
+      // time and memory pressure under Safari's tight tab budget.
+      var _env=YdinPlanner.browserEnv();
+      var _votes=_env.isIOS?1:(_env.isMobile?2:3);
       YdinPlanner.buildPlan({
         dayTargets:dayTargets, cc:ans.cc, country:ans.country,
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
-        io:io, engine:engine,
+        io:io, engine:engine, votes:_votes,
         onProgress:function(stage,detail){
           bump();
           var pctMap={catalog:12,choose:30,guess:50,fetch:60,solve:80,assemble:92,done:100};

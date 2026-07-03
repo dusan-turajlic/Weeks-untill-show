@@ -135,7 +135,19 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
   constraints for the repair loop, `mealTotals` sums them. The model is
   forbidden from doing this arithmetic.
 - **`planner.js`** — Path A orchestration (catalog → solver → import JSON) plus
-  the optional in-browser WebLLM engine.
+  the optional in-browser WebLLM engine. Reliability layer:
+  - **Fan-out + voting** — `buildPlan({ votes })` asks `designMeal` `votes` times
+    per meal (sequential — one engine) and keeps the foods most runs agree on
+    (`voteFoods`, exported + Node-tested). `votes:1` is the old single-shot path.
+    `index.html` uses 3 on desktop, 2 on mobile, 1 on iOS. Locally tokens are free.
+  - **Fuzzy / translation search** — the model designs in English but the catalog
+    is in the country's language, so an unmatched food is passed to
+    `engine.translateFoods({foods,country})` for local-language search terms,
+    re-searched (`bestHit`), and PROMOTED to its real product (barcode, micros)
+    when it now matches — only the genuinely unstocked foods fall through to
+    `guessMacros`. One food per call, like `guessMacros`.
+
+  Tests: `node test/harness.test.js` (voting + translation rescue, mock engine).
 
 ## On-device model selection (Path A)
 
