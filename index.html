@@ -287,13 +287,65 @@
   .modal pre.fix{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
                  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;max-height:160px;overflow:auto;
                  white-space:pre-wrap;color:var(--inkSoft);margin:0 0 16px}
-  /* On-device build progress + WebGPU gating for the Path A button. */
-  .bld-bar{height:8px;background:var(--bg);border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:6px}
-  .bld-fill{height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .35s ease}
-  .bld-fill.indet{width:35%;animation:bldslide 1.2s ease-in-out infinite}
-  @keyframes bldslide{0%{margin-left:-35%}100%{margin-left:100%}}
+  /* WebGPU gating for the Path A button. */
   #mealLocalBtn{display:none}
   html[data-webgpu="1"] #mealLocalBtn{display:flex}
+
+  /* ---- build timeline (on-device path) --------------------------------------
+     A vertical list of steps the build walks from start to a ready-to-review
+     plan. Every step is shown up front (upcoming/active/done) so the user can
+     see what's coming; the model download hides behind a friendly "initializing"
+     step with a progress bar instead of a raw percentage. */
+  /* subtitle meta: expected wait + "step N of M" */
+  .tlmeta{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--inkSoft);margin:0 0 16px}
+  .tlmeta svg{width:13px;height:13px;stroke:currentColor;stroke-width:2;fill:none;flex:0 0 auto;opacity:.8}
+  .tl{list-style:none;margin:0;padding:0;position:relative}
+  .tlstep{position:relative;display:flex;gap:13px;padding:0 0 16px;align-items:flex-start}
+  .tlstep:last-child{padding-bottom:0}
+  /* connector line running through the marker column */
+  .tlstep::before{content:"";position:absolute;left:10px;top:22px;bottom:-1px;width:2px;
+                  background:var(--line);border-radius:2px}
+  .tlstep:last-child::before{display:none}
+  .tlstep[data-state="done"]::before{background:var(--accent)}
+  .tlmark{flex:0 0 22px;width:22px;height:22px;border-radius:999px;border:2px solid var(--line);
+          background:var(--card);position:relative;z-index:1;box-sizing:border-box;transition:all .25s ease}
+  .tlmark svg{width:12px;height:12px;position:absolute;inset:0;margin:auto;stroke:#fff;stroke-width:3;
+              fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0}
+  .tlstep[data-state="active"] .tlmark{border-color:var(--accent);border-right-color:var(--accentSoft);
+          border-top-color:var(--accentSoft);animation:tlspin .8s linear infinite}
+  @keyframes tlspin{to{transform:rotate(360deg)}}
+  .tlstep[data-state="done"] .tlmark{border-color:var(--accent);background:var(--accent)}
+  .tlstep[data-state="done"] .tlmark svg{opacity:1}
+  .tlstep[data-state="error"] .tlmark{border-color:#a8472f;background:#a8472f;animation:none}
+  .tlstep[data-state="error"] .tltitle{color:#a8472f}
+  .tlstep[data-state="error"] .tlbar{display:none}
+  .tlbody{flex:1;min-width:0;padding-top:1px}
+  .tltitle{font-weight:600;font-size:15px;color:var(--ink);line-height:1.25;transition:color .2s ease}
+  .tlstep[data-state="upcoming"] .tltitle{color:var(--inkSoft);opacity:.7}
+  .tldetail{font-size:12.5px;color:var(--inkSoft);margin-top:2px;line-height:1.35;
+            min-height:0;transition:opacity .2s ease}
+  .tlstep[data-state="upcoming"] .tldetail{display:none}
+  /* per-step progress bar (determinate for the download, a soft shimmer otherwise) */
+  .tlbar{height:6px;background:var(--bg);border:1px solid var(--line);border-radius:999px;
+         overflow:hidden;margin-top:9px;display:none}
+  .tlstep[data-state="active"] .tlbar{display:block}
+  .tlbarfill{height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .4s ease}
+  .tlbarfill.indet{width:40%;animation:tlslide 1.3s ease-in-out infinite}
+  @keyframes tlslide{0%{margin-left:-40%}100%{margin-left:100%}}
+
+  /* preview banner shown above a freshly built plan until the user keeps it */
+  .previewbar{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .previewbar .pvhead{display:flex;align-items:center;gap:8px}
+  .previewbar .pvdot{width:9px;height:9px;border-radius:999px;background:var(--accent);flex:0 0 auto;
+                     animation:pvpulse 1.6s ease-in-out infinite}
+  @keyframes pvpulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .previewbar .pvactions{display:flex;gap:10px;margin-top:14px}
+  .previewbar .pvbtn{flex:1;border-radius:999px;padding:11px 14px;font-size:14px;font-weight:600;
+                     cursor:pointer;font-family:var(--sans);border:1px solid var(--line)}
+  .previewbar .pvbtn.keep{background:var(--accent);border-color:var(--accent);color:#fff}
+  .previewbar .pvbtn.keep:hover{filter:brightness(.95)}
+  .previewbar .pvbtn.discard{background:#fff;color:var(--ink)}
+  .previewbar .pvbtn.discard:hover{background:var(--accentSoft)}
 </style>
 </head>
 <body>
@@ -510,12 +562,14 @@
   </div>
 </div>
 
-<!-- Build progress / result for the on-device path. -->
+<!-- Build progress / result for the on-device path: a timeline the build walks
+     from setup to a ready-to-review plan. Steps are populated by JS. -->
 <div class="modal" id="buildModal" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="buildTitle">
-    <h2 id="buildTitle">Building your plan…</h2>
-    <div class="bld-bar"><div class="bld-fill" id="buildFill"></div></div>
-    <p id="buildStage" class="sub" style="margin:10px 0 0">Starting…</p>
+    <h2 id="buildTitle">Preparing your plan</h2>
+    <p id="buildLede" class="sub" style="margin:0 0 4px">Everything runs privately on this device.</p>
+    <p id="buildMeta" class="tlmeta" hidden></p>
+    <ol class="tl" id="buildTimeline"></ol>
     <pre class="fix" id="buildErr" hidden></pre>
     <div class="actions">
       <button type="button" class="mbtn cancel" id="buildClose">Close</button>
@@ -863,6 +917,10 @@
     }catch(e){ return null; }
   }
   function saveMealPlan(){
+    // A pending preview is deliberately NOT committed — leave whatever is already
+    // stored untouched until the user keeps it (any persist() during a preview,
+    // e.g. logging a weight, must not silently save the unconfirmed plan).
+    if(mealPlanPending) return;
     try{
       if(mealPlan) localStorage.setItem(LS_MEAL, JSON.stringify(mealPlan));
       else localStorage.removeItem(LS_MEAL);
@@ -926,6 +984,8 @@
   }
   // The imported meal plan, if any, rides along base64-encoded.
   function addMealParam(p){
+    // Skip a pending preview: an unconfirmed plan must not leak into the share link.
+    if(mealPlanPending) return;
     if(mealPlan){ var m=encodeMealPlan(mealPlan); if(m) p.set("meal", m); }
   }
   // The plan memory (facts told to the harness) travels with the link so a shared
@@ -1045,6 +1105,16 @@
   })();
   var mealDay = 0;                      // selected day-type tab in the meal view
   var mealEditor = null;                // "di-mi" of the meal whose add-recipe box is open
+  // A freshly built on-device plan is shown as a PREVIEW first: it lives only in
+  // memory (not localStorage, not the share link) until the user keeps it, so we
+  // never commit a plan they haven't confirmed. Cleared once they save or discard.
+  var mealPlanPending = false;
+  // Helper: read whatever plan is actually committed to this device (for a clean
+  // "discard the preview" that restores the previously-saved plan, if any).
+  function readStoredMealPlan(){
+    try{ var ls=localStorage.getItem(LS_MEAL); if(ls){ var p=normalizeMealPlan(JSON.parse(ls)); if(p) return p; } }catch(e){}
+    return null;
+  }
 
   // The facts the user told the on-device harness (diet, country, breakfast,
   // meals/day, calorie split). Rehydrated like the plan above: a local copy wins,
@@ -1508,6 +1578,19 @@
     if(!mealPlan){ host.innerHTML=""; return; }
     var p=mealPlan, days=Array.isArray(p.days)?p.days:[], H=[];
 
+    // Preview banner: a just-built plan is shown but NOT saved yet. The user reads
+    // it over, then keeps it (commit) or discards it (restore the stored plan).
+    if(mealPlanPending){
+      H.push('<div class="card previewbar">'+
+        '<div class="pvhead"><span class="pvdot"></span>'+
+          '<div class="cardtitle" style="margin:0">Preview — not saved yet</div></div>'+
+        '<p class="sub" style="margin-top:8px">Have a look through the plan below. Nothing is saved to this device until you keep it.</p>'+
+        '<div class="pvactions">'+
+          '<button type="button" class="pvbtn discard" id="mealDiscardBtn">Discard</button>'+
+          '<button type="button" class="pvbtn keep" id="mealKeepBtn">Keep this plan</button>'+
+        '</div></div>');
+    }
+
     // overview + remove control
     H.push('<div class="card">');
     H.push('<div class="abouthead"><div class="cardtitle">Imported plan</div>'+
@@ -1686,7 +1769,8 @@
     }
     var plan=normalizeMealPlan(data);
     if(!plan){ showImportNotice("That JSON loaded, but it has no \"days\" list, so there's no plan to show.", fixupPlanPrompt("The JSON had no non-empty \"days\" array.")); return; }
-    mealPlan=plan; mealDay=0; mealEditor=null;
+    // An explicit paste is a deliberate commit — no preview gate.
+    mealPlan=plan; mealDay=0; mealEditor=null; mealPlanPending=false;
     persist(); renderMealPlan();
     ta.value=""; setImportOk("Plan imported and saved to this device.");
   }
@@ -2277,6 +2361,14 @@
   // Models that stalled/failed on this device, persisted so "Try again" skips
   // them and the selector walks to the next candidate (e.g. f16 -> f32 -> smaller).
   var LS_BADMODELS="wp:mp:badmodels";
+  // Set once the on-device model has finished loading at least once (it's then
+  // cached by the browser). Lets the first build say "this is a one-time setup,
+  // it'll take a while" and later builds say a quick "loading your model".
+  var LS_MODELREADY="wp:mp:modelready";
+  // Recent CACHED-run build durations (ms), newest last, capped — so we can show a
+  // real measured "usually about Ns" estimate on later builds (never on the first
+  // run, whose multi-minute model download makes any seconds figure a lie).
+  var LS_BUILDTIME="wp:mp:buildms";
   function loadBadModels(){ try{ var a=JSON.parse(localStorage.getItem(LS_BADMODELS)||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
   function blockModel(id){ if(!id) return; var a=loadBadModels(); if(a.indexOf(id)<0){ a.push(id); try{ localStorage.setItem(LS_BADMODELS, JSON.stringify(a)); }catch(e){} } }
 
@@ -2284,21 +2376,228 @@
   // can surface otherwise-uncaught failures (e.g. errors thrown inside the WebLLM
   // / wasm bundles, which escape normal promise chains) in the build UI.
   var buildActive=false;
+  var lastBuiltWith=null;   // model id the most recent on-device plan was built with
 
-  function setBuildProgress(stage, detail, pct){
-    var fill=$("buildFill"), st=$("buildStage");
-    if(st) st.textContent = detail || stage;
-    if(fill){
-      if(pct==null){ fill.classList.add("indet"); }
-      else { fill.classList.remove("indet"); fill.style.width=Math.max(2,Math.min(100,pct))+"%"; }
+  // ---- build timeline -----------------------------------------------------
+  // A short, human-readable timeline the build walks from setup to a plan that's
+  // ready to review. Every internal stage the planner/engine emits maps to one of
+  // these user-facing steps; the whole timeline is shown up front so the user can
+  // see what's coming, and the model download hides behind "Getting your kitchen
+  // ready" with a progress bar instead of a raw "Downloading model… 42%".
+  var BUILD_STEPS=[
+    { id:"init",    title:"Getting your kitchen ready", detail:"Setting up…", bar:true },
+    { id:"design",  title:"Designing your meals",       detail:"Choosing foods that fit your day." },
+    { id:"foods",   title:"Finding your local foods",   detail:"Matching each food to your country's catalog." },
+    { id:"portion", title:"Sizing your portions",       detail:"Tuning amounts to hit every macro & fibre target." },
+    { id:"writeup", title:"Writing up your plan",       detail:"Checking each meal reads like real food." },
+    { id:"ready",   title:"Ready for your review",      detail:"Your plan is ready — take a look." }
+  ];
+  // Which timeline step each internal stage belongs to. "generate" is detail-only
+  // (a token heartbeat) and never moves the step; download/model stay on init.
+  var STAGE_STEP={
+    start:"init", retry:"init", catalog:"init", download:"init", model:"init",
+    choose:"design",
+    guess:"foods", translate:"foods", fetch:"foods", check:"foods",
+    solve:"portion",
+    review:"writeup", assemble:"writeup", summarize:"writeup",
+    done:"ready"
+  };
+  // Rotating phrases for the init step, so the (potentially multi-minute) model
+  // load feels alive without ever exposing that we're downloading a model.
+  var INIT_PHRASES_FIRST=[
+    "Setting things up for the first time — this can take a few minutes.",
+    "This one-time setup happens only on your first plan.",
+    "Getting everything ready to run privately on your device…",
+    "Almost set — this only happens once, then it's instant."
+  ];
+  var INIT_PHRASES_RETURN=[
+    "Warming up your on-device chef…",
+    "Getting your kitchen ready…",
+    "Nearly there…"
+  ];
+
+  // Timeline state. `line` is each step's live detail; `result` is the concrete
+  // trace a finished step leaves behind (e.g. "Loaded 12,000 foods…"); `frac` is a
+  // real 0..1 for a step's determinate bar (absent → indeterminate shimmer).
+  var buildTL={ cur:null, sawLoad:false, loaded:false, err:false,
+                phraseTimer:null, phraseIx:0,
+                line:{}, result:{}, frac:{}, mealsPerDay:0, startMs:0, wasCached:false };
+
+  function stepIndexById(id){ for(var i=0;i<BUILD_STEPS.length;i++){ if(BUILD_STEPS[i].id===id) return i; } return -1; }
+
+  // A rough, human wait figure from recorded cached-run durations. Only shown once
+  // we have at least one real sample (never on the first, download-heavy run).
+  function loadBuildTimes(){ try{ var a=JSON.parse(localStorage.getItem(LS_BUILDTIME)||"[]"); return Array.isArray(a)?a.filter(isFinite):[]; }catch(e){ return []; } }
+  function recordBuildTime(ms){
+    if(!isFinite(ms) || ms<=0) return;
+    var a=loadBuildTimes(); a.push(Math.round(ms)); while(a.length>5) a.shift();
+    try{ localStorage.setItem(LS_BUILDTIME, JSON.stringify(a)); }catch(e){}
+  }
+  function estimateText(){
+    var a=loadBuildTimes(); if(!a.length) return "";
+    var avg=a.reduce(function(x,y){ return x+y; },0)/a.length, sec=Math.round(avg/1000);
+    if(sec<20) return "";                               // too quick to bother
+    if(sec<90){ sec=Math.round(sec/5)*5; return "Usually about "+sec+" seconds"; }
+    var m=Math.round(sec/30)/2; return "Usually about "+m+" minute"+(m===1?"":"s");
+  }
+  // Subtitle meta: the measured wait (when known) + a truthful "step N of M".
+  function renderBuildMeta(){
+    var el=$("buildMeta"); if(!el) return;
+    var curIx=buildTL.cur?stepIndexById(buildTL.cur):0, total=BUILD_STEPS.length;
+    var est=buildTL.wasCached?estimateText():"";     // first run: no seconds promise
+    var clock='<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+    var txt=(est?est+" · ":"")+"Step "+Math.min(curIx+1,total)+" of "+total;
+    el.innerHTML=clock+"<span>"+esc(txt)+"</span>";
+    el.hidden=false;
+  }
+
+  // Paint the whole timeline. Done steps show their concrete result (or last live
+  // line); the active step shows its live line + a bar (determinate when we have a
+  // real fraction, a soft shimmer otherwise); upcoming steps show only their name.
+  function renderBuildTimeline(allDone){
+    var host=$("buildTimeline"); if(!host) return;
+    var curIx=buildTL.cur?stepIndexById(buildTL.cur):-1;
+    var check='<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>';
+    var H=[];
+    for(var i=0;i<BUILD_STEPS.length;i++){
+      var s=BUILD_STEPS[i];
+      var state = allDone ? "done" : (i<curIx ? "done" : (i===curIx ? "active" : "upcoming"));
+      var detail = (state==="done")
+        ? (buildTL.result[s.id] || buildTL.line[s.id] || s.detail || "")
+        : (buildTL.line[s.id] || s.detail || "");
+      var f=buildTL.frac[s.id], indet=(f==null || !isFinite(f));
+      var w=indet?"":(' style="width:'+Math.max(3,Math.min(100,Math.round(f*100)))+'%"');
+      H.push('<li class="tlstep" data-step="'+s.id+'" data-state="'+state+'">'+
+        '<span class="tlmark">'+check+'</span>'+
+        '<div class="tlbody">'+
+          '<div class="tltitle">'+esc(s.title)+'</div>'+
+          '<div class="tldetail" id="tldetail_'+s.id+'">'+esc(detail)+'</div>'+
+          '<div class="tlbar"><div class="tlbarfill'+(indet?' indet':'')+'" id="tlbar_'+s.id+'"'+w+'></div></div>'+
+        '</div></li>');
+    }
+    host.innerHTML=H.join("");
+    renderBuildMeta();
+  }
+
+  // Update a step's live detail line in place (no full re-paint).
+  function setStepLine(id, text){
+    if(!text) return;
+    buildTL.line[id]=text;
+    var el=$("tldetail_"+id); if(el) el.textContent=text;
+  }
+  // Update a step's determinate bar in place; null → indeterminate shimmer.
+  function setStepFrac(id, frac){
+    buildTL.frac[id]=(frac==null||!isFinite(frac))?null:frac;
+    var el=$("tlbar_"+id); if(!el) return;
+    if(buildTL.frac[id]==null){ el.classList.add("indet"); el.style.width=""; }
+    else { el.classList.remove("indet"); el.style.width=Math.max(3,Math.min(100,Math.round(frac*100)))+"%"; }
+  }
+
+  // Move the active step forward (never backward, so out-of-order events can't
+  // rewind the timeline). Re-paints when the step actually changes.
+  function advanceStep(id){
+    var ni=stepIndexById(id); if(ni<0) return;
+    var ci=buildTL.cur?stepIndexById(buildTL.cur):-1;
+    if(ni<=ci) return;
+    buildTL.cur=id;
+    renderBuildTimeline(false);
+  }
+
+  function stopInitPhrases(){ if(buildTL.phraseTimer){ clearInterval(buildTL.phraseTimer); buildTL.phraseTimer=null; } }
+  // Cycle friendly phrases on the init step while the model loads.
+  function startInitPhrases(){
+    if(buildTL.phraseTimer) return;
+    var first=!localStorage.getItem(LS_MODELREADY);
+    var phrases=first?INIT_PHRASES_FIRST:INIT_PHRASES_RETURN;
+    buildTL.phraseIx=0;
+    setStepLine("init", phrases[0]);
+    buildTL.phraseTimer=setInterval(function(){
+      if(buildTL.cur!=="init"){ stopInitPhrases(); return; }
+      buildTL.phraseIx=(buildTL.phraseIx+1)%phrases.length;
+      setStepLine("init", phrases[buildTL.phraseIx]);
+    }, 3600);
+  }
+
+  // Reset the timeline for a fresh build (or a manual retry / model walk).
+  function resetBuildTimeline(){
+    buildTL.cur="init"; buildTL.sawLoad=false; buildTL.loaded=false; buildTL.err=false;
+    buildTL.line={}; buildTL.result={}; buildTL.frac={};
+    // A concrete result for the design step is known up front (the model designs
+    // exactly one day's worth of meals), shown once that step completes.
+    if(buildTL.mealsPerDay>0){
+      buildTL.result.design=buildTL.mealsPerDay+" meal"+(buildTL.mealsPerDay===1?"":"s")+" designed";
+    }
+    stopInitPhrases();
+    renderBuildTimeline(false);
+    startInitPhrases();
+  }
+
+  // The single seam every progress event flows through. `stage`/`detail` come from
+  // the planner + engine; `frac` is a real 0..1 fraction (download %, or meals
+  // designed so far) or null when a stage can't report granular progress.
+  function setBuildProgress(stage, detail, frac){
+    if(buildTL.err) return;
+    if(stage==="retry"){
+      // A model failed to load/respond — the walk starts a fresh model, so rewind
+      // the whole timeline back to "getting ready".
+      resetBuildTimeline();
+      return;
+    }
+    if(stage==="catalog"){
+      advanceStep("init");
+      // The catalog reports its real size once loaded → keep it as the init step's
+      // finished result ("Loaded N foods from your library"). Don't disturb the
+      // rotating load phrases on the *active* line.
+      if(detail && /foods/i.test(detail)) buildTL.result.init=detail;
+      return;
+    }
+    if(stage==="download" || stage==="model"){
+      buildTL.sawLoad=true;
+      advanceStep("init");
+      startInitPhrases();          // keep the friendly phrasing; hide the raw text
+      setStepFrac("init", frac);   // real download fraction drives the bar
+      return;
+    }
+    if(stage==="generate"){
+      // Tokens are flowing → the model is up. Init is done; leave it if we already
+      // moved on, otherwise step to designing. Remember it loaded for next time.
+      if(!buildTL.loaded){ buildTL.loaded=true; try{ localStorage.setItem(LS_MODELREADY,"1"); }catch(e){} }
+      if(buildTL.cur==="init"){ stopInitPhrases(); if(!buildTL.result.init) buildTL.result.init="Your on-device model is ready"; advanceStep("design"); }
+      return;
+    }
+    var target=STAGE_STEP[stage];
+    if(!target) return;
+    // The first "choose" fires BEFORE the model finishes loading — stay on init
+    // (still "getting ready") until the load is done.
+    if(target==="design" && !buildTL.sawLoad && !buildTL.loaded){
+      advanceStep("init");
+      return;
+    }
+    if(target!=="init"){
+      buildTL.loaded=true; stopInitPhrases();
+      if(!buildTL.result.init) buildTL.result.init="Your on-device model is ready";
+      try{ localStorage.setItem(LS_MODELREADY,"1"); }catch(e){}
+    }
+    advanceStep(target);
+    if(target!=="init"){
+      if(detail) setStepLine(target, detail);
+      setStepFrac(target, frac);   // determinate where the planner gives a fraction
     }
   }
+
   function showBuildError(msg){
     buildActive=false;
+    buildTL.err=true;
+    stopInitPhrases();
     var err=$("buildErr");
     $("buildModal").hidden=false;
     $("buildTitle").textContent="Couldn’t finish on-device";
-    setBuildProgress("error", "Stopped.", 0);
+    // Mark the step we stalled on as errored (red marker, stopped spinner).
+    var host=$("buildTimeline");
+    if(host){
+      var act=host.querySelector('.tlstep[data-state="active"]');
+      if(act){ act.setAttribute("data-state","error"); var d=act.querySelector(".tldetail"); if(d) d.textContent="Stopped here."; }
+    }
     if(err){ err.hidden=false; err.textContent=msg; }
     $("buildRetry").hidden=false;
   }
@@ -2310,7 +2609,7 @@
   window.addEventListener("unhandledrejection", function(e){
     if(buildActive) e.preventDefault();
   });
-  $("buildClose").addEventListener("click", function(){ buildActive=false; $("buildModal").hidden=true; });
+  $("buildClose").addEventListener("click", function(){ buildActive=false; stopInitPhrases(); $("buildModal").hidden=true; });
   // lastWizAnswers (the harness's plan memory) is declared + rehydrated near the
   // other persisted state above, so it survives a reload and seeds from a link.
   // Manual retry starts fresh: clear the persisted blocklist so every model gets
@@ -2348,12 +2647,19 @@
   function runBuild(ans){
     var dayTargets=buildDayTargets();
     if(!dayTargets){ return; }
-    // reset modal
+    // reset modal + timeline
     buildActive=true;
     $("buildErr").hidden=true; $("buildRetry").hidden=true;
-    $("buildTitle").textContent="Building your plan…";
+    $("buildTitle").textContent="Preparing your plan";
     $("buildModal").hidden=false;
-    setBuildProgress("start","Starting…",null);
+    // Seed the facts the timeline knows up front: meals/day (for the design step's
+    // result), whether the model is already cached (so we only show a measured time
+    // estimate on a cached run), and a start stamp to record this run's duration.
+    buildTL.mealsPerDay=Math.max(1,(ans.mealsPerDay|0)||3);
+    buildTL.wasCached=!!localStorage.getItem(LS_MODELREADY);
+    buildTL.startMs=Date.now();
+    resetBuildTimeline();
+    setBuildProgress("start","Setting up…",null);
 
     var io={ base:YdinFoodLookup.DEFAULT_BASE, cache:mpCache };
     // The plan is ALWAYS built by the on-device AI — the model chooses the foods,
@@ -2397,7 +2703,7 @@
           onPick:function(id,caps,info){ bump(); currentModel=id;
             var mem=(info&&info.deviceMemory)?" · ~"+info.deviceMemory+" GB RAM":"";
             setBuildProgress("model","Preparing "+id+mem+"…",null); },
-          onProgress:function(stage,txt){ bump(); setBuildProgress(stage,txt,null); }
+          onProgress:function(stage,txt,frac){ bump(); setBuildProgress(stage,txt,frac); }
         });
       }catch(err){ stopWatch(); showBuildError(aiErr); return; }
 
@@ -2412,10 +2718,11 @@
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
         calorieSplit:ans.calorieSplit,
         io:io, engine:engine, votes:_votes,
-        onProgress:function(stage,detail){
+        onProgress:function(stage,detail,frac){
+          // Most stages just move/label the active step; a few (meal design) carry a
+          // real 0..1 fraction the planner computes, which drives a determinate bar.
           bump();
-          var pctMap={catalog:12,choose:30,guess:50,fetch:60,check:70,solve:80,review:88,assemble:92,done:100};
-          setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
+          setBuildProgress(stage, detail, frac==null?null:frac);
         }
       }).then(function(plan){
         // Free the on-device model BEFORE we render. On iOS the resident model (GPU
@@ -2426,12 +2733,21 @@
           var norm=normalizeMealPlan(plan);
           if(!norm){ showBuildError("The plan came back without any days. Tap Try again, or use the copy-prompt path."); return; }
           buildActive=false;
-          mealPlan=norm; mealDay=0; mealEditor=null;
-          persist(); renderMealPlan();
-          setBuildProgress("done","Done — opening your plan.",100);
+          stopInitPhrases();
+          lastBuiltWith=currentModel||null;
+          // Learn the real wait: record how long a CACHED run took (a first run's
+          // model download is too variable to base an estimate on), so later builds
+          // can show a measured "usually about Ns".
+          if(buildTL.wasCached && buildTL.startMs) recordBuildTime(Date.now()-buildTL.startMs);
+          // The plan is shown as an unsaved PREVIEW — it is NOT committed to this
+          // device (or the share link) until the user confirms they're happy with
+          // it via the "Keep this plan" button in the meal view.
+          mealPlan=norm; mealDay=0; mealEditor=null; mealPlanPending=true;
+          renderMealPlan();
+          // Complete the timeline so the user sees it land on "Ready for review".
+          buildTL.cur="ready"; renderBuildTimeline(true);
           $("buildModal").hidden=true;
           setView("meal");
-          setImportOk("On-device plan built and saved to this device"+(currentModel?" with "+currentModel+".":"."));
         });
       }).catch(function(err){
         // Free this model before walking or erroring — never hold two models at once
@@ -2486,8 +2802,20 @@
   // delegation on the stable container: remove plan, day-tab switch, per-meal
   // recipe-prompt copy, and per-meal recipe removal.
   $("mealPlanCard").addEventListener("click", function(e){
+    // Keep a previewed plan: commit it now that the user is happy with it.
+    if(e.target.closest("#mealKeepBtn")){
+      mealPlanPending=false; persist(); renderMealPlan();
+      setImportOk("Plan saved to this device"+(lastBuiltWith?" — built on-device with "+lastBuiltWith+".":"."));
+      return;
+    }
+    // Discard the preview: drop the unsaved plan and restore whatever was stored.
+    if(e.target.closest("#mealDiscardBtn")){
+      mealPlanPending=false; mealPlan=readStoredMealPlan(); mealDay=0; mealEditor=null;
+      renderMealPlan();
+      return;
+    }
     if(e.target.closest("#mealClearBtn")){
-      mealPlan=null; mealDay=0; mealEditor=null; persist(); renderMealPlan();
+      mealPlan=null; mealPlanPending=false; mealDay=0; mealEditor=null; persist(); renderMealPlan();
       var msg=$("mealImportMsg"); if(msg) msg.hidden=true;
       return;
     }
