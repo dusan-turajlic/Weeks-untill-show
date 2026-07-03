@@ -6,6 +6,8 @@
  *     (Finnish) catalog — foods rescued to REAL products via translateFoods.
  *   - Portion realism: eggs/fruit/bread snap to whole/part UNITS and live in one
  *     meal; bulk foods snap to a gram step; no "7 g of egg" slivers.
+ *   - Whole-day review: the day is judged as a set (and can be corrected) BEFORE
+ *     the catalog is touched; sanitizeReviewedDay folds the fix back safely.
  *
  * No browser, no WebGPU, no live model: a mock engine replays canned outputs.
  * Run with:  node test/harness.test.js
@@ -34,6 +36,25 @@ function ok(name, cond, extra) {
   ok("vote backfills to `min` when consensus is thin", few.length === 2, few.join(","));
   var one = planner.voteFoods([["Tofu", "Rice"]]);
   ok("single run passes through", one.length === 2 && one[0] === "Tofu" && one[1] === "Rice", one.join(","));
+})();
+
+// ---- 1b) sanitizeReviewedDay: fold a whole-day review onto the design -----
+(function () {
+  var orig = [{ name: "Breakfast", foods: ["cake"] }, { name: "Lunch", foods: ["chicken", "rice"] }];
+  var r = planner.sanitizeReviewedDay([{ name: "breakfast", foods: ["oats", "whey"] }], orig);
+  ok("sanitizeReviewedDay swaps a meal's foods by name (case-insensitive)",
+     r && r[0].foods.join(",") === "oats,whey");
+  ok("sanitizeReviewedDay keeps meals the review didn't touch", r && r[1].foods.join(",") === "chicken,rice");
+  ok("sanitizeReviewedDay preserves the original meal count + order",
+     r && r.length === 2 && r[0].name === "Breakfast" && r[1].name === "Lunch");
+  var mixed = planner.sanitizeReviewedDay([{ name: "Breakfast", foods: ["oats"] }, { name: "Lunch", foods: [] }], orig);
+  ok("sanitizeReviewedDay keeps original foods for a meal that came back empty",
+     mixed && mixed[0].foods.join(",") === "oats" && mixed[1].foods.join(",") === "chicken,rice");
+  ok("sanitizeReviewedDay returns null when nothing usable comes back",
+     planner.sanitizeReviewedDay([{ name: "Breakfast", foods: [] }], orig) === null &&
+     planner.sanitizeReviewedDay(null, orig) === null && planner.sanitizeReviewedDay([], orig) === null &&
+     planner.sanitizeReviewedDay([{ foo: 1 }], orig) === null);
+  ok("sanitizeReviewedDay does not mutate the original design", orig[0].foods.join(",") === "cake");
 })();
 
 // ---- 2) portion realism: pure snap helpers ------------------------------
@@ -423,8 +444,63 @@ function scenarioCritic() {
   });
 }
 
+// ---- 8) whole-day review: the day is judged as a set BEFORE catalog match --
+function scenarioDayReview() {
+  var catalog = catalogOf([
+    ["o1", "Rolled oats", "Elovena", "en", 100, "g", 10, 60, 7, 13],
+    ["w1", "Whey protein", "Star", "en", 100, "g", 0, 6, 4, 80],
+    ["c1", "Chicken breast", "Kotimaista", "en", 100, "g", 0, 0, 3.6, 31],
+    ["r1", "Rice", "Uncle", "en", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["l1", "Olive oil", "Bertolli", "en", 100, "ml", 0, 0, 100, 0],
+    ["b1", "Blueberries", "Rainbow", "en", 100, "g", 2.4, 12, 0.3, 0.7]
+  ]);
+  var products = {
+    o1: Object.assign(macro(370, 13, 7, 60), { product_name: "Rolled oats" }),
+    w1: Object.assign(macro(390, 80, 6, 4), { product_name: "Whey protein" }),
+    c1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Chicken breast" }),
+    r1: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Rice" }),
+    l1: Object.assign(macro(884, 0, 100, 0), { product_name: "Olive oil" }),
+    b1: Object.assign(macro(57, 0.7, 0.3, 12), { product_name: "Blueberries" })
+  };
+  // The model first designs a nonsense breakfast; the whole-day review catches it
+  // and hands back a corrected day (real breakfast staples) BEFORE any matching.
+  var byMeal = { Breakfast: ["chocolate cake"], Lunch: ["chicken breast", "rice", "olive oil"] };
+  var reviewSeen = null;
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["rice"] }); },
+    reviewDay: function (ctx) {
+      reviewSeen = (ctx.meals || []).map(function (m) { return m.name + ":" + m.foods.join("+"); });
+      return Promise.resolve({
+        ok: false,
+        issues: ["breakfast was cake — swapped for oats, whey and blueberries"],
+        meals: [
+          { name: "Breakfast", foods: ["rolled oats", "whey protein", "blueberries"] },
+          { name: "Lunch", foods: ["chicken breast", "rice", "olive oil"] }
+        ]
+      });
+    }
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1800, protein: 140, fat: 60, carbs: 170, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    ok("reviewDay saw the WHOLE day (every meal) before matching",
+       !!reviewSeen && reviewSeen.length === 2 && /chocolate cake/i.test(reviewSeen[0]), JSON.stringify(reviewSeen));
+    var bfast = plan.days[0].meals[0];
+    var names = bfast.items.map(function (i) { return i.food; }).join("|").toLowerCase();
+    ok("the reviewed breakfast replaced cake with real staples (oats + whey)",
+       /oats/.test(names) && /whey/.test(names) && !/cake/.test(names), names);
+    var mealFoods = plan.days[0].meals.reduce(function (a, m) { return a.concat(m.items.map(function (i) { return i.food.toLowerCase(); })); }, []);
+    ok("cake never reached the catalog / plate (review ran before matching)",
+       mealFoods.every(function (f) { return !/cake/.test(f); }), mealFoods.join("|"));
+    ok("the whole-day review note surfaces in the plan",
+       /Day check/.test(plan.micronutrients) && /cake/.test(plan.micronutrients), plan.micronutrients);
+  });
+}
+
 scenarioVoting().then(scenarioPortions).then(scenarioReasoning)
-  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(function () {
+  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(scenarioDayReview).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {

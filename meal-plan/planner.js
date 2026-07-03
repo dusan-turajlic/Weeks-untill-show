@@ -230,22 +230,48 @@
     var n = (name || "").toLowerCase();
     if (/break|morning/.test(n)) return {
       isBreakfast: true, kind: "breakfast", count: "3–5",
-      desc: "A breakfast to start the day" + (breakfast ? " (" + breakfast + " style)" : "") + ".",
-      compose: "a protein, a slow/whole-grain carbohydrate, some fruit or vegetables, and a healthy " +
-               "fat (e.g. eggs + oats + berries + nuts, or yoghurt + fruit + seeds, or beans + eggs + greens)"
+      desc: "A high-protein breakfast to start the day" + (breakfast ? " (" + breakfast + " style)" : "") + ".",
+      compose: "a lean protein, a slow whole-grain carbohydrate, some fruit or vegetables, and a little healthy " +
+               "fat — each a single-ingredient staple (e.g. oats + whey protein + berries + nuts, or eggs + oats + " +
+               "fruit, or plain Greek yoghurt + oats + seeds + banana, or cottage cheese + rye bread + tomato)"
     };
     if (/snack/.test(n)) return {
       isBreakfast: false, kind: "snack", count: "2–3",
       desc: "A light snack between meals — smaller than a main meal.",
-      compose: "2–3 foods that pair well, carrying some protein or fibre (e.g. fruit + nuts, " +
-               "yoghurt + seeds, or vegetable sticks + hummus)"
+      compose: "2–3 single-ingredient foods that pair well, carrying some protein or fibre (e.g. fruit + nuts, " +
+               "plain yoghurt + berries, quark + seeds, or vegetable sticks)"
     };
     return {
       isBreakfast: false, kind: "main meal", count: "3–5",
       desc: "A main meal — a full, balanced plate.",
-      compose: "a protein source, plenty of vegetables, a whole-food carbohydrate, and a healthy fat " +
-               "(e.g. fish + rice + greens + olive oil, or chicken + potatoes + salad, or lentils + grains + vegetables)"
+      compose: "a lean protein, plenty of vegetables, a whole-food carbohydrate, and a little healthy fat — " +
+               "each a single-ingredient staple (e.g. salmon + rice + broccoli + olive oil, or chicken breast + " +
+               "potatoes + salad, or lentils + brown rice + spinach)"
     };
+  }
+
+  // Fold a model's whole-day review back onto the designed day. The review may
+  // reorder, rename, or drop meals — we don't trust it to restructure the day, so
+  // we rebuild strictly from the ORIGINAL meals (same names, same count, same
+  // order) and only swap in a meal's foods when the review returned a non-empty,
+  // string-only list for that meal by name. Anything malformed → keep the
+  // original design untouched. Returns null when there's nothing usable to adopt.
+  function sanitizeReviewedDay(revised, original) {
+    if (!Array.isArray(revised) || !revised.length || !Array.isArray(original)) return null;
+    var byName = {};
+    revised.forEach(function (m) {
+      if (!m || typeof m.name !== "string") return;
+      var foods = Array.isArray(m.foods)
+        ? m.foods.filter(function (x) { return typeof x === "string" && x.trim(); })
+                 .map(function (x) { return x.trim(); })
+        : [];
+      if (foods.length) byName[m.name.trim().toLowerCase()] = foods;
+    });
+    if (!Object.keys(byName).length) return null;
+    return original.map(function (m) {
+      var rf = byName[String(m.name).trim().toLowerCase()];
+      return { name: m.name, foods: (rf && rf.length) ? rf.slice() : m.foods.slice() };
+    });
   }
 
   // A model macro guess is per-100 g; clamp it to sane ranges and reconcile kcal
@@ -697,11 +723,12 @@
   }
 
   // A short, honest micronutrient note from the deterministic totals.
-  function microNote(dayTotalsList, estimated, unmet, mealIssues) {
+  function microNote(dayTotalsList, estimated, unmet, mealIssues, dayIssues) {
     var bits = [];
     bits.push("Macros and micros are summed deterministically from the catalog; fibre meets the daily floor.");
     if (estimated) bits.push("Some micronutrient values are AI-estimated (flagged in the product data) — treat them as approximate.");
     if (unmet.length) bits.push("Heads up: " + unmet.join("; ") + ". Adjust a portion or swap a food, or use the copy-prompt path for a finer plan.");
+    if (dayIssues && dayIssues.length) bits.push("Day check — " + dayIssues.join("; ") + ". This is how the whole day reads as a plan; tweak a meal in the draft or use the copy-prompt path for a finer plan.");
     if (mealIssues && mealIssues.length) bits.push("Meal check — " + mealIssues.join("; ") + ". These read a little off as a plate; swap a food or use the copy-prompt path for a finer plan.");
     bits.push("Retailer names and prices aren't priced on-device — use the copy-prompt path or add the web-search layer for budget detail.");
     return bits.join(" ");
@@ -737,6 +764,10 @@
 
     return catP.then(function (catalog) {
       io.catalog = catalog;
+
+      // Notes from the whole-day review (Stage: it reads the plan as a set before
+      // any product lookup). Populated on the engine path; folded into the note.
+      var dayReviewIssues = [];
 
       // Report the real catalog size so the UI can show a concrete result for the
       // setup step ("Loaded N foods…") instead of a vague "done".
@@ -783,9 +814,14 @@
         // old single-shot behaviour (and library/test parity). Free locally.
         var votes = Math.max(1, (opts.votes | 0) || 1);
 
-        var chainP = Promise.resolve();
+        // ---- Design pass: name the foods for the WHOLE day first ----
+        // The model designs every meal (fan-out + vote) BEFORE any product is
+        // looked up, so the next stage can review the day as a set. Each meal is
+        // stateless; `usedFoods` from earlier meals is threaded in for variety.
+        var designedMeals = [];
+        var designP = Promise.resolve();
         mealNames.forEach(function (nm, mi) {
-          chainP = chainP.then(function () {
+          designP = designP.then(function () {
             var w = weights[mi] / totalW;
             var mealTarget = {
               kcal: (t0.kcal || 0) * w, protein: (t0.protein || 0) * w, fat: (t0.fat || 0) * w,
@@ -811,25 +847,60 @@
               // the caller can blocklist this model and try the next (was the old
               // single-shot behaviour too).
               if (!lists.length) throw new Error("The model produced no foods for " + nm + ".");
-              var foods = votes > 1 ? voteFoods(lists, { min: 2 }) : lists[0];
-              names.push(nm);
-              var codes = [];
-              foods.forEach(function (fname) {
-                if (typeof fname !== "string" || !fname.trim()) return;
-                fname = fname.trim();
-                usedFoods.push(fname);
-                var hit = FL.searchFoods(catalog, fname, 1)[0];
-                if (hit && hit.code) {
-                  if (codes.indexOf(hit.code) < 0) codes.push(hit.code);
-                  if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
-                } else {
-                  var code = aiCode(fname);
-                  if (codes.indexOf(code) < 0) codes.push(code);
-                  unmatched.push({ code: code, name: fname });
-                }
-              });
-              mealCodes.push(codes);
+              var foods = (votes > 1 ? voteFoods(lists, { min: 2 }) : lists[0])
+                .filter(function (x) { return typeof x === "string" && x.trim(); })
+                .map(function (x) { return x.trim(); });
+              foods.forEach(function (f) { usedFoods.push(f); }); // seed the next meal's variety
+              designedMeals.push({ name: nm, foods: foods });
             });
+          });
+        });
+
+        // ---- Day review: does the WHOLE day make sense? ----
+        // Before touching the catalog, one reasoning pass reads every meal
+        // together and judges the plan as a set — breakfast reads like breakfast,
+        // protein is spread across meals, foods are single-ingredient whole foods
+        // that portion to the day's macros, there's variety. It may hand back a
+        // corrected day (adopted via sanitizeReviewedDay, which never lets it
+        // restructure the day) and/or flag issues (folded into the note). Optional
+        // + engine-only, so the library/test path and iOS are unaffected.
+        var reviewDayP = designP.then(function () {
+          if (!(opts.engine && opts.engine.reviewDay) || !designedMeals.length) return;
+          report("choose", "Reviewing the whole day's plan…");
+          return Promise.resolve(opts.engine.reviewDay({
+            meals: designedMeals.map(function (m) { return { name: m.name, foods: m.foods.slice() }; }),
+            dayTarget: {
+              kcal: t0.kcal, protein: t0.protein, fat: t0.fat, carbs: t0.carbs, fiber: t0.fiber
+            },
+            country: opts.country, prefs: opts.prefs, mealsPerDay: nMeals
+          })).then(function (rv) {
+            if (!rv) return;
+            dayReviewIssues = (rv && Array.isArray(rv.issues))
+              ? rv.issues.filter(function (s) { return typeof s === "string" && s.trim(); }) : [];
+            var revised = sanitizeReviewedDay(rv.meals, designedMeals);
+            if (revised) designedMeals = revised;
+          }, function () { /* review failed — keep the original day */ });
+        });
+
+        // ---- Match pass: resolve the reviewed day's foods to catalog products ----
+        var chainP = reviewDayP.then(function () {
+          designedMeals.forEach(function (dm) {
+            names.push(dm.name);
+            var codes = [];
+            dm.foods.forEach(function (fname) {
+              if (typeof fname !== "string" || !fname.trim()) return;
+              fname = fname.trim();
+              var hit = FL.searchFoods(catalog, fname, 1)[0];
+              if (hit && hit.code) {
+                if (codes.indexOf(hit.code) < 0) codes.push(hit.code);
+                if (!seen[hit.code]) { seen[hit.code] = 1; recsByCode[hit.code] = hit; recs.push(hit); }
+              } else {
+                var code = aiCode(fname);
+                if (codes.indexOf(code) < 0) codes.push(code);
+                unmatched.push({ code: code, name: fname });
+              }
+            });
+            mealCodes.push(codes);
           });
         });
 
@@ -1098,7 +1169,7 @@
                 return { label: d.label, perWeek: d.perWeek, meals: d.meals, totals: d.totals };
               }),
               shoppingList: shoppingList(allSolved, recsByCode),
-              micronutrients: microNote(days.map(function (d) { return d.totals; }), estimated, unmet, mealIssues)
+              micronutrients: microNote(days.map(function (d) { return d.totals; }), estimated, unmet, mealIssues, dayReviewIssues)
             };
             report("done", unmet.length ? "Plan ready (some targets approximate)." : "Plan ready.");
             return plan;
@@ -1497,10 +1568,14 @@
         var sys = "You are a chef and nutritionist designing ONE meal: a " + g.kind + ". " + g.desc + " " +
           "Picture what this single meal realistically looks like on a plate, then list its whole-food " +
           "ingredients. Rules: (1) It must be ONE coherent " + g.kind + " — foods that genuinely go " +
-          "together, not a random assortment. (2) Build it from " + g.compose + ". (3) Favour " +
-          "micronutrient-dense whole foods — colourful vegetables or fruit, legumes, whole grains, " +
-          "good proteins and fats. (4) Respect dietary restrictions strictly. (5) Name " + g.count + " " +
-          "ingredients. (6) Name foods ONLY — no amounts, no numbers, no arithmetic. " +
+          "together, not a random assortment. (2) Build it from " + g.compose + ". (3) Every food must be a " +
+          "SINGLE-INGREDIENT whole food — one plain item you could buy on its own (oats, eggs, chicken breast, " +
+          "rice, plain yoghurt, whey protein, salmon, spinach, banana), NOT a ready meal, sauce, recipe, or " +
+          "multi-ingredient product. Each will be WEIGHED to hit the day's macros, so favour basic staples that " +
+          "portion cleanly. (4) Favour micronutrient-dense choices — colourful vegetables or fruit, legumes, " +
+          "whole grains, lean proteins and good fats — and keep protein high (this is a cutting diet). " +
+          "(5) Respect dietary restrictions strictly. (6) Name " + g.count + " " +
+          "ingredients. (7) Name foods ONLY — no amounts, no numbers, no arithmetic. " +
           "Output ONLY JSON, no prose or code fences: {\"foods\":[\"ingredient\",\"ingredient\",\"ingredient\"]}";
         var usr = "Meal: " + nm + "\nCountry: " + (ctx.country || "unknown") + "\n" +
           (g.isBreakfast ? "Breakfast style: " + (ctx.breakfast || "no preference") + "\n" : "") +
@@ -1615,6 +1690,41 @@
           return { ok: o && o.ok !== false && !issues.length, issues: issues };
         });
       },
+      // Whole-day review: read EVERY meal of the day together (as named foods,
+      // before any product lookup) and judge the plan as a set — does breakfast
+      // read like breakfast, is protein spread across the meals, is every food a
+      // single-ingredient whole food that can be weighed to the day's macros, is
+      // there variety and nothing missing. May hand back a CORRECTED day (adopted
+      // via sanitizeReviewedDay, which forbids it restructuring the day) and/or
+      // flag issues (folded into the note). One call for the whole day. Skipped on
+      // iOS (every generation is memory risk in Safari). Progress stage: choose.
+      reviewDay: function (ctx) {
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve({ ok: true, issues: [], meals: null });
+        var meals = (ctx.meals || []).filter(function (m) { return m && m.name; });
+        if (!meals.length) return Promise.resolve({ ok: true, issues: [], meals: null });
+        var t = ctx.dayTarget || {};
+        var sys = "You are a nutrition coach reviewing a WHOLE DAY of eating as one plan, before any shopping. " +
+          "You are given each meal and the single-ingredient whole foods chosen for it. Judge the day as a set: " +
+          "(1) each meal suits its slot — breakfast reads like breakfast (oats, eggs, whey protein, yoghurt, " +
+          "fruit), not a dinner; (2) protein is spread across the meals, not dumped in one; (3) every food is a " +
+          "single-ingredient whole food that can be weighed to hit the day's macros (oats, eggs, chicken breast, " +
+          "rice, plain yoghurt, whey protein, salmon, vegetables) — not a ready meal, sauce, or multi-ingredient " +
+          "product; (4) there is sensible variety and nothing important is missing. If the day is already good, " +
+          "return it unchanged with issues:[]. If not, return a CORRECTED day: keep what works and change only " +
+          "what's wrong — swap an odd food, add a missing protein/carb/vegetable, drop a duplicate. Keep the SAME " +
+          "meal names and name foods ONLY (no amounts, no numbers). Output ONLY JSON, no prose or code fences: " +
+          "{\"ok\":true,\"issues\":[\"short note\"],\"meals\":[{\"name\":\"Breakfast\",\"foods\":[\"oats\",\"whey protein\"]}]}.";
+        var body = meals.map(function (m) { return m.name + ": " + (m.foods || []).join(", "); }).join("\n");
+        var usr = "Country: " + (ctx.country || "unknown") + "\nDietary restrictions (strict): " + (ctx.prefs || "none") +
+          "\nDay targets: ~" + Math.round(t.kcal || 0) + " kcal, " + Math.round(t.protein || 0) + " g protein, " +
+          Math.round(t.carbs || 0) + " g carbs, " + Math.round(t.fat || 0) + " g fat, fibre ≥ " +
+          Math.round(t.fiber || 35) + " g.\nThe day:\n" + body + "\nReview the whole day now.";
+        return chatJSON(sys, usr, "Reviewing the whole day", 600).then(function (o) {
+          var issues = (o && Array.isArray(o.issues)) ? o.issues.filter(function (s) { return typeof s === "string" && s.trim(); }) : [];
+          var revised = (o && Array.isArray(o.meals)) ? o.meals : null;
+          return { ok: o && o.ok !== false && !issues.length, issues: issues, meals: revised };
+        });
+      },
       // Circle-back questions: propose ways the user could tailor the plan, as
       // multiple-choice ONLY (the planner sanitizes + gates these, and always adds
       // the deterministic calorie-split question, so a weak answer can't break the
@@ -1647,8 +1757,10 @@
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var sys = "You are a nutritionist choosing real, locally available whole foods. " +
-          "Respect the user's dietary preferences strictly. You DO NOT do any arithmetic — " +
-          "only name foods. Output ONLY a JSON object, no prose or code fences: " +
+          "Every food must be a SINGLE-INGREDIENT staple (oats, eggs, chicken breast, rice, plain yoghurt, " +
+          "whey protein, salmon, spinach) — not a ready meal, sauce, or multi-ingredient product, since each " +
+          "is weighed to hit the macros. Respect the user's dietary preferences strictly. You DO NOT do any " +
+          "arithmetic — only name foods. Output ONLY a JSON object, no prose or code fences: " +
           "{\"foods\": [\"food name\", ...]} with 10–16 foods " +
           "spanning protein, healthy fats, slow carbs and high-fibre items.";
         var usr = "Country: " + (ctx.country || "unknown") + "\n" +
@@ -1704,6 +1816,7 @@
     splitIntoMeals: splitIntoMeals,
     gatherFoods: gatherFoods,
     voteFoods: voteFoods,
+    sanitizeReviewedDay: sanitizeReviewedDay,
     repeatSeq: repeatSeq,
     bestHit: bestHit,
     pieceInfo: pieceInfo,

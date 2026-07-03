@@ -181,6 +181,20 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     ALWAYS offers the deterministic `buildCalorieSplitQuestion` so it works
     offline / on iOS. `answerToBuildOpts(id, optionId)` maps an answer to a
     `buildPlan` patch. Both engine calls are skipped on iOS.
+  - **Whole-day review** — `engine.reviewDay({meals,dayTarget,country,prefs,mealsPerDay})`
+    reads the WHOLE day as one plan — every meal's named foods together — **before
+    any catalog lookup**, and judges the day as a set: each meal suits its slot
+    (breakfast reads like breakfast — oats, eggs, whey protein, yoghurt, fruit),
+    protein is spread across the meals, every food is a **single-ingredient whole
+    food** that can be weighed to the day's macros (not a ready meal, sauce, or
+    multi-ingredient product), and there's variety with nothing missing. It may hand
+    back a CORRECTED day — adopted through `sanitizeReviewedDay`, which rebuilds
+    strictly from the original meals (same names, count, order) and only swaps a
+    meal's foods, so the model can fix a plate but never restructure the day — and/or
+    flag issues, folded into the `micronutrients` note (`Day check —`). This is the
+    "look at the overall plan and see if it makes sense, THEN find the products"
+    stage: design all meals → review the day → match to the catalog. Skipped on iOS.
+    Progress stage: `choose`.
   - **Meal-coherence critic** — `engine.critiqueMeal({mealName,items,country,prefs})`
     reads each finished meal and judges whether it hangs together as a real,
     cookable meal (not just individually-valid ingredients), catching incoherent
