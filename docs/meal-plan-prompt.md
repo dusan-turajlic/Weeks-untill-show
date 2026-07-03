@@ -156,6 +156,16 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     re-`verify()`d so any drift from real portions is reported. Meals are
     deliberately uneven — a day hits its macros, individual meals need not each
     be a balanced plate.
+  - **Deterministic display polish** — the on-device plan is lifted toward a
+    hand-written one WITHOUT leaning on the small model, by reading the foods the
+    solver already chose: meal names get a descriptor from their biggest foods
+    (`mealDescriptor` → "Breakfast — oats, quark & blueberries"); raw proteins are
+    shown as raw weight (`bulkAmountNote` → "120 g raw"); meal names are count-aware
+    and read like a real day (`defaultMealNames` → Breakfast / Lunch / Snack /
+    Dinner / Evening, not "Second snack"); and the `micronutrients` note names the
+    plan's real top fibre sources (from the solved grams) and gives concrete,
+    universal cut watch-outs with fixes — vitamin D (D3 dose, latitude-aware),
+    omega-3 EPA/DHA (oily fish or a capsule), and iron × vitamin-C pairing.
   - **Portion reasoning** — how a food is portioned (whole "unit" you use whole /
     in simple fractions — egg in a shell, a can, a sausage — vs "bulk" you weigh
     from a package) is decided by `engine.classifyFoods({foods,country})`, a

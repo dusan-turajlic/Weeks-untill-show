@@ -216,10 +216,22 @@
     return out;
   }
 
-  var MEAL_NAMES = ["Breakfast", "Lunch", "Dinner", "Snack", "Second snack", "Supper"];
+  // Meal names that read like a real day for the chosen count — snacks sit
+  // BETWEEN the mains and the last meal is an "Evening", not a "Second snack".
+  // (n=1–3 match the classic Breakfast/Lunch/Dinner so nothing downstream shifts.)
+  var MEAL_NAME_SETS = {
+    1: ["Breakfast"],
+    2: ["Breakfast", "Lunch"],
+    3: ["Breakfast", "Lunch", "Dinner"],
+    4: ["Breakfast", "Lunch", "Snack", "Dinner"],
+    5: ["Breakfast", "Lunch", "Snack", "Dinner", "Evening"],
+    6: ["Breakfast", "Morning snack", "Lunch", "Afternoon snack", "Dinner", "Evening"]
+  };
   function defaultMealNames(n) {
-    var a = [];
-    for (var i = 0; i < n; i++) a.push(i < MEAL_NAMES.length ? MEAL_NAMES[i] : "Meal " + (i + 1));
+    n = Math.max(1, n | 0);
+    if (MEAL_NAME_SETS[n]) return MEAL_NAME_SETS[n].slice();
+    var a = MEAL_NAME_SETS[6].slice();
+    for (var i = 6; i < n; i++) a.push("Meal " + (i + 1));
     return a;
   }
 
@@ -288,6 +300,43 @@
   }
   function aiCode(name) {
     return "ai:" + String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  // ---- deterministic display polish ---------------------------------------
+  // These lift the on-device plan toward a hand-written one WITHOUT leaning on
+  // the small model: they read the foods the solver already chose.
+
+  // A short, friendly word for a food, for a meal descriptor. Prefers an English
+  // gloss the product name may carry ("Rasvaton rahka (fat-free quark)" → "fat-free
+  // quark"), else strips brands/sizes and keeps the first couple of words.
+  function shortFoodWord(name) {
+    var s = String(name || "").trim();
+    var paren = s.match(/\(([^)]+)\)/);
+    s = paren ? paren[1] : s.replace(/\s*\([^)]*\)\s*/g, " ");
+    s = s.replace(/\b\d+([.,]\d+)?\s*(g|kg|ml|cl|l|%|kpl|pcs)\b/gi, " ")
+         .replace(/[,;–—]+/g, " ").replace(/\s{2,}/g, " ").trim();
+    return s.split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+  }
+  // "Breakfast" → "Breakfast — oats, quark & blueberries" from the meal's biggest
+  // foods (by calories), so a meal reads like a plate, not a slot. Empty when
+  // there's nothing usable, so the caller keeps the plain name.
+  function mealDescriptor(items) {
+    if (!items || !items.length) return "";
+    var top = items.slice().sort(function (a, b) { return (b.kcal || 0) - (a.kcal || 0); }).slice(0, 3);
+    var words = [];
+    top.forEach(function (it) {
+      var w = shortFoodWord(it.food);
+      if (w && words.indexOf(w) < 0) words.push(w);
+    });
+    if (!words.length) return "";
+    if (words.length === 1) return words[0];
+    return words.slice(0, -1).join(", ") + " & " + words[words.length - 1];
+  }
+  // Raw proteins are weighed raw; the app shows "120 g raw" like a real plan does.
+  // English + common Finnish terms (the catalog is in the country's language).
+  var RAW_PROTEIN_RE = /\b(chicken|broiler|broileri|kananrinta|kananfile|turkey|kalkkun|beef|naudan|pork|porsaan|possun|sian|mince|jauheliha|fillet|filee|fileesuikale|steak|pihvi|salmon|lohi|trout|kirjolohi|nieri)\b/i;
+  function bulkAmountNote(name) {
+    return RAW_PROTEIN_RE.test(String(name || "")) ? " raw" : "";
   }
 
   // Split a day's solved foods across `meals` meals. Deterministic: each food's
@@ -672,7 +721,8 @@
       var items = [];
       codes.forEach(function (c) {
         var g = perMeal[mi][c], info = pieceFor(c);
-        var amount = info ? pieceAmount(Math.round((g / info.grams) / info.step) * info.step, info) : (Math.round(g) + " g");
+        var amount = info ? pieceAmount(Math.round((g / info.grams) / info.step) * info.step, info)
+                          : (Math.round(g) + " g" + bulkAmountNote(nameOf(c)));
         var t = FL.buildMealTotals([{ code: c, grams: g, fiber100: fiberOf(c) }], products);
         if (t.estimated) estimated = true;
         items.push({
@@ -684,7 +734,8 @@
       var mt = items.reduce(function (a, it) {
         a.kcal += it.kcal; a.protein += it.protein; a.fat += it.fat; a.carbs += it.carbs; a.fiber += it.fiber; return a;
       }, emptyTotals());
-      outMeals.push({ name: nm, items: items, totals: {
+      var desc = mealDescriptor(items);
+      outMeals.push({ name: desc ? (nm + " — " + desc) : nm, items: items, totals: {
         kcal: Math.round(mt.kcal), protein: round(mt.protein), fat: round(mt.fat), carbs: round(mt.carbs), fiber: round(mt.fiber)
       } });
     });
@@ -723,9 +774,24 @@
   }
 
   // A short, honest micronutrient note from the deterministic totals.
-  function microNote(dayTotalsList, estimated, unmet, mealIssues, dayIssues) {
+  function microNote(dayTotalsList, estimated, unmet, mealIssues, dayIssues, extras) {
+    extras = extras || {};
     var bits = [];
     bits.push("Macros and micros are summed deterministically from the catalog; fibre meets the daily floor.");
+    // Where the fibre actually comes from, read off the plan's real portions —
+    // the same thing a hand-written note would list.
+    var fs = extras.fiberSources || [];
+    if (fs.length) {
+      bits.push("Fibre comes mainly from " + fs.map(function (f) {
+        return shortFoodWord(f.name) + " (~" + Math.round(f.fiber) + " g)";
+      }).join(", ") + " — fibre-dense whole foods that hold net carbs down while clearing the floor.");
+    }
+    // Concrete watch-outs every whole-food cut shares, each with a real fix.
+    var north = /finland|sweden|norway|denmark|iceland|estonia|latvia|lithuania|scotland|united kingdom|ireland|canada/i.test(extras.country || "");
+    bits.push("Vitamin D is hard to hit from food on a cut" + (north ? ", especially at northern latitudes" : "") +
+      " — take a D3 supplement (10–20 µg/day).");
+    bits.push("Plant sources (chia, flax, walnuts) cover omega-3 ALA but not EPA/DHA, so eat oily fish (salmon, mackerel, sardines) once or twice a week or take a fish/algae-oil capsule.");
+    bits.push("Pair iron-rich foods (meat, fish, legumes, spinach, seeds) with vitamin-C-rich vegetables or fruit to aid absorption, and use iodised salt for iodine.");
     if (estimated) bits.push("Some micronutrient values are AI-estimated (flagged in the product data) — treat them as approximate.");
     if (unmet.length) bits.push("Heads up: " + unmet.join("; ") + ". Adjust a portion or swap a food, or use the copy-prompt path for a finer plan.");
     if (dayIssues && dayIssues.length) bits.push("Day check — " + dayIssues.join("; ") + ". This is how the whole day reads as a plan; tweak a meal in the draft or use the copy-prompt path for a finer plan.");
@@ -1122,9 +1188,18 @@
           report("assemble", "Writing up your plan…");
           var allSolved = days[0]._solved ||
             Object.keys(days[0]._gramsByCode || {}).map(function (c) {
-              return { code: c, name: (recsByCode[c] && recsByCode[c].name) || c, grams: days[0]._gramsByCode[c] };
+              return { code: c, name: (recsByCode[c] && recsByCode[c].name) || c,
+                       grams: days[0]._gramsByCode[c], fiber100: recsByCode[c] && recsByCode[c].fiber };
             });
           var estimated = days.some(function (d) { return d._estimated; });
+
+          // The plan's top fibre sources (real grams), so the note can say WHERE
+          // the fibre comes from instead of just asserting the floor is met.
+          var fiberSources = allSolved.map(function (s) {
+            var t = FL.buildMealTotals([{ code: s.code, grams: s.grams, fiber100: s.fiber100 }], products);
+            return { name: (recsByCode[s.code] && recsByCode[s.code].name) || s.name || s.code, fiber: t.totals.fiber };
+          }).filter(function (x) { return x.fiber >= 1; })
+            .sort(function (a, b) { return b.fiber - a.fiber; }).slice(0, 4);
           var summaryP = opts.engine && opts.engine.summarize
             ? Promise.resolve(opts.engine.summarize({
                 country: opts.country, dayTargets: opts.dayTargets, prefs: opts.prefs
@@ -1169,7 +1244,8 @@
                 return { label: d.label, perWeek: d.perWeek, meals: d.meals, totals: d.totals };
               }),
               shoppingList: shoppingList(allSolved, recsByCode),
-              micronutrients: microNote(days.map(function (d) { return d.totals; }), estimated, unmet, mealIssues, dayReviewIssues)
+              micronutrients: microNote(days.map(function (d) { return d.totals; }), estimated, unmet, mealIssues, dayReviewIssues,
+                { country: opts.country, fiberSources: fiberSources })
             };
             report("done", unmet.length ? "Plan ready (some targets approximate)." : "Plan ready.");
             return plan;
@@ -1817,6 +1893,10 @@
     gatherFoods: gatherFoods,
     voteFoods: voteFoods,
     sanitizeReviewedDay: sanitizeReviewedDay,
+    mealDescriptor: mealDescriptor,
+    shortFoodWord: shortFoodWord,
+    bulkAmountNote: bulkAmountNote,
+    microNote: microNote,
     repeatSeq: repeatSeq,
     bestHit: bestHit,
     pieceInfo: pieceInfo,

@@ -8,6 +8,8 @@
  *     meal; bulk foods snap to a gram step; no "7 g of egg" slivers.
  *   - Whole-day review: the day is judged as a set (and can be corrected) BEFORE
  *     the catalog is touched; sanitizeReviewedDay folds the fix back safely.
+ *   - Deterministic display polish: descriptive meal names, "raw" weights on raw
+ *     proteins, and a micro note that names real fibre sources + vitamin-D/omega-3.
  *
  * No browser, no WebGPU, no live model: a mock engine replays canned outputs.
  * Run with:  node test/harness.test.js
@@ -55,6 +57,32 @@ function ok(name, cond, extra) {
      planner.sanitizeReviewedDay(null, orig) === null && planner.sanitizeReviewedDay([], orig) === null &&
      planner.sanitizeReviewedDay([{ foo: 1 }], orig) === null);
   ok("sanitizeReviewedDay does not mutate the original design", orig[0].foods.join(",") === "cake");
+})();
+
+// ---- 1c) deterministic display polish (meal names, raw note, micro note) --
+(function () {
+  ok("shortFoodWord prefers an English gloss in parentheses",
+     planner.shortFoodWord("Rasvaton rahka (fat-free quark)") === "fat-free quark");
+  ok("shortFoodWord strips brand/size noise", planner.shortFoodWord("Kaurahiutaleet 1 kg") === "kaurahiutaleet");
+  var d = planner.mealDescriptor([
+    { food: "Kaurahiutaleet", kcal: 200 }, { food: "Rasvaton rahka (quark)", kcal: 120 }, { food: "Mustikka", kcal: 30 }]);
+  ok("mealDescriptor lists the biggest foods, joined with &", d === "kaurahiutaleet, quark & mustikka", d);
+  ok("mealDescriptor is empty when there are no items", planner.mealDescriptor([]) === "");
+
+  ok("bulkAmountNote marks raw proteins as raw",
+     planner.bulkAmountNote("Broilerin fileesuikale") === " raw" &&
+     planner.bulkAmountNote("Naudan jauheliha") === " raw" &&
+     planner.bulkAmountNote("Kananrinta") === " raw");
+  ok("bulkAmountNote leaves non-proteins alone",
+     planner.bulkAmountNote("Kaurahiutaleet") === "" && planner.bulkAmountNote("Rypsiöljy") === "");
+
+  var note = planner.microNote([{ fiber: 36 }], false, [], [], [],
+    { country: "Finland", fiberSources: [{ name: "Chia-siemenet", fiber: 7 }, { name: "Pellavarouhe (flax)", fiber: 6 }] });
+  ok("microNote names the plan's real fibre sources", /chia/i.test(note) && /~7 g/.test(note), note);
+  ok("microNote flags vitamin D at a northern latitude", /Vitamin D/.test(note) && /northern latitudes/.test(note));
+  ok("microNote flags omega-3 EPA/DHA and iron/vitamin-C pairing", /EPA\/DHA/.test(note) && /vitamin-C/.test(note));
+  var noteSouth = planner.microNote([{ fiber: 36 }], false, [], [], [], { country: "Spain", fiberSources: [] });
+  ok("microNote drops the latitude clause outside the north", !/northern latitudes/.test(noteSouth));
 })();
 
 // ---- 2) portion realism: pure snap helpers ------------------------------
@@ -267,6 +295,13 @@ function scenarioPortions() {
     ok("bulk grams are rounded to 5 g", gramItems.every(function (x) { return parseFloat(x.it.amount) % 5 === 0; }),
        gramItems.map(function (x) { return x.it.amount; }).join("|"));
 
+    ok("meal names carry a food descriptor (Breakfast — …)",
+       day.meals.every(function (m) { return / — /.test(m.name); }), day.meals.map(function (m) { return m.name; }).join(" | "));
+    var chicken = allItems.filter(function (x) { return /kananrinta/i.test(x.it.food); });
+    ok("a raw protein is shown as raw weight (120 g raw)",
+       chicken.length > 0 && chicken.every(function (x) { return / raw$/.test(x.it.amount); }),
+       chicken.map(function (x) { return x.it.amount; }).join("|"));
+
     ok("day-level solve still roughly hits protein", day.totals.protein >= 130 - 12, "got " + day.totals.protein);
     ok("meals are genuinely different (not identical plates)",
        JSON.stringify(day.meals[0].items.map(function (i) { return i.food; })) !==
@@ -391,7 +426,9 @@ function scenarioCalorie() {
   }).then(function (plan) {
     ok("calorie split tilts the per-meal DESIGN targets to the evening",
        targets.Dinner > targets.Breakfast, JSON.stringify(targets));
-    var kcal = {}; plan.days[0].meals.forEach(function (m) { kcal[m.name] = m.totals.kcal; });
+    // Meal names now carry a descriptor ("Dinner — chicken, rice & …"), so match
+    // by the slot prefix rather than an exact key.
+    var kcal = {}; plan.days[0].meals.forEach(function (m) { kcal[m.name.split(" — ")[0]] = m.totals.kcal; });
     ok("the assembled dinner carries more calories than breakfast",
        kcal.Dinner > kcal.Breakfast, JSON.stringify(kcal));
   });
