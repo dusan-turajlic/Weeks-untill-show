@@ -164,6 +164,23 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     already place are sent (known pieces + `OBVIOUS_BULK` skip it); the result is
     clamped/vetoed by `classToDescriptor` so a hallucinated "unit" on a bulk food
     is ignored. Skipped on iOS. Progress stage: `check`.
+  - **Calorie distribution** — the user chooses how the day's calories lean
+    (`even` / `breakfast` / `lunch` / `dinner`). `calorieWeights(choice, mealNames)`
+    turns that into a normalized per-meal weight (snacks always lighter) that
+    drives BOTH the per-meal design targets (`buildPlan({calorieSplit})` → the
+    model designs a bigger dinner) and how shared bulk foods distribute
+    (`distributeBulk(total, meals, weights)` tilts toward the heavier meal). Piece
+    foods stay meal-appropriate. It's a whole-diet decision: `index.html` offers it
+    as an options-only "Adjust your day" card that **rebuilds** the plan, so the
+    diet is reshaped before products are re-found.
+  - **Ask-the-user questions** — `planQuestions(engine, ctx)` produces the
+    options-only questions to circle back with. It tries the model
+    (`engine.proposeQuestions`), passes each candidate through `sanitizeQuestion`
+    (the deterministic gate that GUARANTEES ≥2 pickable choices and no free-text)
+    and then the model's own `engine.critiqueQuestion` before showing it, and
+    ALWAYS offers the deterministic `buildCalorieSplitQuestion` so it works
+    offline / on iOS. `answerToBuildOpts(id, optionId)` maps an answer to a
+    `buildPlan` patch. Both engine calls are skipped on iOS.
   - **Meal-coherence critic** — `engine.critiqueMeal({mealName,items,country,prefs})`
     reads each finished meal and judges whether it hangs together as a real,
     cookable meal (not just individually-valid ingredients), catching incoherent
@@ -173,7 +190,8 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     an auto-rewrite that could break the macro guarantees. Skipped on iOS.
     Progress stage: `review`.
 
-  Tests: `node test/harness.test.js` (voting + translation + portion realism).
+  Tests: `node test/harness.test.js` (voting, translation, portion realism +
+  reasoning, calorie split + questions, meal-coherence critic).
 
 ## On-device model selection (Path A)
 

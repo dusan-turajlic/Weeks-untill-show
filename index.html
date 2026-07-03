@@ -229,6 +229,13 @@
   .mpmeta{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
   .mpmeta .chip{background:var(--accentSoft);border:1px solid var(--line);border-radius:999px;
                 padding:6px 13px;font-weight:600;color:var(--accentDeep);font-size:13px}
+  .mpsplit{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .splitbtn{flex:1 1 150px;text-align:left;padding:10px 12px;border:1px solid var(--line);border-radius:12px;
+            background:var(--card);color:var(--ink);cursor:pointer;display:flex;flex-direction:column;gap:2px;font-family:var(--sans)}
+  .splitbtn .l{font-weight:600;font-size:14px}
+  .splitbtn .h{font-size:12px;color:var(--inkSoft)}
+  .splitbtn.on{border-color:var(--accent);background:var(--accentSoft);box-shadow:0 0 0 1px var(--accent) inset}
+  .splitbtn:disabled{opacity:.6;cursor:default}
   .mpday-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
   .mpday-head .t{font-family:var(--serif);font-size:19px;font-weight:600}
   .mpday-head .c{font-size:12px;color:var(--inkSoft);font-weight:600;white-space:nowrap}
@@ -1464,6 +1471,23 @@
     if(p.summary) H.push('<p class="sub" style="margin-top:10px;white-space:pre-wrap">'+esc(p.summary)+'</p>');
     H.push('</div>');
 
+    // Circle back: let the user reshape how the day's calories are spread and
+    // rebuild the whole plan to it (options only, never typed). Shown only for an
+    // on-device plan we can actually rebuild this session (we have the wizard
+    // answers + the planner). buildActive hides it while a rebuild is running.
+    if(lastWizAnswers && !buildActive && typeof YdinPlanner!=="undefined" && YdinPlanner.buildCalorieSplitQuestion){
+      var q=YdinPlanner.buildCalorieSplitQuestion();
+      var curSplit=lastWizAnswers.calorieSplit||"even";
+      H.push('<div class="card"><div class="cardtitle">'+esc(q.prompt)+'</div>');
+      H.push('<p class="sub" style="margin-top:4px">Pick one and your plan rebuilds to match.</p>');
+      H.push('<div class="mpsplit">');
+      q.options.forEach(function(o){
+        H.push('<button type="button" class="splitbtn'+(o.id===curSplit?' on':'')+'" data-split="'+esc(o.id)+'">'+
+          '<span class="l">'+esc(o.label)+'</span>'+(o.hint?'<span class="h">'+esc(o.hint)+'</span>':'')+'</button>');
+      });
+      H.push('</div></div>');
+    }
+
     // day-type tabs (only when there is more than one kind of day)
     var sel=Math.min(Math.max(0, mealDay|0), days.length-1);
     if(days.length>1){
@@ -2312,6 +2336,7 @@
       YdinPlanner.buildPlan({
         dayTargets:dayTargets, cc:ans.cc, country:ans.country,
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
+        calorieSplit:ans.calorieSplit,
         io:io, engine:engine, votes:_votes,
         onProgress:function(stage,detail){
           bump();
@@ -2394,6 +2419,15 @@
     }
     var dayBtn=e.target.closest("[data-day]");
     if(dayBtn){ mealDay=+dayBtn.getAttribute("data-day"); mealEditor=null; renderMealPlan(); return; }
+    var splitBtn=e.target.closest("[data-split]");
+    if(splitBtn){
+      if(!lastWizAnswers) return;
+      var sid=splitBtn.getAttribute("data-split");
+      if((lastWizAnswers.calorieSplit||"even")===sid) return; // already on this split
+      lastWizAnswers.calorieSplit=sid;
+      runBuild(lastWizAnswers);   // reshape the whole diet, then re-find products
+      return;
+    }
     var recBtn=e.target.closest("[data-recipe]");
     if(recBtn){
       var ix=recBtn.getAttribute("data-recipe").split("-");
