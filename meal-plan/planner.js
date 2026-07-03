@@ -290,88 +290,212 @@
     return meals;
   }
 
-  // Build a real, balanced day from a model-designed layout by solving EACH meal
-  // to its own share of the day's targets — so every meal is a proper plate
-  // (protein + carbs + fat + fibre), never one tiny food. `mealCodes[mi]` is the
-  // list of catalog codes the model put in meal mi. Snacks get a lighter share.
-  // Returns { meals, totals, estimated, unmet, gramsByCode }.
-  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs) {
-    var weights = names.map(function (nm) { return /snack/i.test(nm) ? 0.6 : 1; });
-    var totalW = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
-    var outMeals = [], unmet = [], estimated = false, gramsByCode = {};
+  // ---- human portion realism ----------------------------------------------
+  // A person doesn't eat 7 g of egg. Some foods only come in whole/part PIECES;
+  // `grams` is one piece and `step` is the smallest sensible fraction of it
+  // (¼ egg, ½ banana, whole slice). Matched by name (English + common Finnish).
+  // Everything else is "bulk" — eaten by weight and snapped to a gram step.
+  var PIECE_FOODS = [
+    { re: /\b(egg|eggs|muna|munat|kananmuna|kananmunat)\b/i, grams: 50,  step: 0.25, one: "egg",   many: "eggs" },
+    { re: /\b(banana|bananas|banaani|banaanit)\b/i,         grams: 120, step: 0.5,  one: "banana", many: "bananas" },
+    { re: /\b(apple|omena|orange|appelsiini|pear|päärynä|paaryna|peach|persikka|kiwi|kiivi)\b/i,
+                                                            grams: 150, step: 0.5,  one: "piece",  many: "pieces" },
+    { re: /\b(bread|toast|leipä|leipa|ruisleipä|ruisleipa|näkkileipä|nakkileipa|crispbread|slice|viipale)\b/i,
+                                                            grams: 35,  step: 0.5,  one: "slice",  many: "slices" },
+    { re: /\b(tortilla|wrap|pita|rieska)\b/i,               grams: 60,  step: 1,    one: "wrap",   many: "wraps" },
+    { re: /\b(rice ?cake|riisikakku)\b/i,                   grams: 9,   step: 1,    one: "cake",   many: "cakes" }
+  ];
+  var BULK_STEP = 5;   // round bulk foods to the nearest 5 g …
+  var BULK_MIN = 10;   // … and drop a bulk food under 10 g (a sliver no one weighs)
 
+  function pieceInfo(name) {
+    var n = String(name || "");
+    for (var i = 0; i < PIECE_FOODS.length; i++) if (PIECE_FOODS[i].re.test(n)) return PIECE_FOODS[i];
+    return null;
+  }
+  var FRAC_GLYPH = { "0.25": "¼", "0.5": "½", "0.75": "¾" };
+  // "1 egg", "2 eggs", "½ banana", "1½ slices" — a count a human can actually serve.
+  function pieceAmount(pieces, info) {
+    var whole = Math.floor(pieces + 1e-9);
+    var frac = Math.round((pieces - whole) * 100) / 100;
+    var glyph = FRAC_GLYPH[String(frac)] || "";
+    var qty = whole > 0 ? (whole + glyph) : (glyph || "0");
+    var plural = pieces > 1 + 1e-9;
+    return qty + " " + (plural ? info.many : info.one);
+  }
+  // Snap continuous grams to a valid piece count (≥ one step, else drop).
+  function snapPiece(info, grams) {
+    var pieces = Math.round((num(grams) / info.grams) / info.step) * info.step;
+    pieces = Math.round(pieces * 100) / 100;
+    if (pieces < info.step - 1e-9) return { drop: true, pieces: 0, grams: 0 };
+    return { drop: false, pieces: pieces, grams: pieces * info.grams };
+  }
+  // Snap continuous grams to the bulk step (drop a sub-minimum sliver).
+  function snapBulk(grams) {
+    var g = Math.round(num(grams) / BULK_STEP) * BULK_STEP;
+    if (g < BULK_MIN) return { drop: true, grams: 0 };
+    return { drop: false, grams: g };
+  }
+  // Split a bulk food's day grams across the meals it belongs to, EXACTLY (shares
+  // sum to the day total). Small totals concentrate into the first meal instead of
+  // smearing into slivers; the first meal absorbs the rounding remainder.
+  function distributeBulk(total, meals) {
+    var out = {};
+    if (meals.length <= 1) { out[meals[0] != null ? meals[0] : 0] = total; return out; }
+    var base = Math.floor((total / meals.length) / BULK_STEP) * BULK_STEP;
+    var sum = 0;
+    if (base >= BULK_MIN) meals.forEach(function (mi) { out[mi] = base; sum += base; });
+    var first = meals[0];
+    out[first] = (out[first] || 0) + (total - sum); // absorb remainder + any dropped shares
+    return out;
+  }
+  function emptyTotals() { return { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 }; }
+
+  // Build a real, USABLE day from a model-designed layout. Unlike an even
+  // per-meal split (which forces every meal to carry a sliver of each food just
+  // to balance on its own — the source of "7 g of egg"), this balances at the
+  // DAY level, then snaps foods to human portions and distributes them across
+  // meals unevenly: piece foods (eggs, fruit, bread) move in whole/part units and
+  // live in ONE meal; bulk foods flex around them. `mealCodes[mi]` is the codes
+  // the model put in meal mi. Returns { meals, totals, estimated, unmet, gramsByCode }.
+  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs) {
+    var unmet = [], estimated = false;
+    function nameOf(c) { return (products[c] && products[c].product_name) || (recsByCode[c] && recsByCode[c].name) || c; }
+    function fiberOf(c) { return (recsByCode[c] && num(recsByCode[c].fiber)) || 0; }
+    function foodsFor(codes) { return codes.map(function (c) { return macroRow(recsByCode[c], products[c]); }); }
+
+    // Which meal a repair-added food should live in: the first non-snack meal.
+    var mainMeal = 0;
+    for (var mm = 0; mm < names.length; mm++) { if (!/snack/i.test(names[mm])) { mainMeal = mm; break; } }
+
+    // 1) Union of usable foods for the day + which meal(s) each was placed in.
+    var mealsByCode = {}, order = [];
     names.forEach(function (nm, mi) {
-      var w = weights[mi] / totalW;
-      var sub = {
-        label: nm, kcal: (dayTarget.kcal || 0) * w, protein: (dayTarget.protein || 0) * w,
-        fat: (dayTarget.fat || 0) * w, carbs: (dayTarget.carbs || 0) * w,
-        fiber: (dayTarget.fiber || 35) * w
-      };
-      // Drop foods with no usable macros (blank catalog line + failed product
-      // fetch) — they'd otherwise show as a 0-kcal "food" the solver inflates.
-      var codes = [], foods = [];
       (mealCodes[mi] || []).forEach(function (c) {
         var f = macroRow(recsByCode[c], products[c]);
-        if (num(f.protein) + num(f.fat) + num(f.carbs) > 0.5) { codes.push(c); foods.push(f); }
+        if (num(f.protein) + num(f.fat) + num(f.carbs) <= 0.5) return; // no macros → skip
+        if (!mealsByCode[c]) { mealsByCode[c] = []; order.push(c); }
+        if (mealsByCode[c].indexOf(mi) < 0) mealsByCode[c].push(mi);
       });
-      if (!foods.length) return;
+    });
+    if (!order.length) return { meals: [], totals: emptyTotals(), estimated: false, unmet: unmet, gramsByCode: {} };
 
-      // Solve this meal; if a macro is short, add a DIET-APPROPRIATE food to it.
-      var res = SOLVER.solvePortions(sub, foods);
-      for (var r = 0; r < repairRounds && !res.ok; r++) {
-        var added = false;
-        res.failed.forEach(function (fc) {
-          var q = repairQueries(fc.constraint, prefs); if (!q.length) return;
-          var extra = gatherFoods(catalog, q).filter(function (rec) { return codes.indexOf(rec.code) < 0; });
-          extra.forEach(function (rec) {
-            codes.push(rec.code);
-            if (!recsByCode[rec.code]) recsByCode[rec.code] = rec;
-            ensureProduct(products, rec); // repair foods are never fetched — back them with catalog macros
-            foods.push(macroRow(rec, products[rec.code]));
-          });
-          if (extra.length) added = true;
+    // Add diet-appropriate foods for any failed constraint; assign them to the
+    // main meal. Mutates `list` (+ recsByCode/products/mealsByCode). Returns added?.
+    function addRepair(failed, list) {
+      var added = false;
+      failed.forEach(function (fc) {
+        var q = repairQueries(fc.constraint, prefs); if (!q.length) return;
+        var extra = gatherFoods(catalog, q).filter(function (rec) { return list.indexOf(rec.code) < 0; });
+        extra.forEach(function (rec) {
+          list.push(rec.code);
+          if (!recsByCode[rec.code]) recsByCode[rec.code] = rec;
+          ensureProduct(products, rec); // repair foods are never fetched — back them with catalog macros
+          if (!mealsByCode[rec.code]) mealsByCode[rec.code] = [mainMeal];
         });
-        if (!added) break;
-        res = SOLVER.solvePortions(sub, foods);
-      }
-      if (!res.ok) {
-        unmet.push((dayTarget.label || "a day") + " · " + nm + ": " +
-          res.failed.map(function (fc) { return fc.constraint + " " + fc.actual + "/" + fc.target; }).join(", "));
-      }
+        if (extra.length) added = true;
+      });
+      return added;
+    }
 
+    // 2) Solve the whole DAY (continuous grams), repairing short macros.
+    var res = SOLVER.solvePortions(dayTarget, foodsFor(order));
+    for (var r = 0; r < repairRounds && !res.ok; r++) {
+      if (!addRepair(res.failed, order)) break;
+      res = SOLVER.solvePortions(dayTarget, foodsFor(order));
+    }
+    var rawGrams = {};
+    order.forEach(function (c, i) { rawGrams[c] = res.grams[i]; });
+
+    // 3) Portion realism. Snap PIECE foods to whole/part units and FIX them; then
+    // re-solve the BULK foods for the macros that remain, and snap those to a gram
+    // step. Eggs move in units and the rest of the day flexes around them.
+    var pieceCodes = order.filter(function (c) { return pieceInfo(nameOf(c)); });
+    var bulkCodes = order.filter(function (c) { return !pieceInfo(nameOf(c)); });
+
+    var dayGrams = {}, dayPieces = {};
+    pieceCodes.forEach(function (c) {
+      var s = snapPiece(pieceInfo(nameOf(c)), rawGrams[c]);
+      if (s.drop) { delete mealsByCode[c]; return; }
+      dayGrams[c] = s.grams; dayPieces[c] = s.pieces;
+    });
+
+    var fixedCodes = Object.keys(dayGrams);
+    var contrib = SOLVER.mealTotals(foodsFor(fixedCodes), fixedCodes.map(function (c) { return dayGrams[c]; }));
+    var residual = {
+      kcal: Math.max(0, num(dayTarget.kcal) - contrib.kcal),
+      protein: Math.max(0, num(dayTarget.protein) - contrib.protein),
+      fat: Math.max(0, num(dayTarget.fat) - contrib.fat),
+      carbs: Math.max(0, num(dayTarget.carbs) - contrib.carbs),
+      fiber: Math.max(0, num(dayTarget.fiber) - contrib.fiber)
+    };
+    var bres = SOLVER.solvePortions(residual, foodsFor(bulkCodes));
+    for (var rb = 0; rb < repairRounds && !bres.ok; rb++) {
+      if (!addRepair(bres.failed, bulkCodes)) break;
+      bres = SOLVER.solvePortions(residual, foodsFor(bulkCodes));
+    }
+    bulkCodes.forEach(function (c, i) {
+      var s = snapBulk(bres.grams[i]);
+      if (s.drop) { delete mealsByCode[c]; return; }
+      dayGrams[c] = s.grams;
+    });
+
+    // 4) Distribute each snapped day total across the meals it belongs to. Piece
+    // foods go whole into ONE meal (their first placement) — 2 eggs at breakfast,
+    // not ½ an egg in four meals; bulk foods split across their meals.
+    var perMeal = names.map(function () { return {}; }); // mi -> code -> grams
+    var gramsByCode = {};
+    Object.keys(dayGrams).forEach(function (c) {
+      var meals = (mealsByCode[c] || []); if (!meals.length) meals = [mainMeal];
+      var alloc;
+      if (pieceInfo(nameOf(c))) { alloc = {}; alloc[meals[0]] = dayGrams[c]; }
+      else alloc = distributeBulk(dayGrams[c], meals);
+      Object.keys(alloc).forEach(function (mi) {
+        var g = alloc[mi]; if (!(g > 0)) return;
+        perMeal[mi][c] = (perMeal[mi][c] || 0) + g;
+        gramsByCode[c] = (gramsByCode[c] || 0) + g;
+      });
+    });
+
+    // 5) Build each meal's items (with human amounts) and totals; drop empty meals.
+    var outMeals = [];
+    names.forEach(function (nm, mi) {
+      var codes = Object.keys(perMeal[mi]); if (!codes.length) return;
       var items = [];
-      foods.forEach(function (f, i) {
-        var g = res.grams[i];
-        if (g < 5) return;
-        gramsByCode[f.code] = (gramsByCode[f.code] || 0) + g;
-        var t = FL.buildMealTotals([{ code: f.code, grams: g, fiber100: f.fiber }], products);
+      codes.forEach(function (c) {
+        var g = perMeal[mi][c], info = pieceInfo(nameOf(c));
+        var amount = info ? pieceAmount(Math.round((g / info.grams) / info.step) * info.step, info) : (Math.round(g) + " g");
+        var t = FL.buildMealTotals([{ code: c, grams: g, fiber100: fiberOf(c) }], products);
         if (t.estimated) estimated = true;
         items.push({
-          food: f.name, amount: Math.round(g) + " g",
+          food: nameOf(c), amount: amount,
           kcal: Math.round(t.totals.kcal), protein: round(t.totals.protein),
           fat: round(t.totals.fat), carbs: round(t.totals.carbs), fiber: round(t.totals.fiber)
         });
       });
-      if (items.length) {
-        var mt = items.reduce(function (a, it) {
-          a.kcal += it.kcal; a.protein += it.protein; a.fat += it.fat; a.carbs += it.carbs; a.fiber += it.fiber; return a;
-        }, { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 });
-        outMeals.push({ name: nm, items: items, totals: {
-          kcal: Math.round(mt.kcal), protein: round(mt.protein), fat: round(mt.fat), carbs: round(mt.carbs), fiber: round(mt.fiber)
-        } });
-      }
+      var mt = items.reduce(function (a, it) {
+        a.kcal += it.kcal; a.protein += it.protein; a.fat += it.fat; a.carbs += it.carbs; a.fiber += it.fiber; return a;
+      }, emptyTotals());
+      outMeals.push({ name: nm, items: items, totals: {
+        kcal: Math.round(mt.kcal), protein: round(mt.protein), fat: round(mt.fat), carbs: round(mt.carbs), fiber: round(mt.fiber)
+      } });
     });
 
+    // 6) Day totals from the final (snapped, distributed) grams, then verify —
+    // report honestly if snapping to real portions left a macro out of range.
     var dayItems = Object.keys(gramsByCode).map(function (c) {
-      return { code: c, grams: gramsByCode[c], fiber100: (recsByCode[c] && num(recsByCode[c].fiber)) || 0 };
+      return { code: c, grams: gramsByCode[c], fiber100: fiberOf(c) };
     });
     var dayTot = FL.buildMealTotals(dayItems, products);
-    return {
-      meals: outMeals,
-      totals: { kcal: dayTot.totals.kcal, protein: dayTot.totals.protein, fat: dayTot.totals.fat,
-                carbs: dayTot.totals.carbs, fiber: dayTot.totals.fiber },
-      estimated: estimated || dayTot.estimated, unmet: unmet, gramsByCode: gramsByCode
-    };
+    var totals = { kcal: dayTot.totals.kcal, protein: dayTot.totals.protein, fat: dayTot.totals.fat,
+                   carbs: dayTot.totals.carbs, fiber: dayTot.totals.fiber };
+    var failed = SOLVER.verify(totals, dayTarget);
+    if (failed.length) {
+      unmet.push((dayTarget.label || "a day") + ": " +
+        failed.map(function (fc) { return fc.constraint + " " + fc.actual + "/" + fc.target; }).join(", "));
+    }
+    return { meals: outMeals, totals: totals, estimated: estimated || dayTot.estimated,
+             unmet: unmet, gramsByCode: gramsByCode };
   }
 
   // Build a shopping list grouped by brand (a stand-in "retailer" — real
@@ -1260,7 +1384,12 @@
     gatherFoods: gatherFoods,
     voteFoods: voteFoods,
     repeatSeq: repeatSeq,
-    bestHit: bestHit
+    bestHit: bestHit,
+    pieceInfo: pieceInfo,
+    pieceAmount: pieceAmount,
+    snapPiece: snapPiece,
+    snapBulk: snapBulk,
+    distributeBulk: distributeBulk
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

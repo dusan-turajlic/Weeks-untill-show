@@ -146,8 +146,18 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     re-searched (`bestHit`), and PROMOTED to its real product (barcode, micros)
     when it now matches — only the genuinely unstocked foods fall through to
     `guessMacros`. One food per call, like `guessMacros`.
+  - **Portion realism** — `assembleLayoutDay` balances at the DAY level (not an
+    even per-meal split, which forces every meal to carry a sliver of each food —
+    the source of "7 g of egg"). It then snaps foods to human portions: PIECE
+    foods (`pieceInfo` — eggs, fruit, bread) move in whole/part units (¼ egg,
+    ½ banana) and are concentrated into ONE meal; BULK foods snap to a 5 g step,
+    dropping sub-10 g slivers (`snapPiece`/`snapBulk`/`distributeBulk`). Piece
+    foods are fixed, the day's bulk foods re-solve around them, and the final
+    day totals are re-`verify()`d so any drift from real portions is reported.
+    Meals are deliberately uneven — a day hits its macros, individual meals need
+    not each be a balanced plate.
 
-  Tests: `node test/harness.test.js` (voting + translation rescue, mock engine).
+  Tests: `node test/harness.test.js` (voting + translation + portion realism).
 
 ## On-device model selection (Path A)
 
