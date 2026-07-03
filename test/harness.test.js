@@ -3,8 +3,9 @@
  *   - voteFoods(): consensus across repeated model runs (drops one-off noise).
  *   - buildPlan() fan-out + voting: designMeal asked `votes` times, voted.
  *   - Fuzzy/translation search: an English-designing model + a LOCAL-LANGUAGE
- *     (Finnish) catalog — foods must be rescued to REAL products via
- *     engine.translateFoods, not lost to AI macro guesses.
+ *     (Finnish) catalog — foods rescued to REAL products via translateFoods.
+ *   - Portion realism: eggs/fruit/bread snap to whole/part UNITS and live in one
+ *     meal; bulk foods snap to a gram step; no "7 g of egg" slivers.
  *
  * No browser, no WebGPU, no live model: a mock engine replays canned outputs.
  * Run with:  node test/harness.test.js
@@ -21,7 +22,6 @@ function ok(name, cond, extra) {
 
 // ---- 1) voteFoods: pure consensus logic ---------------------------------
 (function () {
-  // "chicken" & "oats" in all 3 runs; "unicorn" once → dropped. Case/space folded.
   var winners = planner.voteFoods([
     ["Chicken breast", "Oats", "Unicorn"],
     ["chicken breast", "oats"],
@@ -30,98 +30,386 @@ function ok(name, cond, extra) {
   ok("vote keeps foods agreed by a majority", winners.length === 2 &&
      /chicken/i.test(winners[0]) && /oats/i.test(winners[1]), winners.join(","));
   ok("vote drops one-off noise", winners.every(function (w) { return !/unicorn|kale/i.test(w); }), winners.join(","));
-
-  // With min backfill, a starved vote still yields foods (next most-agreed).
   var few = planner.voteFoods([["a", "b"], ["c"], ["d"]], { threshold: 3, min: 2 });
   ok("vote backfills to `min` when consensus is thin", few.length === 2, few.join(","));
-
-  // votes===1 semantics: single run passes through unchanged.
   var one = planner.voteFoods([["Tofu", "Rice"]]);
   ok("single run passes through", one.length === 2 && one[0] === "Tofu" && one[1] === "Rice", one.join(","));
 })();
 
-// ---- 2) buildPlan: fan-out + voting + translation rescue -----------------
+// ---- 2) portion realism: pure snap helpers ------------------------------
+(function () {
+  var egg = planner.pieceInfo("Kananmuna");
+  ok("pieceInfo recognises eggs (Finnish)", !!egg && egg.one === "egg");
+  ok("pieceInfo recognises bananas", !!planner.pieceInfo("Banaani"));
+  ok("pieceInfo ignores eggplant (word-boundary)", planner.pieceInfo("Eggplant curry") === null);
+  ok("pieceInfo ignores bulk foods", planner.pieceInfo("chicken breast") === null && planner.pieceInfo("Riisi") === null);
 
-// Catalog in FINNISH (positional: [code,name,brand,country,serv,unit,fiber,carbs,fat,protein] /100 g).
-var CATALOG = [
-  ["k1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
-  ["k2", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
-  ["k3", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
-  ["k4", "Linssit", "Rainbow", "fi", 100, "g", 8, 20, 0.4, 9],
-  ["k5", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
-  ["k6", "Banaani", "Chiquita", "fi", 100, "g", 2.6, 23, 0.3, 1.1]
-].map(function (a) { return JSON.stringify(a); }).join("\n");
-var catalog = fl.parseCatalog(CATALOG);
+  ok("7 g of egg snaps to a quarter, not grams", (function () {
+    var s = planner.snapPiece(egg, 7); return !s.drop && s.pieces === 0.25; })());
+  ok("3 g of egg is dropped (below one step)", planner.snapPiece(egg, 3).drop === true);
+  ok("55 g of egg snaps to one whole egg", (function () {
+    var s = planner.snapPiece(egg, 55); return !s.drop && s.pieces === 1 && s.grams === 50; })());
 
+  ok("pieceAmount reads like a human count", planner.pieceAmount(1, egg) === "1 egg" &&
+     planner.pieceAmount(2, egg) === "2 eggs" && planner.pieceAmount(0.5, egg) === "½ egg" &&
+     planner.pieceAmount(1.5, egg) === "1½ eggs" && planner.pieceAmount(0.25, egg) === "¼ egg");
+
+  ok("bulk snaps to 5 g and drops sub-10 g slivers",
+     planner.snapBulk(42).grams === 40 && planner.snapBulk(12).grams === 10 && planner.snapBulk(7).drop === true);
+
+  var d3 = planner.distributeBulk(200, [0, 1, 2]);
+  ok("distributeBulk partitions exactly", d3[0] + d3[1] + d3[2] === 200);
+  ok("distributeBulk concentrates a small total into one meal", (function () {
+    var d = planner.distributeBulk(12, [0, 1, 2]);
+    return Object.keys(d).length === 1 && d[0] === 12; })());
+})();
+
+// ---- 2b) reasoning step: classification -> portion descriptor -----------
+(function () {
+  var can = planner.classToDescriptor({ kind: "unit", unit: "can", unitGrams: 120, minFraction: 0.5 }, "canned tuna");
+  ok("classify unit → piece descriptor", !!can && can.grams === 120 && can.step === 0.5 && can.one === "can" && can.many === "cans");
+  ok("classify bulk → null (weighed, not counted)", planner.classToDescriptor({ kind: "bulk" }, "rice") === null);
+  ok("obvious-bulk food vetoes a mis-called unit", planner.classToDescriptor({ kind: "unit", unitGrams: 15 }, "olive oil") === null);
+  ok("wild unit weight with no fallback → null", planner.classToDescriptor({ kind: "unit", unit: "x", unitGrams: 5000 }, "mystery") === null);
+  ok("minFraction snaps to ¼/½/whole", (function () {
+    var a = planner.classToDescriptor({ kind: "unit", unit: "u", unitGrams: 60, minFraction: 0.3 }, "sausage");
+    var b = planner.classToDescriptor({ kind: "unit", unit: "u", unitGrams: 60, minFraction: 2 }, "sausage");
+    return a.step === 0.25 && b.step === 1; })());
+
+  var pc = planner.buildPortionClass(
+    { foods: [{ name: "canned tuna", kind: "unit", unit: "can", unitGrams: 120, minFraction: 0.5 }, { name: "rice", kind: "bulk" }] },
+    [{ code: "t1", name: "canned tuna" }, { code: "r1", name: "rice" }]);
+  ok("buildPortionClass keys unit foods by code, omits bulk", !!pc.t1 && pc.t1.one === "can" && !pc.r1);
+})();
+
+// ---- 2c) calorie split + question mechanism (pure) ----------------------
+(function () {
+  var W = planner.calorieWeights;
+  var even = W("even", ["Breakfast", "Lunch", "Dinner"]);
+  ok("even split weights all mains equally", Math.abs(even[0] - even[2]) < 1e-9 && Math.abs(even[0] - 1 / 3) < 1e-9);
+  var din = W("dinner", ["Breakfast", "Lunch", "Dinner"]);
+  ok("dinner split ramps toward the evening", din[2] > din[1] && din[1] > din[0], din.join(","));
+  var bfast = W("breakfast", ["Breakfast", "Lunch", "Dinner"]);
+  ok("breakfast split front-loads the morning", bfast[0] > bfast[1] && bfast[1] > bfast[2], bfast.join(","));
+  var withSnack = W("even", ["Breakfast", "Lunch", "Dinner", "Snack"]);
+  ok("snacks are always lighter than mains", withSnack[3] < withSnack[0], withSnack.join(","));
+
+  var d = planner.distributeBulk(200, [0, 1], { 0: 0.25, 1: 0.75 });
+  ok("weighted distributeBulk tilts to the heavier meal and sums exactly", d[1] > d[0] && (d[0] + d[1] === 200), JSON.stringify(d));
+
+  ok("sanitizeQuestion drops a question with no real choices", planner.sanitizeQuestion({ prompt: "Type your goal", options: [] }) === null);
+  ok("sanitizeQuestion drops a promptless question", planner.sanitizeQuestion({ options: [{ label: "a" }, { label: "b" }] }) === null);
+  var sq = planner.sanitizeQuestion({ prompt: "Pick one", options: [{ label: "A" }, { label: "A" }, { label: "B" }] });
+  ok("sanitizeQuestion cleans + dedupes options, deriving ids", !!sq && sq.options.length === 2 && sq.options[0].id === "a");
+  var cq = planner.buildCalorieSplitQuestion();
+  ok("calorie question is options-only with 4 choices", !!cq && cq.id === "calorie-split" && cq.options.length === 4);
+  ok("answerToBuildOpts maps a calorie answer to a rebuild patch",
+     planner.answerToBuildOpts("calorie-split", "dinner").calorieSplit === "dinner");
+})();
+
+// ---- shared mock host ----------------------------------------------------
 function macro(kcal, p, f, c) {
   return { breakdown: { macros: { energy_kcal: kcal, proteins: p, fat: f, carbohydrates: c } } };
 }
-var PRODUCTS = {
-  k1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
-  k2: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
-  k3: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
-  k4: Object.assign(macro(116, 9, 0.4, 20), { product_name: "Linssit" }),
-  k5: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
-  k6: Object.assign(macro(96, 1.1, 0.3, 23), { product_name: "Banaani" })
-};
-function fakeFetch(url) {
-  var m = url.match(/products\/(\w+)\.json$/);
-  if (m && PRODUCTS[m[1]]) {
-    return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(PRODUCTS[m[1]]); } });
-  }
-  return Promise.resolve({ ok: false, status: 404 });
+function catalogOf(rows) {
+  return fl.parseCatalog(rows.map(function (a) { return JSON.stringify(a); }).join("\n"));
+}
+function fetchOf(products) {
+  return function (url) {
+    var m = url.match(/products\/(\w+)\.json$/);
+    if (m && products[m[1]]) {
+      return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(products[m[1]]); } });
+    }
+    return Promise.resolve({ ok: false, status: 404 });
+  };
+}
+// English -> local (Finnish) search terms for the fuzzy layer.
+function translatorOf(dict, counter) {
+  return function (ctx) {
+    if (counter) counter.n++;
+    return Promise.resolve({ terms: (ctx.foods || []).map(function (nm) {
+      return { name: nm, queries: dict[String(nm).toLowerCase()] || [] };
+    }) });
+  };
 }
 
-// English → Finnish search terms the catalog actually uses.
-var FI = {
-  "chicken breast": ["kananrinta"], "olive oil": ["oliivioljy"],
-  "rolled oats": ["kaurahiutaleet"], "lentils": ["linssit"],
-  "rice": ["riisi"], "banana": ["banaani"]
-};
-var ENGLISH_FOODS = Object.keys(FI);
+// ---- 3) fan-out + voting + translation rescue ---------------------------
+function scenarioVoting() {
+  var catalog = catalogOf([
+    ["k1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["k2", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["k3", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["k4", "Linssit", "Rainbow", "fi", 100, "g", 8, 20, 0.4, 9],
+    ["k5", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["k6", "Banaani", "Chiquita", "fi", 100, "g", 2.6, 23, 0.3, 1.1]
+  ]);
+  var products = {
+    k1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
+    k2: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    k3: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
+    k4: Object.assign(macro(116, 9, 0.4, 20), { product_name: "Linssit" }),
+    k5: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
+    k6: Object.assign(macro(96, 1.1, 0.3, 23), { product_name: "Banaani" })
+  };
+  var FI = { "chicken breast": ["kananrinta"], "olive oil": ["oliivioljy"], "rolled oats": ["kaurahiutaleet"],
+             "lentils": ["linssit"], "rice": ["riisi"], "banana": ["banaani"] };
+  var ENGLISH = Object.keys(FI);
+  var designCalls = 0, tr = { n: 0 };
+  var engine = {
+    designMeal: function () { return Promise.resolve({ foods: ENGLISH.concat(["unicorn steak " + (designCalls++)]) }); },
+    translateFoods: translatorOf(FI, tr)
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1620, protein: 120, fat: 60, carbs: 150, fiber: 30 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 3
+  }).then(function (plan) {
+    ok("plan built via engine path", plan && plan.days && plan.days.length === 1);
+    ok("designMeal fanned out (votes×meals calls)", designCalls === 3 * 2, "calls=" + designCalls);
+    ok("translateFoods was used for fuzzy search", tr.n > 0);
+    var names = [];
+    plan.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { names.push(it.food); }); });
+    plan.shoppingList.forEach(function (rr) { rr.items.forEach(function (it) { names.push(it.name); }); });
+    ok("voting dropped the one-off noise food", names.every(function (n) { return !/unicorn/i.test(n); }), names.join("|"));
+    ok("foods rescued to REAL Finnish products", names.some(function (n) { return /Kananrinta/i.test(n); }), names.join("|"));
+    ok("real products aren't flagged AI-estimated", !/AI-estimated/i.test(plan.micronutrients), plan.micronutrients);
+    ok("every meal has items", plan.days[0].meals.every(function (m) { return m.items.length > 0; }));
+  });
+}
 
-var designCalls = 0, translateCalled = 0;
-var mockEngine = {
-  // Designs in English; adds a UNIQUE noise food each call so voting must drop it.
-  designMeal: function () {
-    var noise = "unicorn steak " + (designCalls++);
-    return Promise.resolve({ foods: ENGLISH_FOODS.concat([noise]) });
-  },
-  // The fuzzy-search layer: English name -> local-language catalog terms.
-  translateFoods: function (ctx) {
-    translateCalled++;
-    return Promise.resolve({ terms: (ctx.foods || []).map(function (nm) {
-      return { name: nm, queries: FI[String(nm).toLowerCase()] || [] };
-    }) });
-  }
-};
+// ---- 4) portion realism through the whole pipeline ----------------------
+function scenarioPortions() {
+  var catalog = catalogOf([
+    ["e1", "Kananmuna", "Kotimaista", "fi", 50, "kpl", 0, 1, 11, 13],
+    ["o1", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["c1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["r1", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["l1", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0]
+  ]);
+  var products = {
+    e1: Object.assign(macro(155, 13, 11, 1), { product_name: "Kananmuna" }),
+    o1: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
+    c1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
+    r1: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
+    l1: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" })
+  };
+  var FI = { "eggs": ["kananmuna"], "rolled oats": ["kaurahiutaleet"], "chicken breast": ["kananrinta"],
+             "rice": ["riisi"], "olive oil": ["oliivioljy"] };
+  // Model puts eggs in TWO meals (breakfast + dinner) to prove concentration.
+  var byMeal = {
+    Breakfast: ["eggs", "rolled oats"],
+    Lunch: ["chicken breast", "rice"],
+    Dinner: ["chicken breast", "olive oil", "eggs"]
+  };
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["chicken breast", "rice"] }); },
+    translateFoods: translatorOf(FI)
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1870, protein: 130, fat: 70, carbs: 180, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 3,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    var day = plan.days[0], allItems = [];
+    day.meals.forEach(function (m, mi) { m.items.forEach(function (it) { allItems.push({ mi: mi, it: it }); }); });
 
-var io = { catalog: catalog, fetch: fakeFetch };
-var dayTargets = [{ key: "d", label: "Every day", count: 7,
-  kcal: 1620, protein: 120, fat: 60, carbs: 150, fiber: 30 }];
+    var eggs = allItems.filter(function (x) { return /muna|egg/i.test(x.it.food); });
+    ok("eggs made it into the plan as a real product", eggs.length > 0, JSON.stringify(day.meals.map(function (m) { return m.items.map(function (i) { return i.food + " " + i.amount; }); })));
+    ok("eggs are shown in UNITS, never grams",
+       eggs.every(function (x) { return /\begg/i.test(x.it.amount) && !/\bg$/.test(x.it.amount); }),
+       eggs.map(function (x) { return x.it.amount; }).join("|"));
+    ok("eggs are concentrated in ONE meal (not smeared across meals)",
+       (function () { var m = {}; eggs.forEach(function (x) { m[x.mi] = 1; }); return Object.keys(m).length === 1; })(),
+       "meals=" + eggs.map(function (x) { return x.mi; }).join(","));
 
-planner.buildPlan({
-  dayTargets: dayTargets, country: "Finland", currency: "EUR", weeklyBudget: 70,
-  prefs: "none", mealsPerDay: 2, io: io, engine: mockEngine, votes: 3
-}).then(function (plan) {
-  ok("plan built via engine path", plan && plan.days && plan.days.length === 1);
-  ok("designMeal fanned out (votes×meals calls)", designCalls === 3 * 2, "calls=" + designCalls);
-  ok("translateFoods was used for fuzzy search", translateCalled > 0);
+    var gramItems = allItems.filter(function (x) { return /\bg$/.test(x.it.amount); });
+    ok("no bulk food is a sub-10 g sliver", gramItems.every(function (x) { return parseFloat(x.it.amount) >= 10; }),
+       gramItems.map(function (x) { return x.it.food + " " + x.it.amount; }).join("|"));
+    ok("bulk grams are rounded to 5 g", gramItems.every(function (x) { return parseFloat(x.it.amount) % 5 === 0; }),
+       gramItems.map(function (x) { return x.it.amount; }).join("|"));
 
-  var names = [];
-  plan.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { names.push(it.food); }); });
-  plan.shoppingList.forEach(function (r) { r.items.forEach(function (it) { names.push(it.name); }); });
+    ok("day-level solve still roughly hits protein", day.totals.protein >= 130 - 12, "got " + day.totals.protein);
+    ok("meals are genuinely different (not identical plates)",
+       JSON.stringify(day.meals[0].items.map(function (i) { return i.food; })) !==
+       JSON.stringify(day.meals[1].items.map(function (i) { return i.food; })));
+    // Per-day totals equal the sum of the meal items shown (display matches solver).
+    var sumP = 0; day.meals.forEach(function (m) { m.items.forEach(function (it) { sumP += it.protein; }); });
+    ok("meal items sum to the day protein total", Math.abs(sumP - day.totals.protein) <= 1.5,
+       "items=" + sumP.toFixed(1) + " day=" + day.totals.protein);
+  });
+}
 
-  ok("voting dropped the one-off noise food", names.every(function (n) { return !/unicorn/i.test(n); }), names.join("|"));
-  ok("foods rescued to REAL Finnish products", names.some(function (n) { return /Kananrinta/i.test(n); }), names.join("|"));
-  ok("real products aren't flagged AI-estimated",
-     !/AI-estimated/i.test(plan.micronutrients), plan.micronutrients);
+// ---- 5) reasoning step end-to-end: an unknown food classified as a unit --
+function scenarioReasoning() {
+  var catalog = catalogOf([
+    ["t1", "Tonnikala", "Kotimaista", "fi", 120, "tolkki", 0, 0, 1, 26],
+    ["o1", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["r1", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["l1", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["b1", "Banaani", "Chiquita", "fi", 120, "kpl", 2.6, 23, 0.3, 1.1]
+  ]);
+  var products = {
+    t1: Object.assign(macro(116, 26, 1, 0), { product_name: "Tonnikala" }),
+    o1: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
+    r1: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
+    l1: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    b1: Object.assign(macro(96, 1.1, 0.3, 23), { product_name: "Banaani" })
+  };
+  var FI = { "canned tuna": ["tonnikala"], "rolled oats": ["kaurahiutaleet"], "rice": ["riisi"],
+             "olive oil": ["oliivioljy"], "banana": ["banaani"] };
+  var byMeal = { Breakfast: ["rolled oats", "banana"], Lunch: ["canned tuna", "rice", "olive oil"] };
+  var classifyInputs = null;
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["rice"] }); },
+    translateFoods: translatorOf(FI),
+    // The reasoning chat: a can of tuna is a UNIT you use whole/half; the rest is bulk.
+    classifyFoods: function (ctx) {
+      classifyInputs = (ctx.foods || []).slice();
+      return Promise.resolve({ foods: (ctx.foods || []).map(function (nm) {
+        return /tonnikala|tuna/i.test(nm)
+          ? { name: nm, kind: "unit", unit: "can", unitGrams: 120, minFraction: 0.5 }
+          : { name: nm, kind: "bulk" };
+      }) });
+    }
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1700, protein: 110, fat: 60, carbs: 190, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    ok("classifyFoods was consulted (reasoning ran)", !!classifyInputs && classifyInputs.length > 0);
+    ok("reasoning only sees AMBIGUOUS foods (known pieces skipped)",
+       classifyInputs.indexOf("Tonnikala") >= 0 && classifyInputs.indexOf("Banaani") < 0, (classifyInputs || []).join(","));
 
-  ok("every meal has items", plan.days[0].meals.every(function (m) { return m.items.length > 0; }));
+    var items = [];
+    plan.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { items.push(it); }); });
+    var tuna = items.filter(function (it) { return /tonnikala/i.test(it.food); });
+    ok("the reasoned unit food is shown in its unit, not grams",
+       tuna.length > 0 && tuna.every(function (it) { return /\bcan/i.test(it.amount) && !/\bg$/.test(it.amount); }),
+       tuna.map(function (it) { return it.amount; }).join("|"));
+    var banana = items.filter(function (it) { return /banaani/i.test(it.food); });
+    ok("regex fallback still portions a known piece (banana)",
+       banana.every(function (it) { return /banana/i.test(it.amount) && !/\bg$/.test(it.amount); }),
+       banana.map(function (it) { return it.amount; }).join("|"));
+    var gramItems = items.filter(function (it) { return /\bg$/.test(it.amount); });
+    ok("still no sub-10 g slivers", gramItems.every(function (it) { return parseFloat(it.amount) >= 10; }),
+       gramItems.map(function (it) { return it.food + " " + it.amount; }).join("|"));
+  });
+}
 
+// ---- 5) planQuestions: model-proposed, sanitized, critic-gated, w/ fallback
+function scenarioQuestions() {
+  return planner.planQuestions(null, {}).then(function (qs) {
+    ok("planQuestions falls back to the calorie question with no engine",
+       qs.length === 1 && qs[0].id === "calorie-split");
+    var eng1 = {
+      proposeQuestions: function () { return Promise.resolve({ questions: [
+        { id: "appetite", prompt: "When are you hungriest?", options: [{ label: "Morning" }, { label: "Evening" }] }] }); },
+      critiqueQuestion: function () { return Promise.resolve({ ok: true }); }
+    };
+    return planner.planQuestions(eng1, {}).then(function (qs2) {
+      ok("a good model question is kept AND the calorie split is still offered",
+         qs2.some(function (q) { return q.id === "appetite"; }) && qs2.some(function (q) { return q.id === "calorie-split"; }));
+      var eng2 = { proposeQuestions: function () { return Promise.resolve({ questions: [{ prompt: "Type your favourite food", options: [] }] }); } };
+      return planner.planQuestions(eng2, {}).then(function (qs3) {
+        ok("an un-pickable (free-text) question is dropped, fallback kept", qs3.length === 1 && qs3[0].id === "calorie-split");
+        var eng3 = {
+          proposeQuestions: function () { return Promise.resolve({ questions: [{ id: "x", prompt: "Confusing?", options: [{ label: "A" }, { label: "B" }] }] }); },
+          critiqueQuestion: function () { return Promise.resolve({ ok: false }); }
+        };
+        return planner.planQuestions(eng3, {}).then(function (qs4) {
+          ok("the question critic can veto a proposed question",
+             !qs4.some(function (q) { return q.id === "x"; }) && qs4.some(function (q) { return q.id === "calorie-split"; }));
+        });
+      });
+    });
+  });
+}
+
+// ---- 6) calorie split end-to-end: the day actually tilts to the evening --
+function scenarioCalorie() {
+  var catalog = catalogOf([
+    ["k1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["k2", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["k5", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7]
+  ]);
+  var products = {
+    k1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
+    k2: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    k5: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" })
+  };
+  var FI = { "chicken breast": ["kananrinta"], "olive oil": ["oliivioljy"], "rice": ["riisi"] };
+  var foods = ["chicken breast", "rice", "olive oil"]; // same foods each meal → all bulk span all meals
+  var targets = {};
+  var engine = {
+    designMeal: function (ctx) { targets[ctx.mealName] = ctx.target.kcal; return Promise.resolve({ foods: foods }); },
+    translateFoods: translatorOf(FI)
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1900, protein: 120, fat: 70, carbs: 190, fiber: 20 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 3,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1, calorieSplit: "dinner"
+  }).then(function (plan) {
+    ok("calorie split tilts the per-meal DESIGN targets to the evening",
+       targets.Dinner > targets.Breakfast, JSON.stringify(targets));
+    var kcal = {}; plan.days[0].meals.forEach(function (m) { kcal[m.name] = m.totals.kcal; });
+    ok("the assembled dinner carries more calories than breakfast",
+       kcal.Dinner > kcal.Breakfast, JSON.stringify(kcal));
+  });
+}
+
+// ---- 7) meal-coherence critic: incoherent meals are flagged in the note --
+function scenarioCritic() {
+  var catalog = catalogOf([
+    ["k1", "Kananrinta", "Kotimaista", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["k2", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["k3", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["k5", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["k6", "Banaani", "Chiquita", "fi", 120, "kpl", 2.6, 23, 0.3, 1.1]
+  ]);
+  var products = {
+    k1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Kananrinta" }),
+    k2: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    k3: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
+    k5: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
+    k6: Object.assign(macro(96, 1.1, 0.3, 23), { product_name: "Banaani" })
+  };
+  var FI = { "rolled oats": ["kaurahiutaleet"], "banana": ["banaani"], "chicken breast": ["kananrinta"],
+             "rice": ["riisi"], "olive oil": ["oliivioljy"] };
+  var byMeal = { Breakfast: ["rolled oats", "banana"], Lunch: ["chicken breast", "rice", "olive oil"] };
+  var reviewed = [];
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["rice"] }); },
+    translateFoods: translatorOf(FI),
+    // Flags Lunch, passes Breakfast — proves only flagged meals reach the note.
+    critiqueMeal: function (ctx) {
+      reviewed.push({ name: ctx.mealName, items: (ctx.items || []).slice() });
+      return Promise.resolve(/lunch/i.test(ctx.mealName)
+        ? { ok: false, issues: ["that's a lot of plain oil for one plate"] }
+        : { ok: true, issues: [] });
+    }
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1700, protein: 110, fat: 60, carbs: 190, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    ok("critiqueMeal ran on each meal of the day", reviewed.length === 2 &&
+       reviewed.some(function (r) { return /breakfast/i.test(r.name); }) &&
+       reviewed.some(function (r) { return /lunch/i.test(r.name); }), reviewed.map(function (r) { return r.name; }).join(","));
+    ok("critic receives the meal's items with amounts",
+       reviewed.every(function (r) { return r.items.length > 0 && r.items[0].amount; }));
+    ok("a flagged meal surfaces in the note", /Meal check/.test(plan.micronutrients) &&
+       /Lunch/.test(plan.micronutrients) && /plain oil/.test(plan.micronutrients), plan.micronutrients);
+    ok("a meal the critic passed is NOT flagged", !/Breakfast:/.test(plan.micronutrients), plan.micronutrients);
+  });
+}
+
+scenarioVoting().then(scenarioPortions).then(scenarioReasoning)
+  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {
-  console.error("buildPlan threw:", err && err.stack || err);
+  console.error("scenario threw:", err && err.stack || err);
   process.exit(1);
 });
