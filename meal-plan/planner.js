@@ -1353,8 +1353,11 @@
         }, pollMs);
         function progress(p) {
           lastTick = Date.now();
+          // Forward the raw 0..1 fraction (3rd arg) so a caller can drive a real
+          // progress bar; the text stays a friendly fallback for plain callers.
           onProgress("download", p && p.text ? p.text : ("Downloading model… " +
-            Math.round((p && p.progress || 0) * 100) + "%"));
+            Math.round((p && p.progress || 0) * 100) + "%"),
+            (p && typeof p.progress === "number") ? p.progress : null);
         }
         importWebLLM().then(function (webllm) {
           return detectGpuCaps().then(function (caps) {
