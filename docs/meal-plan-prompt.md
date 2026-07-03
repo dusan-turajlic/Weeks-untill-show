@@ -151,11 +151,19 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     the source of "7 g of egg"). It then snaps foods to human portions: PIECE
     foods (eggs, fruit, bread, …) move in whole/part units (¼ egg, ½ banana) and
     are concentrated into ONE meal; BULK foods snap to a 5 g step, dropping
-    sub-10 g slivers (`snapPiece`/`snapBulk`/`distributeBulk`). Piece foods are
-    fixed, the day's bulk foods re-solve around them, and the final day totals are
-    re-`verify()`d so any drift from real portions is reported. Meals are
-    deliberately uneven — a day hits its macros, individual meals need not each
-    be a balanced plate.
+    sub-10 g slivers (`snapPiece`/`snapBulk`). Piece foods are fixed, the day's
+    bulk foods re-solve around them, and the final day totals are re-`verify()`d so
+    any drift from real portions is reported.
+  - **Meal balance** — once the day's grams are fixed, `balanceMeals` decides WHICH
+    meal each gram lands in. Since moving grams between meals can't change the day
+    totals, it rebalances freely: each meal is filled toward its share of the day
+    (the calorie-split weights, snacks lighter), and — crucially — PROTEIN is
+    spread too, not just calories. Protein-dominant foods (chicken, fish, quark,
+    beans) fill each meal toward its protein share first so no meal is left
+    protein-less, then energy foods fill the remaining calorie gap; piece foods
+    stay whole in the one meal that most needs them. The result is every meal a
+    real, balanced plate (protein + carbs/fat), instead of a 560 kcal breakfast
+    next to an 88 kcal evening. 5 g steps, no sub-10 g slivers, day totals intact.
   - **Deterministic display polish** — the on-device plan is lifted toward a
     hand-written one WITHOUT leaning on the small model, by reading the foods the
     solver already chose: meal names get a descriptor from their biggest foods
@@ -178,8 +186,8 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     (`even` / `breakfast` / `lunch` / `dinner`). `calorieWeights(choice, mealNames)`
     turns that into a normalized per-meal weight (snacks always lighter) that
     drives BOTH the per-meal design targets (`buildPlan({calorieSplit})` → the
-    model designs a bigger dinner) and how shared bulk foods distribute
-    (`distributeBulk(total, meals, weights)` tilts toward the heavier meal). Piece
+    model designs a bigger dinner) and the per-meal shares `balanceMeals` fills to
+    (so the assembled day actually tilts toward the heavier meal). Piece
     foods stay meal-appropriate. It's a whole-diet decision: `index.html` offers it
     as an options-only "Adjust your day" card that **rebuilds** the plan, so the
     diet is reshaped before products are re-found.

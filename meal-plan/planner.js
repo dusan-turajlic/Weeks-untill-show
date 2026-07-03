@@ -431,6 +431,105 @@
     out[heavy] = (out[heavy] || 0) + (total - sum); // heaviest meal absorbs remainder + dropped shares
     return out;
   }
+
+  // Balance the day across meals. Each food's TOTAL day grams are fixed (the solver
+  // already sized them to hit the day's macros), so moving grams between meals can
+  // NOT change the day totals — only WHICH meal a gram lands in. That's the lever:
+  // instead of dumping every gram of a calorie-dense food into the one meal it was
+  // designed into (the "568 kcal breakfast, 88 kcal evening" problem), each meal is
+  // filled toward its share of the day so every meal is a real, balanced plate.
+  //   • Shares come from the meal weights (even by default, or the user's calorie
+  //     split), snacks lighter.
+  //   • PROTEIN is spread too, not just calories: protein-dominant foods (chicken,
+  //     fish, quark, beans) fill each meal toward its PROTEIN share, so no meal is
+  //     left protein-less; energy foods (grains, oils, seeds) then fill the
+  //     remaining CALORIE gap. That gives each meal a protein + carbs/fat plate.
+  //   • PIECE foods (eggs, fruit, bread) stay WHOLE in ONE meal — the designed meal
+  //     that most needs that food's macro — never smeared.
+  //   • BULK foods fill in 5 g steps (no sub-10 g slivers), preferring the meals
+  //     they were designed into and spilling to others only to even the day out.
+  // Returns perMeal: [ { code: grams } ] aligned to names. Every gram is placed, so
+  // sum(perMeal) === dayGrams and the macro guarantees are untouched.
+  // `macros[code]` is per-100 g { protein, carbs, fat }.
+  function balanceMeals(dayGrams, macros, isPiece, mealsByCode, weights, nMeals, mainMeal) {
+    nMeals = Math.max(1, nMeals | 0);
+    mainMeal = mainMeal || 0;
+    var perMeal = [], curK = [], curP = [], i;
+    for (i = 0; i < nMeals; i++) { perMeal.push({}); curK.push(0); curP.push(0); }
+    var codes = Object.keys(dayGrams).filter(function (c) { return dayGrams[c] > 0; });
+    if (nMeals === 1) { codes.forEach(function (c) { perMeal[0][c] = dayGrams[c]; }); return perMeal; }
+
+    function mac(c) { return macros[c] || {}; }
+    function protPerG(c) { return num(mac(c).protein) / 100; }
+    function densOf(c) { var m = mac(c); return (4 * num(m.protein) + 4 * num(m.carbs) + 9 * num(m.fat)) / 100; }
+    // A food is "protein-dominant" when protein carries most of its calories — that's
+    // what makes it the meal's protein anchor rather than an energy filler.
+    function isProteinFood(c) {
+      var m = mac(c), p = 4 * num(m.protein);
+      return num(m.protein) > 5 && p >= 4 * num(m.carbs) && p >= 9 * num(m.fat);
+    }
+    var kcalOf = function (c) { return dayGrams[c] * densOf(c); };
+    var totalKcal = codes.reduce(function (s, c) { return s + kcalOf(c); }, 0);
+    var totalProt = codes.reduce(function (s, c) { return s + dayGrams[c] * protPerG(c); }, 0);
+    var W = (weights && weights.length === nMeals) ? weights.slice() : null;
+    var wsum = W ? W.reduce(function (a, b) { return a + b; }, 0) : 0;
+    if (!W || !(wsum > 0)) { W = []; for (i = 0; i < nMeals; i++) W.push(1); wsum = nMeals; }
+    var Tk = W.map(function (w) { return totalKcal * w / wsum; });
+    var Tp = W.map(function (w) { return totalProt * w / wsum; });
+    function needK(mi) { return Tk[mi] - curK[mi]; }
+    function needP(mi) { return Tp[mi] - curP[mi]; }
+    function designedOf(c) { var m = mealsByCode[c]; return (m && m.length) ? m : [mainMeal]; }
+    function place(c, mi, g) { if (!(g > 0)) return; perMeal[mi][c] = (perMeal[mi][c] || 0) + g; curK[mi] += g * densOf(c); curP[mi] += g * protPerG(c); }
+    var allMeals = []; for (i = 0; i < nMeals; i++) allMeals.push(i);
+
+    // Distribute one food's grams by a per-meal NEED (protein or calories) in 5 g
+    // steps, preferring its designed meals, then spilling, then merging dregs.
+    function distribute(c, needFn, perGain) {
+      var left = dayGrams[c];
+      function fill(meals) {
+        meals.filter(function (mi) { return needFn(mi) > perGain(c) * BULK_MIN * 0.5; })
+             .sort(function (x, y) { return needFn(y) - needFn(x); })
+             .forEach(function (mi) {
+          if (left <= 0) return;
+          var pg = perGain(c);
+          var gWant = pg > 0 ? needFn(mi) / pg : left;
+          var g = Math.round(gWant / BULK_STEP) * BULK_STEP;
+          if (g > left) g = Math.floor(left / BULK_STEP) * BULK_STEP;
+          if (g < BULK_MIN) return;
+          place(c, mi, g); left -= g;
+        });
+      }
+      fill(designedOf(c));
+      if (left > 0) fill(allMeals);
+      if (left > 0) {
+        var host = null;
+        [designedOf(c), allMeals].forEach(function (set) {
+          if (host != null) return;
+          set.forEach(function (mi) { if (perMeal[mi][c] && (host == null || curK[mi] < curK[host])) host = mi; });
+        });
+        if (host == null) { host = designedOf(c)[0]; designedOf(c).forEach(function (mi) { if (curK[mi] < curK[host]) host = mi; }); }
+        place(c, host, left);
+      }
+    }
+
+    // 1) Piece foods: whole into the ONE designed meal that most needs that food's
+    // macro (protein for a protein piece, calories otherwise).
+    codes.filter(isPiece).sort(function (a, b) { return kcalOf(b) - kcalOf(a); }).forEach(function (c) {
+      var d = designedOf(c), prot = isProteinFood(c), best = d[0];
+      d.forEach(function (mi) { if ((prot ? needP(mi) : needK(mi)) > (prot ? needP(best) : needK(best))) best = mi; });
+      place(c, best, dayGrams[c]);
+    });
+    // 2) Bulk PROTEIN foods first (richest protein first), spread by protein need —
+    // so every meal gets a protein anchor before energy foods fill the calories.
+    codes.filter(function (c) { return !isPiece(c) && isProteinFood(c); })
+         .sort(function (a, b) { return protPerG(b) - protPerG(a); })
+         .forEach(function (c) { distribute(c, needP, protPerG); });
+    // 3) Bulk ENERGY foods (grains, oils, seeds), spread by the remaining calorie gap.
+    codes.filter(function (c) { return !isPiece(c) && !isProteinFood(c); })
+         .sort(function (a, b) { return kcalOf(b) - kcalOf(a); })
+         .forEach(function (c) { distribute(c, needK, densOf); });
+    return perMeal;
+  }
   function emptyTotals() { return { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 }; }
 
   // ---- reasoning step: how is each food actually portioned? ----------------
@@ -606,13 +705,14 @@
     return questions.length ? questions : fallback;
   }
 
-  // Build a real, USABLE day from a model-designed layout. Unlike an even
-  // per-meal split (which forces every meal to carry a sliver of each food just
-  // to balance on its own — the source of "7 g of egg"), this balances at the
-  // DAY level, then snaps foods to human portions and distributes them across
-  // meals unevenly: piece foods (eggs, fruit, bread) move in whole/part units and
-  // live in ONE meal; bulk foods flex around them. `mealCodes[mi]` is the codes
-  // the model put in meal mi. Returns { meals, totals, estimated, unmet, gramsByCode }.
+  // Build a real, USABLE day from a model-designed layout. The macros are solved
+  // at the DAY level (so nothing forces every meal to carry a sliver of each food
+  // — the old source of "7 g of egg"), foods are snapped to human portions, and
+  // then `balanceMeals` distributes those fixed grams across meals so each meal is
+  // a balanced plate: protein AND calories are spread toward each meal's share
+  // (piece foods stay whole in ONE meal). Because distribution only moves grams
+  // between meals, the day totals are unchanged. `mealCodes[mi]` is the codes the
+  // model put in meal mi. Returns { meals, totals, estimated, unmet, gramsByCode }.
   function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, portionClass, mealWeights) {
     var unmet = [], estimated = false;
     function nameOf(c) { return (products[c] && products[c].product_name) || (recsByCode[c] && recsByCode[c].name) || c; }
@@ -697,22 +797,19 @@
       dayGrams[c] = s.grams;
     });
 
-    // 4) Distribute each snapped day total across the meals it belongs to. Piece
-    // foods go whole into ONE meal (their first placement) — 2 eggs at breakfast,
-    // not ½ an egg in four meals; bulk foods split across their meals.
-    var perMeal = names.map(function () { return {}; }); // mi -> code -> grams
-    var gramsByCode = {};
+    // 4) Distribute the snapped day totals across meals — BALANCED so no meal is
+    // overloaded. Each food's day grams are fixed (macros are already right), so
+    // this only chooses which meal each gram lands in: piece foods stay whole in
+    // one meal, bulk foods fill each meal toward its calorie share of the day.
+    var macros = {};
     Object.keys(dayGrams).forEach(function (c) {
-      var meals = (mealsByCode[c] || []); if (!meals.length) meals = [mainMeal];
-      var alloc;
-      if (pieceFor(c)) { alloc = {}; alloc[meals[0]] = dayGrams[c]; } // pieces stay meal-appropriate
-      else alloc = distributeBulk(dayGrams[c], meals, mealWeights);   // bulk tilts by the calorie split
-      Object.keys(alloc).forEach(function (mi) {
-        var g = alloc[mi]; if (!(g > 0)) return;
-        perMeal[mi][c] = (perMeal[mi][c] || 0) + g;
-        gramsByCode[c] = (gramsByCode[c] || 0) + g;
-      });
+      var f = macroRow(recsByCode[c], products[c]);
+      macros[c] = { protein: num(f.protein), carbs: num(f.carbs), fat: num(f.fat) }; // per 100 g
     });
+    var perMeal = balanceMeals(dayGrams, macros, function (c) { return !!pieceFor(c); },
+                               mealsByCode, mealWeights, names.length, mainMeal);
+    var gramsByCode = {};
+    perMeal.forEach(function (m) { Object.keys(m).forEach(function (c) { gramsByCode[c] = (gramsByCode[c] || 0) + m[c]; }); });
 
     // 5) Build each meal's items (with human amounts) and totals; drop empty meals.
     var outMeals = [];
@@ -1904,6 +2001,7 @@
     snapPiece: snapPiece,
     snapBulk: snapBulk,
     distributeBulk: distributeBulk,
+    balanceMeals: balanceMeals,
     classToDescriptor: classToDescriptor,
     buildPortionClass: buildPortionClass,
     calorieWeights: calorieWeights,

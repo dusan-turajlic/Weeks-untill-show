@@ -10,6 +10,8 @@
  *     the catalog is touched; sanitizeReviewedDay folds the fix back safely.
  *   - Deterministic display polish: descriptive meal names, "raw" weights on raw
  *     proteins, and a micro note that names real fibre sources + vitamin-D/omega-3.
+ *   - Meal balance: balanceMeals spreads protein AND calories across meals (every
+ *     meal a real plate) without changing the day totals; honours the calorie split.
  *
  * No browser, no WebGPU, no live model: a mock engine replays canned outputs.
  * Run with:  node test/harness.test.js
@@ -83,6 +85,41 @@ function ok(name, cond, extra) {
   ok("microNote flags omega-3 EPA/DHA and iron/vitamin-C pairing", /EPA\/DHA/.test(note) && /vitamin-C/.test(note));
   var noteSouth = planner.microNote([{ fiber: 36 }], false, [], [], [], { country: "Spain", fiberSources: [] });
   ok("microNote drops the latitude clause outside the north", !/northern latitudes/.test(noteSouth));
+})();
+
+// ---- 1d) balanceMeals: even plates without changing day totals -----------
+(function () {
+  // Worst case: the protein (chicken) is designed into ONE meal, the carb (oats)
+  // into another, the fat (oil) into a third. Naive placement → meal 0 is all
+  // protein, the others carry none, and calories are lopsided. balanceMeals must
+  // spread protein AND even the calories, WITHOUT changing any food's day grams.
+  var macros = {
+    chicken: { protein: 31, carbs: 0, fat: 4 },
+    oats:    { protein: 13, carbs: 60, fat: 7 },
+    oil:     { protein: 0,  carbs: 0,  fat: 100 }
+  };
+  var dayGrams = { chicken: 300, oats: 150, oil: 40 };
+  var mealsByCode = { chicken: [0], oats: [1], oil: [2] };
+  var noPiece = function () { return false; };
+  var perMeal = planner.balanceMeals(dayGrams, macros, noPiece, mealsByCode, [1 / 3, 1 / 3, 1 / 3], 3, 0);
+
+  function sumG(code) { return perMeal.reduce(function (s, m) { return s + (m[code] || 0); }, 0); }
+  ok("balanceMeals preserves every food's day grams (macros untouched)",
+     sumG("chicken") === 300 && sumG("oats") === 150 && sumG("oil") === 40,
+     JSON.stringify(perMeal));
+  function protOf(m) { return Object.keys(m).reduce(function (s, c) { return s + m[c] * macros[c].protein / 100; }, 0); }
+  function kcalOf(m) { return Object.keys(m).reduce(function (s, c) { var x = macros[c]; return s + m[c] * (4 * x.protein + 4 * x.carbs + 9 * x.fat) / 100; }, 0); }
+  var prot = perMeal.map(protOf), kc = perMeal.map(kcalOf);
+  ok("balanceMeals spreads protein so every meal carries a real share",
+     prot.every(function (p) { return p >= 12; }), prot.map(function (p) { return p.toFixed(0); }).join(","));
+  ok("balanceMeals evens calories across meals (no meal dwarfs another)",
+     (Math.max.apply(null, kc) - Math.min.apply(null, kc)) / Math.max.apply(null, kc) < 0.35,
+     kc.map(function (x) { return x.toFixed(0); }).join(","));
+
+  // Weighted: a dinner-heavy split must tilt calories to the last meal.
+  var pm2 = planner.balanceMeals(dayGrams, macros, noPiece, mealsByCode, [0.2, 0.3, 0.5], 3, 0);
+  var k2 = pm2.map(kcalOf);
+  ok("balanceMeals honours the calorie split (dinner heaviest)", k2[2] > k2[0], k2.map(function (x) { return x.toFixed(0); }).join(","));
 })();
 
 // ---- 2) portion realism: pure snap helpers ------------------------------
@@ -301,6 +338,12 @@ function scenarioPortions() {
     ok("a raw protein is shown as raw weight (120 g raw)",
        chicken.length > 0 && chicken.every(function (x) { return / raw$/.test(x.it.amount); }),
        chicken.map(function (x) { return x.it.amount; }).join("|"));
+
+    var mainKcal = day.meals.filter(function (m) { return !/snack/i.test(m.name); }).map(function (m) { return m.totals.kcal; });
+    ok("main meals are calorie-balanced (no meal dwarfs another)",
+       Math.max.apply(null, mainKcal) <= 1.8 * Math.min.apply(null, mainKcal), mainKcal.join(","));
+    ok("every meal carries protein (a balanced plate, not just balanced calories)",
+       day.meals.every(function (m) { return m.totals.protein >= 8; }), day.meals.map(function (m) { return m.totals.protein; }).join(","));
 
     ok("day-level solve still roughly hits protein", day.totals.protein >= 130 - 12, "got " + day.totals.protein);
     ok("meals are genuinely different (not identical plates)",
