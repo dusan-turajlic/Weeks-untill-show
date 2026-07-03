@@ -836,6 +836,7 @@
   // ---- settings (localStorage) + shareable link (URL incl. full history) --
   var LS_SETTINGS = "wp:settings";
   var LS_MEAL     = "wp:mealplan";
+  var LS_PLANMEM  = "wp:planmemory";   // facts told to the harness (diet, country, split…)
 
   // ---- meal plan: parse / validate / (de)serialise ------------------------
   // A plan is whatever the LLM produced from the meal-plan prompt, parsed from
@@ -877,6 +878,21 @@
       pattern:s.pattern, highDays:s.highDays, curSteps:s.curSteps, planConfirmed:s.planConfirmed
     })); }catch(e){}
   }
+
+  // ---- plan memory: the facts the user has told the on-device harness ------
+  // Diet/prefs (vegetarian/vegan), country, breakfast style, meals-per-day, and
+  // the calorie split. This is what the wizard collects into `lastWizAnswers`;
+  // persisting it lets a rebuild (e.g. changing the calorie split) still carry
+  // the diet the model was told, and survives a page reload.
+  function loadPlanMemory(){
+    try{ return JSON.parse(localStorage.getItem(LS_PLANMEM)||"null"); }catch(e){ return null; }
+  }
+  function savePlanMemory(m){
+    try{
+      if(m) localStorage.setItem(LS_PLANMEM, JSON.stringify(m));
+      else  localStorage.removeItem(LS_PLANMEM);
+    }catch(e){}
+  }
   // History encodes as compact "YYYYMMDD:weight,YYYYMMDD:weight,..." pairs.
   function encodeLog(history){
     return history.map(function(e){ return e.date.replace(/-/g,"")+":"+e.weight; }).join(",");
@@ -896,7 +912,9 @@
       if(!p.toString()) return null;
       return { pct:p.get("pct"), startDate:p.get("start"), endDate:p.get("end"), unit:p.get("unit"),
                sex:p.get("sex"), height:p.get("height"), pattern:p.get("pattern"), highDays:p.get("highDays"),
-               curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log"), meal:p.get("meal") };
+               curSteps:p.get("steps"), weight:p.get("weight"), log:p.get("log"), meal:p.get("meal"),
+               cc:p.get("cc"), country:p.get("country"), prefs:p.get("prefs"),
+               breakfast:p.get("breakfast"), meals:p.get("meals"), split:p.get("split") };
     }catch(e){ return null; }
   }
   // Add the body-metric params, omitting any that are empty to keep links tidy.
@@ -910,6 +928,18 @@
   function addMealParam(p){
     if(mealPlan){ var m=encodeMealPlan(mealPlan); if(m) p.set("meal", m); }
   }
+  // The plan memory (facts told to the harness) travels with the link so a shared
+  // plan can be reshaped on another device. Empty fields are omitted, and an
+  // "even" split is the default so it's dropped, to keep links tidy.
+  function addMemoryParams(p, m){
+    if(!m) return;
+    if(m.cc)         p.set("cc", m.cc);
+    if(m.country)    p.set("country", m.country);
+    if(m.prefs)      p.set("prefs", m.prefs);
+    if(m.breakfast)  p.set("breakfast", m.breakfast);
+    if(m.mealsPerDay!=null && m.mealsPerDay!=="") p.set("meals", m.mealsPerDay);
+    if(m.calorieSplit && m.calorieSplit!=="even") p.set("split", m.calorieSplit);
+  }
   function writeURL(s, hist){
     try{
       var p=new URLSearchParams();
@@ -918,6 +948,7 @@
       addBodyParams(p, s);
       if(hist && hist.length) p.set("log", encodeLog(hist));
       addMealParam(p);
+      addMemoryParams(p, lastWizAnswers);
       history.replaceState(null, "", location.pathname + "?" + p.toString() + location.hash);
     }catch(e){}
   }
@@ -928,6 +959,7 @@
     addBodyParams(p, s);
     if(hist && hist.length) p.set("log", encodeLog(hist));
     addMealParam(p);
+    addMemoryParams(p, lastWizAnswers);
     var base;
     try{
       base = (location.origin && location.origin !== "null")
@@ -1013,6 +1045,22 @@
   })();
   var mealDay = 0;                      // selected day-type tab in the meal view
   var mealEditor = null;                // "di-mi" of the meal whose add-recipe box is open
+
+  // The facts the user told the on-device harness (diet, country, breakfast,
+  // meals/day, calorie split). Rehydrated like the plan above: a local copy wins,
+  // a shared link only seeds a device that has none. Declared here — before the
+  // first renderMealPlan() — so the calorie-split card renders after a reload and
+  // a rebuild still carries the remembered diet.
+  var lastWizAnswers = (function(){
+    var local = loadPlanMemory();
+    if(local && typeof local==="object") return local;
+    if(urlData && (urlData.cc || urlData.prefs || urlData.country)){
+      return { cc:urlData.cc||"", country:urlData.country||"", prefs:urlData.prefs||"",
+               breakfast:urlData.breakfast||"", mealsPerDay:urlData.meals||"",
+               calorieSplit:urlData.split||"even" };
+    }
+    return null;
+  })();
 
   function todayEntry(){
     for(var i=logHistory.length-1;i>=0;i--){ if(logHistory[i].date===todayStr) return logHistory[i]; }
@@ -2029,6 +2077,7 @@
   function persist(){
     saveSettings(state);
     saveMealPlan();
+    savePlanMemory(lastWizAnswers);
     writeURL(state, logHistory);
   }
 
@@ -2194,7 +2243,20 @@
       });
     }
     try{ var env=YdinPlanner.browserEnv(); var w=$("wizMobileWarn"); if(w) w.hidden=!env.isMobile; }catch(e){}
+    // Pre-fill from what the harness already remembers, so reopening the wizard
+    // shows the user's earlier answers instead of blanks.
+    if(lastWizAnswers){
+      if(sel && lastWizAnswers.cc) sel.value=lastWizAnswers.cc;
+      var pf=$("wizPrefs"); if(pf) pf.value=lastWizAnswers.prefs||"";
+      if(lastWizAnswers.breakfast){ wizBreakfast=lastWizAnswers.breakfast; setSeg("wizBreakfast","data-bf",wizBreakfast); }
+      if(lastWizAnswers.mealsPerDay){ wizMeals=parseInt(lastWizAnswers.mealsPerDay,10)||wizMeals; setSeg("wizMeals","data-meals",String(wizMeals)); }
+    }
     $("wizModal").hidden=false;
+  }
+  // Reflect a stored choice in a segmented-button group (matches the click handlers).
+  function setSeg(id, attr, val){
+    var g=$(id); if(!g) return;
+    [].forEach.call(g.querySelectorAll("button"), function(x){ x.classList.toggle("on", x.getAttribute(attr)===val); });
   }
   $("wizMeals").addEventListener("click", function(e){
     var b=e.target.closest("[data-meals]"); if(!b) return;
@@ -2249,7 +2311,8 @@
     if(buildActive) e.preventDefault();
   });
   $("buildClose").addEventListener("click", function(){ buildActive=false; $("buildModal").hidden=true; });
-  var lastWizAnswers=null;
+  // lastWizAnswers (the harness's plan memory) is declared + rehydrated near the
+  // other persisted state above, so it survives a reload and seeds from a link.
   // Manual retry starts fresh: clear the persisted blocklist so every model gets
   // another chance (the earlier failure may have been transient).
   $("buildRetry").addEventListener("click", function(){
@@ -2267,9 +2330,20 @@
       breakfast: wizBreakfast,
       mealsPerDay: wizMeals
     };
+    savePlanMemory(lastWizAnswers);   // remember what the harness was told
     $("wizModal").hidden=true;
     runBuild(lastWizAnswers);
   });
+
+  // Apply an answered options-only question to the plan memory: merge the patch
+  // in (keeping every other remembered fact — e.g. the diet), persist it, and
+  // rebuild from the single source of truth. The seam every follow-up question
+  // flows through, so new remembered facts survive a reload for free.
+  function applyAnswer(questionId, optionId){
+    lastWizAnswers = YdinPlanner.mergeAnswer(lastWizAnswers, questionId, optionId);
+    savePlanMemory(lastWizAnswers);
+    runBuild(lastWizAnswers);   // reshape the whole plan, then re-find products
+  }
 
   function runBuild(ans){
     var dayTargets=buildDayTargets();
@@ -2424,8 +2498,7 @@
       if(!lastWizAnswers) return;
       var sid=splitBtn.getAttribute("data-split");
       if((lastWizAnswers.calorieSplit||"even")===sid) return; // already on this split
-      lastWizAnswers.calorieSplit=sid;
-      runBuild(lastWizAnswers);   // reshape the whole diet, then re-find products
+      applyAnswer("calorie-split", sid);
       return;
     }
     var recBtn=e.target.closest("[data-recipe]");

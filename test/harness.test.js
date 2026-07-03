@@ -82,6 +82,24 @@ function ok(name, cond, extra) {
   ok("buildPortionClass keys unit foods by code, omits bulk", !!pc.t1 && pc.t1.one === "can" && !pc.r1);
 })();
 
+// ---- 2c) plan memory: an answered question keeps the other facts ---------
+// mergeAnswer is what the app calls when the user re-answers a question (e.g.
+// changes the calorie split). The whole point of remembering: the diet the model
+// was told must survive a split change, not get dropped on the rebuild.
+(function () {
+  var mem = { prefs: "vegan", country: "Finland", calorieSplit: "even" };
+  var next = planner.mergeAnswer(mem, "calorie-split", "dinner");
+  ok("split change updates the split", next.calorieSplit === "dinner");
+  ok("split change KEEPS the diet the model was told", next.prefs === "vegan");
+  ok("split change keeps other remembered facts", next.country === "Finland");
+  ok("mergeAnswer does not mutate the input", mem.calorieSplit === "even");
+  var noop = planner.mergeAnswer(mem, "unknown-question", "whatever");
+  ok("an unknown question leaves memory unchanged",
+     noop.prefs === "vegan" && noop.calorieSplit === "even" && Object.keys(noop).length === 3);
+  var seeded = planner.mergeAnswer(null, "calorie-split", "lunch");
+  ok("mergeAnswer tolerates empty memory", seeded.calorieSplit === "lunch");
+})();
+
 // ---- 2c) calorie split + question mechanism (pure) ----------------------
 (function () {
   var W = planner.calorieWeights;

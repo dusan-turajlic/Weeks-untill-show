@@ -496,6 +496,15 @@
     if (questionId === "calorie-split") return { calorieSplit: optionId };
     return {};
   }
+  // Merge an answered question INTO the persisted plan memory (the facts the user
+  // has told the harness — diet/prefs, country, meals, breakfast, calorie split).
+  // Pure: returns a NEW record so callers persist it and rebuild from a single
+  // source of truth. Because it only layers the answer's patch on top, the memory
+  // an unrelated answer doesn't touch — e.g. a vegetarian/vegan `prefs` — survives
+  // a calorie-split change, which is the whole point of remembering it.
+  function mergeAnswer(memory, questionId, optionId) {
+    return Object.assign({}, memory || {}, answerToBuildOpts(questionId, optionId));
+  }
   // Decide which options-only questions to circle back and ask. Tries the model
   // (proposeQuestions), sanitizes each candidate, then — if the engine offers one
   // — runs each through the model's own question critic (critiqueQuestion) before
@@ -1697,6 +1706,7 @@
     sanitizeQuestion: sanitizeQuestion,
     buildCalorieSplitQuestion: buildCalorieSplitQuestion,
     answerToBuildOpts: answerToBuildOpts,
+    mergeAnswer: mergeAnswer,
     planQuestions: planQuestions
   };
 
