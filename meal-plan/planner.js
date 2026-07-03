@@ -738,6 +738,12 @@
     return catP.then(function (catalog) {
       io.catalog = catalog;
 
+      // Report the real catalog size so the UI can show a concrete result for the
+      // setup step ("Loaded N foods…") instead of a vague "done".
+      if (catalog && catalog.length) {
+        report("catalog", "Loaded " + catalog.length.toLocaleString() + " foods from your library");
+      }
+
       // 1) Decide the foods. With an engine the model is authoritative — there is
       // NO staple fallback: any failure rejects (flagged aiFailure) so the caller
       // can blocklist that model and try the next. designMeal builds the day ONE
@@ -788,8 +794,12 @@
             // Fan out: ask designMeal `votes` times (each a fresh, stateless call),
             // then keep the foods most runs agreed on. Sequential — one engine.
             return repeatSeq(votes, function (vi) {
+              // The 3rd arg is a real 0..1 fraction over the day's meals (votes
+              // count as sub-steps within a meal), so the UI can show a genuine
+              // determinate bar rather than an indeterminate shimmer.
               report("choose", "Designing " + nm + " (" + (mi + 1) + "/" + mealNames.length + ")" +
-                (votes > 1 ? " · take " + (vi + 1) + "/" + votes : "") + "…");
+                (votes > 1 ? " · take " + (vi + 1) + "/" + votes : "") + "…",
+                (mi + (vi + 1) / votes) / mealNames.length);
               return Promise.resolve(opts.engine.designMeal({
                 mealName: nm, target: mealTarget, country: opts.country,
                 prefs: opts.prefs, breakfast: opts.breakfast, usedFoods: usedFoods.slice()

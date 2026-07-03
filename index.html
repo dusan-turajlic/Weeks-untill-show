@@ -296,6 +296,9 @@
      plan. Every step is shown up front (upcoming/active/done) so the user can
      see what's coming; the model download hides behind a friendly "initializing"
      step with a progress bar instead of a raw percentage. */
+  /* subtitle meta: expected wait + "step N of M" */
+  .tlmeta{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--inkSoft);margin:0 0 16px}
+  .tlmeta svg{width:13px;height:13px;stroke:currentColor;stroke-width:2;fill:none;flex:0 0 auto;opacity:.8}
   .tl{list-style:none;margin:0;padding:0;position:relative}
   .tlstep{position:relative;display:flex;gap:13px;padding:0 0 16px;align-items:flex-start}
   .tlstep:last-child{padding-bottom:0}
@@ -564,7 +567,8 @@
 <div class="modal" id="buildModal" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="buildTitle">
     <h2 id="buildTitle">Preparing your plan</h2>
-    <p id="buildLede" class="sub" style="margin:0 0 16px">Everything runs privately on this device — here's what's happening.</p>
+    <p id="buildLede" class="sub" style="margin:0 0 4px">Everything runs privately on this device.</p>
+    <p id="buildMeta" class="tlmeta" hidden></p>
     <ol class="tl" id="buildTimeline"></ol>
     <pre class="fix" id="buildErr" hidden></pre>
     <div class="actions">
@@ -2361,6 +2365,10 @@
   // cached by the browser). Lets the first build say "this is a one-time setup,
   // it'll take a while" and later builds say a quick "loading your model".
   var LS_MODELREADY="wp:mp:modelready";
+  // Recent CACHED-run build durations (ms), newest last, capped — so we can show a
+  // real measured "usually about Ns" estimate on later builds (never on the first
+  // run, whose multi-minute model download makes any seconds figure a lie).
+  var LS_BUILDTIME="wp:mp:buildms";
   function loadBadModels(){ try{ var a=JSON.parse(localStorage.getItem(LS_BADMODELS)||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
   function blockModel(id){ if(!id) return; var a=loadBadModels(); if(a.indexOf(id)<0){ a.push(id); try{ localStorage.setItem(LS_BADMODELS, JSON.stringify(a)); }catch(e){} } }
 
@@ -2408,14 +2416,44 @@
     "Nearly there…"
   ];
 
-  var buildTL={ cur:null, sawLoad:false, loaded:false, phraseTimer:null, phraseIx:0, err:false };
+  // Timeline state. `line` is each step's live detail; `result` is the concrete
+  // trace a finished step leaves behind (e.g. "Loaded 12,000 foods…"); `frac` is a
+  // real 0..1 for a step's determinate bar (absent → indeterminate shimmer).
+  var buildTL={ cur:null, sawLoad:false, loaded:false, err:false,
+                phraseTimer:null, phraseIx:0,
+                line:{}, result:{}, frac:{}, mealsPerDay:0, startMs:0, wasCached:false };
 
   function stepIndexById(id){ for(var i=0;i<BUILD_STEPS.length;i++){ if(BUILD_STEPS[i].id===id) return i; } return -1; }
 
-  // Paint the whole timeline from the current active step. `allDone` marks every
-  // step complete (used when the plan is ready). Each active step shows a bar — a
-  // determinate one on init (driven by the model-load fraction), a soft shimmer
-  // elsewhere to signal "working".
+  // A rough, human wait figure from recorded cached-run durations. Only shown once
+  // we have at least one real sample (never on the first, download-heavy run).
+  function loadBuildTimes(){ try{ var a=JSON.parse(localStorage.getItem(LS_BUILDTIME)||"[]"); return Array.isArray(a)?a.filter(isFinite):[]; }catch(e){ return []; } }
+  function recordBuildTime(ms){
+    if(!isFinite(ms) || ms<=0) return;
+    var a=loadBuildTimes(); a.push(Math.round(ms)); while(a.length>5) a.shift();
+    try{ localStorage.setItem(LS_BUILDTIME, JSON.stringify(a)); }catch(e){}
+  }
+  function estimateText(){
+    var a=loadBuildTimes(); if(!a.length) return "";
+    var avg=a.reduce(function(x,y){ return x+y; },0)/a.length, sec=Math.round(avg/1000);
+    if(sec<20) return "";                               // too quick to bother
+    if(sec<90){ sec=Math.round(sec/5)*5; return "Usually about "+sec+" seconds"; }
+    var m=Math.round(sec/30)/2; return "Usually about "+m+" minute"+(m===1?"":"s");
+  }
+  // Subtitle meta: the measured wait (when known) + a truthful "step N of M".
+  function renderBuildMeta(){
+    var el=$("buildMeta"); if(!el) return;
+    var curIx=buildTL.cur?stepIndexById(buildTL.cur):0, total=BUILD_STEPS.length;
+    var est=buildTL.wasCached?estimateText():"";     // first run: no seconds promise
+    var clock='<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+    var txt=(est?est+" · ":"")+"Step "+Math.min(curIx+1,total)+" of "+total;
+    el.innerHTML=clock+"<span>"+esc(txt)+"</span>";
+    el.hidden=false;
+  }
+
+  // Paint the whole timeline. Done steps show their concrete result (or last live
+  // line); the active step shows its live line + a bar (determinate when we have a
+  // real fraction, a soft shimmer otherwise); upcoming steps show only their name.
   function renderBuildTimeline(allDone){
     var host=$("buildTimeline"); if(!host) return;
     var curIx=buildTL.cur?stepIndexById(buildTL.cur):-1;
@@ -2424,21 +2462,35 @@
     for(var i=0;i<BUILD_STEPS.length;i++){
       var s=BUILD_STEPS[i];
       var state = allDone ? "done" : (i<curIx ? "done" : (i===curIx ? "active" : "upcoming"));
-      // The init bar is addressable (id) so the download fraction can drive it.
-      var fillId = s.id==="init" ? ' id="tlbar_init"' : '';
+      var detail = (state==="done")
+        ? (buildTL.result[s.id] || buildTL.line[s.id] || s.detail || "")
+        : (buildTL.line[s.id] || s.detail || "");
+      var f=buildTL.frac[s.id], indet=(f==null || !isFinite(f));
+      var w=indet?"":(' style="width:'+Math.max(3,Math.min(100,Math.round(f*100)))+'%"');
       H.push('<li class="tlstep" data-step="'+s.id+'" data-state="'+state+'">'+
         '<span class="tlmark">'+check+'</span>'+
         '<div class="tlbody">'+
           '<div class="tltitle">'+esc(s.title)+'</div>'+
-          '<div class="tldetail" id="tldetail_'+s.id+'">'+esc(s.detail||"")+'</div>'+
-          '<div class="tlbar"><div class="tlbarfill indet"'+fillId+'></div></div>'+
+          '<div class="tldetail" id="tldetail_'+s.id+'">'+esc(detail)+'</div>'+
+          '<div class="tlbar"><div class="tlbarfill'+(indet?' indet':'')+'" id="tlbar_'+s.id+'"'+w+'></div></div>'+
         '</div></li>');
     }
     host.innerHTML=H.join("");
+    renderBuildMeta();
   }
 
-  function setStepDetail(id, text){
-    var el=$("tldetail_"+id); if(el && text) el.textContent=text;
+  // Update a step's live detail line in place (no full re-paint).
+  function setStepLine(id, text){
+    if(!text) return;
+    buildTL.line[id]=text;
+    var el=$("tldetail_"+id); if(el) el.textContent=text;
+  }
+  // Update a step's determinate bar in place; null → indeterminate shimmer.
+  function setStepFrac(id, frac){
+    buildTL.frac[id]=(frac==null||!isFinite(frac))?null:frac;
+    var el=$("tlbar_"+id); if(!el) return;
+    if(buildTL.frac[id]==null){ el.classList.add("indet"); el.style.width=""; }
+    else { el.classList.remove("indet"); el.style.width=Math.max(3,Math.min(100,Math.round(frac*100)))+"%"; }
   }
 
   // Move the active step forward (never backward, so out-of-order events can't
@@ -2458,33 +2510,31 @@
     var first=!localStorage.getItem(LS_MODELREADY);
     var phrases=first?INIT_PHRASES_FIRST:INIT_PHRASES_RETURN;
     buildTL.phraseIx=0;
-    setStepDetail("init", phrases[0]);
+    setStepLine("init", phrases[0]);
     buildTL.phraseTimer=setInterval(function(){
       if(buildTL.cur!=="init"){ stopInitPhrases(); return; }
       buildTL.phraseIx=(buildTL.phraseIx+1)%phrases.length;
-      setStepDetail("init", phrases[buildTL.phraseIx]);
+      setStepLine("init", phrases[buildTL.phraseIx]);
     }, 3600);
-  }
-
-  // Drive the init progress bar from WebLLM's 0..1 fraction (or leave it as an
-  // indeterminate shimmer when no fraction is available yet).
-  function setInitBar(frac){
-    var el=$("tlbar_init"); if(!el) return;
-    if(frac==null || !isFinite(frac)){ el.classList.add("indet"); el.style.width=""; return; }
-    el.classList.remove("indet");
-    el.style.width=Math.max(3,Math.min(100,Math.round(frac*100)))+"%";
   }
 
   // Reset the timeline for a fresh build (or a manual retry / model walk).
   function resetBuildTimeline(){
     buildTL.cur="init"; buildTL.sawLoad=false; buildTL.loaded=false; buildTL.err=false;
+    buildTL.line={}; buildTL.result={}; buildTL.frac={};
+    // A concrete result for the design step is known up front (the model designs
+    // exactly one day's worth of meals), shown once that step completes.
+    if(buildTL.mealsPerDay>0){
+      buildTL.result.design=buildTL.mealsPerDay+" meal"+(buildTL.mealsPerDay===1?"":"s")+" designed";
+    }
     stopInitPhrases();
     renderBuildTimeline(false);
     startInitPhrases();
   }
 
   // The single seam every progress event flows through. `stage`/`detail` come from
-  // the planner + engine; `frac` is WebLLM's 0..1 download fraction (or null).
+  // the planner + engine; `frac` is a real 0..1 fraction (download %, or meals
+  // designed so far) or null when a stage can't report granular progress.
   function setBuildProgress(stage, detail, frac){
     if(buildTL.err) return;
     if(stage==="retry"){
@@ -2493,18 +2543,26 @@
       resetBuildTimeline();
       return;
     }
+    if(stage==="catalog"){
+      advanceStep("init");
+      // The catalog reports its real size once loaded → keep it as the init step's
+      // finished result ("Loaded N foods from your library"). Don't disturb the
+      // rotating load phrases on the *active* line.
+      if(detail && /foods/i.test(detail)) buildTL.result.init=detail;
+      return;
+    }
     if(stage==="download" || stage==="model"){
       buildTL.sawLoad=true;
       advanceStep("init");
       startInitPhrases();          // keep the friendly phrasing; hide the raw text
-      setInitBar(frac);
+      setStepFrac("init", frac);   // real download fraction drives the bar
       return;
     }
     if(stage==="generate"){
       // Tokens are flowing → the model is up. Init is done; leave it if we already
       // moved on, otherwise step to designing. Remember it loaded for next time.
       if(!buildTL.loaded){ buildTL.loaded=true; try{ localStorage.setItem(LS_MODELREADY,"1"); }catch(e){} }
-      if(buildTL.cur==="init"){ stopInitPhrases(); advanceStep("design"); }
+      if(buildTL.cur==="init"){ stopInitPhrases(); if(!buildTL.result.init) buildTL.result.init="Your on-device model is ready"; advanceStep("design"); }
       return;
     }
     var target=STAGE_STEP[stage];
@@ -2517,10 +2575,14 @@
     }
     if(target!=="init"){
       buildTL.loaded=true; stopInitPhrases();
+      if(!buildTL.result.init) buildTL.result.init="Your on-device model is ready";
       try{ localStorage.setItem(LS_MODELREADY,"1"); }catch(e){}
     }
     advanceStep(target);
-    if(target!=="init" && detail) setStepDetail(target, detail);
+    if(target!=="init"){
+      if(detail) setStepLine(target, detail);
+      setStepFrac(target, frac);   // determinate where the planner gives a fraction
+    }
   }
 
   function showBuildError(msg){
@@ -2590,6 +2652,12 @@
     $("buildErr").hidden=true; $("buildRetry").hidden=true;
     $("buildTitle").textContent="Preparing your plan";
     $("buildModal").hidden=false;
+    // Seed the facts the timeline knows up front: meals/day (for the design step's
+    // result), whether the model is already cached (so we only show a measured time
+    // estimate on a cached run), and a start stamp to record this run's duration.
+    buildTL.mealsPerDay=Math.max(1,(ans.mealsPerDay|0)||3);
+    buildTL.wasCached=!!localStorage.getItem(LS_MODELREADY);
+    buildTL.startMs=Date.now();
     resetBuildTimeline();
     setBuildProgress("start","Setting up…",null);
 
@@ -2650,11 +2718,11 @@
         prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
         calorieSplit:ans.calorieSplit,
         io:io, engine:engine, votes:_votes,
-        onProgress:function(stage,detail){
-          // The timeline advances by step, not a global percentage, so these
-          // stages just move/label the active step (no fraction to pass).
+        onProgress:function(stage,detail,frac){
+          // Most stages just move/label the active step; a few (meal design) carry a
+          // real 0..1 fraction the planner computes, which drives a determinate bar.
           bump();
-          setBuildProgress(stage, detail, null);
+          setBuildProgress(stage, detail, frac==null?null:frac);
         }
       }).then(function(plan){
         // Free the on-device model BEFORE we render. On iOS the resident model (GPU
@@ -2667,6 +2735,10 @@
           buildActive=false;
           stopInitPhrases();
           lastBuiltWith=currentModel||null;
+          // Learn the real wait: record how long a CACHED run took (a first run's
+          // model download is too variable to base an estimate on), so later builds
+          // can show a measured "usually about Ns".
+          if(buildTL.wasCached && buildTL.startMs) recordBuildTime(Date.now()-buildTL.startMs);
           // The plan is shown as an unsaved PREVIEW — it is NOT committed to this
           // device (or the share link) until the user confirms they're happy with
           // it via the "Keep this plan" button in the meal view.
