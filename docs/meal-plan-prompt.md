@@ -149,13 +149,21 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
   - **Portion realism** — `assembleLayoutDay` balances at the DAY level (not an
     even per-meal split, which forces every meal to carry a sliver of each food —
     the source of "7 g of egg"). It then snaps foods to human portions: PIECE
-    foods (`pieceInfo` — eggs, fruit, bread) move in whole/part units (¼ egg,
-    ½ banana) and are concentrated into ONE meal; BULK foods snap to a 5 g step,
-    dropping sub-10 g slivers (`snapPiece`/`snapBulk`/`distributeBulk`). Piece
-    foods are fixed, the day's bulk foods re-solve around them, and the final
-    day totals are re-`verify()`d so any drift from real portions is reported.
-    Meals are deliberately uneven — a day hits its macros, individual meals need
-    not each be a balanced plate.
+    foods (eggs, fruit, bread, …) move in whole/part units (¼ egg, ½ banana) and
+    are concentrated into ONE meal; BULK foods snap to a 5 g step, dropping
+    sub-10 g slivers (`snapPiece`/`snapBulk`/`distributeBulk`). Piece foods are
+    fixed, the day's bulk foods re-solve around them, and the final day totals are
+    re-`verify()`d so any drift from real portions is reported. Meals are
+    deliberately uneven — a day hits its macros, individual meals need not each
+    be a balanced plate.
+  - **Portion reasoning** — how a food is portioned (whole "unit" you use whole /
+    in simple fractions — egg in a shell, a can, a sausage — vs "bulk" you weigh
+    from a package) is decided by `engine.classifyFoods({foods,country})`, a
+    per-food reasoning call whose judgement OVERRIDES the hardcoded `pieceInfo`
+    regex (which stays as the fallback prior). Only foods the heuristic can't
+    already place are sent (known pieces + `OBVIOUS_BULK` skip it); the result is
+    clamped/vetoed by `classToDescriptor` so a hallucinated "unit" on a bulk food
+    is ignored. Skipped on iOS. Progress stage: `check`.
 
   Tests: `node test/harness.test.js` (voting + translation + portion realism).
 

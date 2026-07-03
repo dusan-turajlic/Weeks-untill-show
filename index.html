@@ -2315,7 +2315,7 @@
         io:io, engine:engine, votes:_votes,
         onProgress:function(stage,detail){
           bump();
-          var pctMap={catalog:12,choose:30,guess:50,fetch:60,solve:80,assemble:92,done:100};
+          var pctMap={catalog:12,choose:30,guess:50,fetch:60,check:70,solve:80,assemble:92,done:100};
           setBuildProgress(stage, detail, pctMap[stage]!=null?pctMap[stage]:null);
         }
       }).then(function(plan){

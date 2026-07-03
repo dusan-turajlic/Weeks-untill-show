@@ -351,6 +351,58 @@
   }
   function emptyTotals() { return { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 }; }
 
+  // ---- reasoning step: how is each food actually portioned? ----------------
+  // The hardcoded PIECE_FOODS list only knows a handful of foods. A model can
+  // REASON about the rest: is this bought loose / in a package you weigh any
+  // amount from (rice, oil, yoghurt, mince → "bulk"), or is it a whole item you
+  // use whole or in simple fractions (egg in a shell, banana, a can, a sausage →
+  // "unit")? engine.classifyFoods returns that judgement; the code below turns it
+  // into the same portion descriptor snapPiece/distribute already understand, with
+  // guardrails so a hallucinated "unit" on an obviously-bulk food is vetoed.
+  var ALLOWED_FRACTIONS = [0.25, 0.5, 1];
+  function snapFraction(x) {
+    x = num(x); if (!(x > 0)) return 1;
+    var best = 1, bd = Infinity;
+    ALLOWED_FRACTIONS.forEach(function (a) { var d = Math.abs(a - x); if (d < bd) { bd = d; best = a; } });
+    return best;
+  }
+  function pluralizeNoun(w) {
+    w = String(w || "piece").trim() || "piece";
+    return /(s|x|ch|sh)$/i.test(w) ? w + "es" : w + "s";
+  }
+  // Sold loose / weighed from a package — never a whole "unit", whatever the model says.
+  var OBVIOUS_BULK = /\b(oil|butter|margarine|flour|sugar|honey|syrup|jam|rice|pasta|noodles?|oats?|porridge|milk|cream|yog[hu]?[u]?rt|quark|mince|minced|ground|sauce|paste|powder|spread|hummus|nut butter|peanut butter|seeds?|couscous|quinoa|bulgur|granola|muesli|cheese)\b/i;
+  // Turn one classification into a piece descriptor, or null (⇒ bulk). Clamps a
+  // wild unit weight, snaps the fraction to ¼/½/whole, and vetoes obvious bulk.
+  function classToDescriptor(c, name) {
+    if (!c || c.kind !== "unit" || OBVIOUS_BULK.test(name)) return null;
+    var grams = num(c.unitGrams);
+    if (!(grams >= 5 && grams <= 600)) { var pi = pieceInfo(name); grams = pi ? pi.grams : 0; }
+    if (!(grams > 0)) return null; // no sane unit weight → treat as bulk
+    var pj = pieceInfo(name);
+    var unit = (typeof c.unit === "string" && c.unit.trim()) ? c.unit.trim().toLowerCase() : (pj ? pj.one : "piece");
+    return { grams: grams, step: snapFraction(c.minFraction), one: unit, many: pluralizeNoun(unit) };
+  }
+  // Map a classifyFoods result onto codes: [{code,name}] -> { code -> descriptor }
+  // (only PIECE/unit foods get an entry; bulk foods are simply absent).
+  function buildPortionClass(classifications, foodsList) {
+    var arr = (classifications && classifications.foods) || [];
+    function pick(nm, i) {
+      var low = String(nm).toLowerCase();
+      for (var k = 0; k < arr.length; k++) {
+        var an = arr[k] && arr[k].name ? String(arr[k].name).toLowerCase() : "";
+        if (an && (an === low || an.indexOf(low) >= 0 || low.indexOf(an) >= 0)) return arr[k];
+      }
+      return arr[i];
+    }
+    var out = {};
+    (foodsList || []).forEach(function (f, i) {
+      var d = classToDescriptor(pick(f.name, i), f.name);
+      if (d) out[f.code] = d;
+    });
+    return out;
+  }
+
   // Build a real, USABLE day from a model-designed layout. Unlike an even
   // per-meal split (which forces every meal to carry a sliver of each food just
   // to balance on its own — the source of "7 g of egg"), this balances at the
@@ -358,10 +410,12 @@
   // meals unevenly: piece foods (eggs, fruit, bread) move in whole/part units and
   // live in ONE meal; bulk foods flex around them. `mealCodes[mi]` is the codes
   // the model put in meal mi. Returns { meals, totals, estimated, unmet, gramsByCode }.
-  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs) {
+  function assembleLayoutDay(dayTarget, names, mealCodes, products, catalog, recsByCode, repairRounds, prefs, portionClass) {
     var unmet = [], estimated = false;
     function nameOf(c) { return (products[c] && products[c].product_name) || (recsByCode[c] && recsByCode[c].name) || c; }
     function fiberOf(c) { return (recsByCode[c] && num(recsByCode[c].fiber)) || 0; }
+    // The model's reasoning wins; the hardcoded regex is the fallback prior.
+    function pieceFor(c) { return (portionClass && portionClass[c]) || pieceInfo(nameOf(c)); }
     function foodsFor(codes) { return codes.map(function (c) { return macroRow(recsByCode[c], products[c]); }); }
 
     // Which meal a repair-added food should live in: the first non-snack meal.
@@ -410,12 +464,12 @@
     // 3) Portion realism. Snap PIECE foods to whole/part units and FIX them; then
     // re-solve the BULK foods for the macros that remain, and snap those to a gram
     // step. Eggs move in units and the rest of the day flexes around them.
-    var pieceCodes = order.filter(function (c) { return pieceInfo(nameOf(c)); });
-    var bulkCodes = order.filter(function (c) { return !pieceInfo(nameOf(c)); });
+    var pieceCodes = order.filter(function (c) { return pieceFor(c); });
+    var bulkCodes = order.filter(function (c) { return !pieceFor(c); });
 
     var dayGrams = {}, dayPieces = {};
     pieceCodes.forEach(function (c) {
-      var s = snapPiece(pieceInfo(nameOf(c)), rawGrams[c]);
+      var s = snapPiece(pieceFor(c), rawGrams[c]);
       if (s.drop) { delete mealsByCode[c]; return; }
       dayGrams[c] = s.grams; dayPieces[c] = s.pieces;
     });
@@ -448,7 +502,7 @@
     Object.keys(dayGrams).forEach(function (c) {
       var meals = (mealsByCode[c] || []); if (!meals.length) meals = [mainMeal];
       var alloc;
-      if (pieceInfo(nameOf(c))) { alloc = {}; alloc[meals[0]] = dayGrams[c]; }
+      if (pieceFor(c)) { alloc = {}; alloc[meals[0]] = dayGrams[c]; }
       else alloc = distributeBulk(dayGrams[c], meals);
       Object.keys(alloc).forEach(function (mi) {
         var g = alloc[mi]; if (!(g > 0)) return;
@@ -463,7 +517,7 @@
       var codes = Object.keys(perMeal[mi]); if (!codes.length) return;
       var items = [];
       codes.forEach(function (c) {
-        var g = perMeal[mi][c], info = pieceInfo(nameOf(c));
+        var g = perMeal[mi][c], info = pieceFor(c);
         var amount = info ? pieceAmount(Math.round((g / info.grams) / info.step) * info.step, info) : (Math.round(g) + " g");
         var t = FL.buildMealTotals([{ code: c, grams: g, fiber100: fiberOf(c) }], products);
         if (t.estimated) estimated = true;
@@ -774,6 +828,26 @@
           // numbers shown match the numbers the solver sized against (no 0-kcal items).
           recs.forEach(function (r) { ensureProduct(products, r); });
 
+          // Reasoning step: ask the model how each ingredient is actually bought and
+          // portioned — a whole "unit" you use whole or in simple fractions (egg in a
+          // shell, banana, a can) vs "bulk" you weigh out of a package (rice, oil,
+          // yoghurt). Only foods the hardcoded heuristic can't already place are sent
+          // (known pieces + obvious bulk skip the model, to save calls). The result
+          // OVERRIDES the regex when sizing portions, so a food the list never knew
+          // about can't come back as "7 g of egg". Layout path only; on any failure
+          // we fall back to the heuristic.
+          var portionClass = {};
+          var classifyList = layout ? recs.map(function (r) {
+            return { code: r.code, name: (products[r.code] && products[r.code].product_name) || r.name || r.code };
+          }).filter(function (f) { return !pieceInfo(f.name) && !OBVIOUS_BULK.test(f.name); }) : [];
+          var classifyP = (classifyList.length && opts.engine && opts.engine.classifyFoods)
+            ? (report("check", "Checking each ingredient can be portioned sensibly…"),
+               Promise.resolve(opts.engine.classifyFoods({
+                 foods: classifyList.map(function (f) { return f.name; }), country: opts.country
+               })).then(function (c) { portionClass = buildPortionClass(c, classifyList); }, function () {}))
+            : Promise.resolve();
+
+          return classifyP.then(function () {
           // 2) Size portions. The model-meal path solves EACH meal to its share of
           // the day's targets (so every meal is a balanced plate); the flat path
           // solves the day as a whole and splits it.
@@ -782,7 +856,7 @@
           var days = opts.dayTargets.map(function (target) {
             if (layout) {
               var d = assembleLayoutDay(target, layout.names, layout.mealCodes, products,
-                                        catalog, recsByCode, repairRounds, opts.prefs);
+                                        catalog, recsByCode, repairRounds, opts.prefs, portionClass);
               if (d.unmet.length) unmet.push.apply(unmet, d.unmet);
               return {
                 label: target.label || "Every day",
@@ -862,6 +936,7 @@
             };
             report("done", unmet.length ? "Plan ready (some targets approximate)." : "Plan ready.");
             return plan;
+          });
           });
         });
       });
@@ -1323,6 +1398,33 @@
         });
         return p.then(function () { return { terms: out }; });
       },
+      // Reasoning step: judge how each food is bought/portioned so the planner can
+      // size it like a human would. ONE food per call (a single tiny JSON object is
+      // what even the 360M model produces reliably). Skipped on iOS — the heuristic
+      // covers the common pieces and every extra generation is memory risk in Safari.
+      classifyFoods: function (ctx) {
+        if ((options.env || browserEnv()).isIOS) return Promise.resolve({ foods: [] });
+        var foods = (ctx.foods || []).filter(function (x) { return typeof x === "string" && x.trim(); }).slice(0, 20);
+        if (!foods.length) return Promise.resolve({ foods: [] });
+        var country = ctx.country || "unknown";
+        var sys = "You reason about how a food is bought and portioned in a kitchen. Decide if it is a " +
+          "\"unit\" — a whole item you use whole or in simple fractions (an egg in its shell, a banana, a " +
+          "slice of bread, a can of tuna, a sausage) — or \"bulk\" — sold loose or in a package you weigh any " +
+          "amount from (rice, oats, oil, yoghurt, mince). For a unit, give the typical weight of ONE item in " +
+          "grams and the smallest sensible fraction a person would use (0.25, 0.5, or 1 for whole-only). " +
+          "Output ONLY JSON, no prose or code fences: " +
+          "{\"kind\":\"unit\",\"unit\":\"egg\",\"unitGrams\":50,\"minFraction\":0.25}.";
+        var out = [];
+        var p = Promise.resolve();
+        foods.forEach(function (food) {
+          p = p.then(function () {
+            return chatJSON(sys, "Country: " + country + "\nFood: " + food, "Checking " + food, 90).then(function (o) {
+              out.push({ name: food, kind: o.kind, unit: o.unit, unitGrams: o.unitGrams, minFraction: o.minFraction });
+            }, function () { out.push({ name: food }); });
+          });
+        });
+        return p.then(function () { return { foods: out }; });
+      },
       suggestFoods: function (ctx) {
         var t = (ctx.dayTargets && ctx.dayTargets[0]) || {};
         var sys = "You are a nutritionist choosing real, locally available whole foods. " +
@@ -1389,7 +1491,9 @@
     pieceAmount: pieceAmount,
     snapPiece: snapPiece,
     snapBulk: snapBulk,
-    distributeBulk: distributeBulk
+    distributeBulk: distributeBulk,
+    classToDescriptor: classToDescriptor,
+    buildPortionClass: buildPortionClass
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

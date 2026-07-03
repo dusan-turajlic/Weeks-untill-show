@@ -64,6 +64,24 @@ function ok(name, cond, extra) {
     return Object.keys(d).length === 1 && d[0] === 12; })());
 })();
 
+// ---- 2b) reasoning step: classification -> portion descriptor -----------
+(function () {
+  var can = planner.classToDescriptor({ kind: "unit", unit: "can", unitGrams: 120, minFraction: 0.5 }, "canned tuna");
+  ok("classify unit → piece descriptor", !!can && can.grams === 120 && can.step === 0.5 && can.one === "can" && can.many === "cans");
+  ok("classify bulk → null (weighed, not counted)", planner.classToDescriptor({ kind: "bulk" }, "rice") === null);
+  ok("obvious-bulk food vetoes a mis-called unit", planner.classToDescriptor({ kind: "unit", unitGrams: 15 }, "olive oil") === null);
+  ok("wild unit weight with no fallback → null", planner.classToDescriptor({ kind: "unit", unit: "x", unitGrams: 5000 }, "mystery") === null);
+  ok("minFraction snaps to ¼/½/whole", (function () {
+    var a = planner.classToDescriptor({ kind: "unit", unit: "u", unitGrams: 60, minFraction: 0.3 }, "sausage");
+    var b = planner.classToDescriptor({ kind: "unit", unit: "u", unitGrams: 60, minFraction: 2 }, "sausage");
+    return a.step === 0.25 && b.step === 1; })());
+
+  var pc = planner.buildPortionClass(
+    { foods: [{ name: "canned tuna", kind: "unit", unit: "can", unitGrams: 120, minFraction: 0.5 }, { name: "rice", kind: "bulk" }] },
+    [{ code: "t1", name: "canned tuna" }, { code: "r1", name: "rice" }]);
+  ok("buildPortionClass keys unit foods by code, omits bulk", !!pc.t1 && pc.t1.one === "can" && !pc.r1);
+})();
+
 // ---- shared mock host ----------------------------------------------------
 function macro(kcal, p, f, c) {
   return { breakdown: { macros: { energy_kcal: kcal, proteins: p, fat: f, carbohydrates: c } } };
@@ -196,7 +214,65 @@ function scenarioPortions() {
   });
 }
 
-scenarioVoting().then(scenarioPortions).then(function () {
+// ---- 5) reasoning step end-to-end: an unknown food classified as a unit --
+function scenarioReasoning() {
+  var catalog = catalogOf([
+    ["t1", "Tonnikala", "Kotimaista", "fi", 120, "tolkki", 0, 0, 1, 26],
+    ["o1", "Kaurahiutaleet", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["r1", "Riisi", "Uncle", "fi", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["l1", "Oliivioljy", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["b1", "Banaani", "Chiquita", "fi", 120, "kpl", 2.6, 23, 0.3, 1.1]
+  ]);
+  var products = {
+    t1: Object.assign(macro(116, 26, 1, 0), { product_name: "Tonnikala" }),
+    o1: Object.assign(macro(370, 13, 7, 60), { product_name: "Kaurahiutaleet" }),
+    r1: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Riisi" }),
+    l1: Object.assign(macro(884, 0, 100, 0), { product_name: "Oliivioljy" }),
+    b1: Object.assign(macro(96, 1.1, 0.3, 23), { product_name: "Banaani" })
+  };
+  var FI = { "canned tuna": ["tonnikala"], "rolled oats": ["kaurahiutaleet"], "rice": ["riisi"],
+             "olive oil": ["oliivioljy"], "banana": ["banaani"] };
+  var byMeal = { Breakfast: ["rolled oats", "banana"], Lunch: ["canned tuna", "rice", "olive oil"] };
+  var classifyInputs = null;
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["rice"] }); },
+    translateFoods: translatorOf(FI),
+    // The reasoning chat: a can of tuna is a UNIT you use whole/half; the rest is bulk.
+    classifyFoods: function (ctx) {
+      classifyInputs = (ctx.foods || []).slice();
+      return Promise.resolve({ foods: (ctx.foods || []).map(function (nm) {
+        return /tonnikala|tuna/i.test(nm)
+          ? { name: nm, kind: "unit", unit: "can", unitGrams: 120, minFraction: 0.5 }
+          : { name: nm, kind: "bulk" };
+      }) });
+    }
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1700, protein: 110, fat: 60, carbs: 190, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    ok("classifyFoods was consulted (reasoning ran)", !!classifyInputs && classifyInputs.length > 0);
+    ok("reasoning only sees AMBIGUOUS foods (known pieces skipped)",
+       classifyInputs.indexOf("Tonnikala") >= 0 && classifyInputs.indexOf("Banaani") < 0, (classifyInputs || []).join(","));
+
+    var items = [];
+    plan.days[0].meals.forEach(function (m) { m.items.forEach(function (it) { items.push(it); }); });
+    var tuna = items.filter(function (it) { return /tonnikala/i.test(it.food); });
+    ok("the reasoned unit food is shown in its unit, not grams",
+       tuna.length > 0 && tuna.every(function (it) { return /\bcan/i.test(it.amount) && !/\bg$/.test(it.amount); }),
+       tuna.map(function (it) { return it.amount; }).join("|"));
+    var banana = items.filter(function (it) { return /banaani/i.test(it.food); });
+    ok("regex fallback still portions a known piece (banana)",
+       banana.every(function (it) { return /banana/i.test(it.amount) && !/\bg$/.test(it.amount); }),
+       banana.map(function (it) { return it.amount; }).join("|"));
+    var gramItems = items.filter(function (it) { return /\bg$/.test(it.amount); });
+    ok("still no sub-10 g slivers", gramItems.every(function (it) { return parseFloat(it.amount) >= 10; }),
+       gramItems.map(function (it) { return it.food + " " + it.amount; }).join("|"));
+  });
+}
+
+scenarioVoting().then(scenarioPortions).then(scenarioReasoning).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {
