@@ -9,12 +9,13 @@ The app offers two paths that share one deterministic core (wizard → targets �
 catalog → solver). The LLM (local or external) only **chooses foods and
 narrates**; it never does the arithmetic.
 
-- **Path A — On-device:** builds the plan locally. On desktop a small LLM runs in
-  the browser via WebGPU/WebLLM and *names* the foods. On phones a browser LLM
-  OOM-crashes the tab, so mobile (and any device where no model can load) uses a
-  **deterministic staple planner** instead — the model only names foods anyway, so
-  the solver + catalog + balancer produce the same balanced, meal-structured plan
-  with no model at all. It's also the always-works fallback and the offline path.
+- **Path A — On-device:** builds the plan locally. A small LLM runs in the browser
+  via WebGPU/WebLLM and *names* the foods — on **both desktop and mobile** (mobile
+  is a first-class target for the model; the planner keeps it within phone memory
+  via tight budgets + context window + the smallest-that-fits model walk). When no
+  model can load on a device — or offline — a **deterministic staple planner**
+  takes over as the fallback: the model only names foods anyway, so the solver +
+  catalog + balancer produce the same balanced, meal-structured plan with no model.
 - **Path B — Copy-prompt:** export the prompt (below) and run it in any frontier
   LLM. Always available; also the quality ceiling.
 
@@ -166,10 +167,9 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     `{ names, mealCodes }` shape the model path produces — so it feeds the identical
     `assembleLayoutDay` pipeline (balance, human portions, descriptive names, micro
     note). `buildPlan` uses it whenever there's no engine and no explicit `staples`
-    list. This is what makes on-device work on phones (a WebLLM model OOM-crashes
-    mobile Chrome, so `index.html` skips the model entirely on mobile and builds
-    deterministically) and offline, and it's the always-works fallback when no
-    desktop model can load — never a dead-end to the copy-prompt path.
+    list. Mobile still **attempts the WebLLM model first** (a first-class target —
+    see `CLAUDE.md`); this deterministic path is the fallback when no model can load
+    on a device, and the offline path — never a dead-end to the copy-prompt path.
   - **Meal balance** — once the day's grams are fixed, `balanceMeals` decides WHICH
     meal each gram lands in. Since moving grams between meals can't change the day
     totals, it rebalances freely: each meal is filled toward its share of the day

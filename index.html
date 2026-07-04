@@ -2814,13 +2814,12 @@
       });
     }
 
-    // Phones share GPU memory with the OS and OOM-crash the whole tab when a
-    // browser LLM loads — a crash we can't even catch to fall back from. So on
-    // mobile we don't roll the dice: build the plan deterministically (the model
-    // only names foods anyway). Desktop attempts the model, with the deterministic
-    // build as the always-works fallback if no model can run.
-    if(YdinPlanner.browserEnv().isMobile){ buildDeterministic("mobile"); }
-    else { attempt(); }
+    // Mobile is a first-class target for the on-device MODEL — see CLAUDE.md.
+    // Every device attempts the real WebLLM model first (planner keeps mobile
+    // memory in check via tight budgets + context window + the model walk). The
+    // deterministic build is only the fallback if no model can load, so the user
+    // still gets a plan — it never pre-empts the model on mobile.
+    attempt();
   }
 
   var copyBtn=$("copyBtn"), copyLabel=$("copyLabel"), copyTimer;

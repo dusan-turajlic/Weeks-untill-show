@@ -1540,7 +1540,9 @@
   // is an uncatchable tab reload — so on iOS we ONLY ever offer these. Critically,
   // this stops the model-walk from "escalating" to a 1B after a hiccup (which would
   // just crash the tab); when this list is exhausted, selection returns null and the
-  // app falls back to the copy-prompt path instead of downloading a doomed model.
+  // app falls back to the deterministic staple build (still a real plan) rather than
+  // downloading a doomed model. Mobile (incl. iOS) DOES attempt the model first —
+  // these tiers are how it fits, not a reason to skip it (see CLAUDE.md).
   var IOS_PREFERENCE = [
     "SmolLM2-360M-Instruct",  // ~376 MB — the one that actually loads in Safari
     "SmolLM2-135M-Instruct"   // ~140 MB — last-ditch if 360M is exhausted; very weak
