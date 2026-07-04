@@ -9,8 +9,12 @@ The app offers two paths that share one deterministic core (wizard → targets �
 catalog → solver). The LLM (local or external) only **chooses foods and
 narrates**; it never does the arithmetic.
 
-- **Path A — On-device:** a small LLM runs in the browser via WebGPU/WebLLM and
-  builds the plan locally. Offered only when a WebGPU adapter is present.
+- **Path A — On-device:** builds the plan locally. On desktop a small LLM runs in
+  the browser via WebGPU/WebLLM and *names* the foods. On phones a browser LLM
+  OOM-crashes the tab, so mobile (and any device where no model can load) uses a
+  **deterministic staple planner** instead — the model only names foods anyway, so
+  the solver + catalog + balancer produce the same balanced, meal-structured plan
+  with no model at all. It's also the always-works fallback and the offline path.
 - **Path B — Copy-prompt:** export the prompt (below) and run it in any frontier
   LLM. Always available; also the quality ceiling.
 
@@ -154,6 +158,18 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     sub-10 g slivers (`snapPiece`/`snapBulk`). Piece foods are fixed, the day's
     bulk foods re-solve around them, and the final day totals are re-`verify()`d so
     any drift from real portions is reported.
+  - **Deterministic staple planner (no model)** — because the model only *names*
+    foods, `staplePlanLayout(catalog, mealNames, prefs)` can name them from a
+    curated, diet-tagged staple table instead: it picks a protein/carb/veg/fat per
+    meal by role (breakfast staples for breakfast, etc.), diet-filtered via
+    `dietBans` and matched to the country catalog, and returns the SAME
+    `{ names, mealCodes }` shape the model path produces — so it feeds the identical
+    `assembleLayoutDay` pipeline (balance, human portions, descriptive names, micro
+    note). `buildPlan` uses it whenever there's no engine and no explicit `staples`
+    list. This is what makes on-device work on phones (a WebLLM model OOM-crashes
+    mobile Chrome, so `index.html` skips the model entirely on mobile and builds
+    deterministically) and offline, and it's the always-works fallback when no
+    desktop model can load — never a dead-end to the copy-prompt path.
   - **Meal balance** — once the day's grams are fixed, `balanceMeals` decides WHICH
     meal each gram lands in. Since moving grams between meals can't change the day
     totals, it rebalances freely: each meal is filled toward its share of the day

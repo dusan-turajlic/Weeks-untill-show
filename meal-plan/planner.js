@@ -261,6 +261,89 @@
                "potatoes + salad, or lentils + brown rice + spinach)"
     };
   }
+  function mealRole(name) {
+    var n = (name || "").toLowerCase();
+    if (/break|morning/.test(n)) return "breakfast";
+    if (/snack/.test(n)) return "snack";
+    return "main";
+  }
+
+  // ---- deterministic staple planner (no model) ----------------------------
+  // The on-device model only NAMES foods — a job the deterministic core can do
+  // itself from a curated staple table. That's the whole point of the harness: the
+  // solver + catalog + balancer do the real work. This table lets us build a real,
+  // meal-structured plan with ZERO model, which is what makes the plan work on
+  // phones (a browser LLM OOM-crashes mobile Chrome) and fully offline.
+  //
+  // Each slot is a role in a meal; each option is a single-ingredient whole food
+  // tagged with the diet flags dietBans() understands (plant foods carry no tags,
+  // so they always survive). Picked in order, skipping diet-banned and (for
+  // variety) already-used foods, and only when the food actually exists in the
+  // country catalog.
+  var STAPLE_SETS = {
+    breakfast: [
+      { role: "protein", opts: [ { q: "quark", tags: ["dairy"] }, { q: "skyr", tags: ["dairy"] },
+        { q: "greek yogurt", tags: ["dairy"] }, { q: "cottage cheese", tags: ["dairy"] },
+        { q: "whey protein", tags: ["dairy"] }, { q: "eggs", tags: ["egg"] }, { q: "soy yogurt", tags: ["soy"] } ] },
+      { role: "carb",    opts: [ { q: "rolled oats", tags: [] }, { q: "oats", tags: [] } ] },
+      { role: "fruit",   opts: [ { q: "blueberries", tags: [] }, { q: "banana", tags: [] }, { q: "strawberries", tags: [] } ] },
+      { role: "fat",     opts: [ { q: "chia seeds", tags: [] }, { q: "flaxseed", tags: [] },
+        { q: "walnuts", tags: ["nut"] }, { q: "almonds", tags: ["nut"] }, { q: "peanut butter", tags: ["nut"] } ] }
+    ],
+    main: [
+      { role: "protein", opts: [ { q: "chicken breast", tags: ["meat"] }, { q: "turkey", tags: ["meat"] },
+        { q: "tuna", tags: ["fish"] }, { q: "salmon", tags: ["fish"] }, { q: "tofu", tags: ["soy"] },
+        { q: "lentils", tags: [] }, { q: "black beans", tags: [] }, { q: "chickpeas", tags: [] }, { q: "eggs", tags: ["egg"] } ] },
+      { role: "veg",     opts: [ { q: "broccoli", tags: [] }, { q: "spinach", tags: [] }, { q: "green beans", tags: [] },
+        { q: "bell pepper", tags: [] }, { q: "cauliflower", tags: [] }, { q: "carrots", tags: [] } ] },
+      { role: "carb",    opts: [ { q: "brown rice", tags: [] }, { q: "potato", tags: [] }, { q: "sweet potato", tags: [] },
+        { q: "rice", tags: [] }, { q: "quinoa", tags: [] } ] },
+      { role: "fat",     opts: [ { q: "olive oil", tags: [] }, { q: "rapeseed oil", tags: [] }, { q: "almonds", tags: ["nut"] } ] }
+    ],
+    snack: [
+      { role: "protein", opts: [ { q: "greek yogurt", tags: ["dairy"] }, { q: "quark", tags: ["dairy"] },
+        { q: "cottage cheese", tags: ["dairy"] }, { q: "skyr", tags: ["dairy"] }, { q: "soy yogurt", tags: ["soy"] },
+        { q: "pumpkin seeds", tags: [] }, { q: "almonds", tags: ["nut"] } ] },
+      { role: "extra",   opts: [ { q: "banana", tags: [] }, { q: "blueberries", tags: [] }, { q: "carrots", tags: [] }, { q: "apple", tags: [] } ] }
+    ]
+  };
+  // Build a per-meal layout (names + codes) from the staple table, diet-filtered
+  // and matched to the country catalog — the same { names, mealCodes } shape the
+  // model path produces, so it feeds the identical assembleLayoutDay pipeline
+  // (balance, human portions, descriptive names, micro note). No model, no network
+  // beyond the catalog already loaded. Returns { names, mealCodes, recs, recsByCode }.
+  function staplePlanLayout(catalog, mealNames, prefs) {
+    var bans = dietBans(prefs);
+    var recsByCode = {}, recs = [], used = {};
+    function allowed(cand) { return !cand.tags.some(function (t) { return bans[t]; }); }
+    // Prefer a diet-allowed, catalog-present, not-yet-used food (for variety across
+    // meals); fall back to an already-used match if that's all the diet allows.
+    function pickForRole(opts) {
+      var fallback = null;
+      for (var i = 0; i < opts.length; i++) {
+        if (!allowed(opts[i])) continue;
+        var hit = FL.searchFoods(catalog, opts[i].q, 1)[0];
+        if (!hit || !hit.code) continue;
+        if (!used[hit.code]) return hit;
+        if (!fallback) fallback = hit;
+      }
+      return fallback;
+    }
+    var names = [], mealCodes = [];
+    mealNames.forEach(function (nm) {
+      var sets = STAPLE_SETS[mealRole(nm)] || STAPLE_SETS.main;
+      var codes = [];
+      sets.forEach(function (slot) {
+        var hit = pickForRole(slot.opts);
+        if (hit && codes.indexOf(hit.code) < 0) {
+          codes.push(hit.code); used[hit.code] = (used[hit.code] || 0) + 1;
+          if (!recsByCode[hit.code]) { recsByCode[hit.code] = hit; recs.push(hit); }
+        }
+      });
+      names.push(nm); mealCodes.push(codes);
+    });
+    return { names: names, mealCodes: mealCodes, recs: recs, recsByCode: recsByCode };
+  }
 
   // Fold a model's whole-day review back onto the designed day. The review may
   // reorder, rename, or drop meals — we don't trust it to restructure the day, so
@@ -1184,8 +1267,22 @@
             if (!q.length) aiReject(new Error("The model returned no foods."));
             return q;
           }, aiReject).then(flatSelect);
+      } else if (opts.staples) {
+        // An explicit staple list (library callers / tests): flat solve over exactly
+        // those foods, then split — the original engine-less behaviour.
+        selectP = Promise.resolve(opts.staples).then(flatSelect);
       } else {
-        selectP = Promise.resolve(staples).then(flatSelect);
+        // No model and no explicit list (mobile / low-memory / offline): build a real
+        // per-meal LAYOUT deterministically from the staple table, so the plan still
+        // runs through the full assembleLayoutDay pipeline (balanced plates, human
+        // portions, descriptive names, micro note) — not a flat, identical-meals
+        // split. Falls back to the flat default staples if the catalog matches nothing.
+        report("choose", "Building your plan…");
+        var lay = staplePlanLayout(catalog, mealNames, opts.prefs);
+        selectP = lay.recs.length
+          ? Promise.resolve({ recs: lay.recs, recsByCode: lay.recsByCode,
+                              layout: { names: lay.names, mealCodes: lay.mealCodes } })
+          : Promise.resolve(DEFAULT_STAPLES).then(flatSelect);
       }
 
       return selectP.then(function (sel) {
@@ -1985,6 +2082,7 @@
     MODEL_PREFERENCE: MODEL_PREFERENCE,
     browserBrotli: browserBrotli,
     DEFAULT_STAPLES: DEFAULT_STAPLES,
+    staplePlanLayout: staplePlanLayout,
     macroRow: macroRow,
     splitIntoMeals: splitIntoMeals,
     gatherFoods: gatherFoods,

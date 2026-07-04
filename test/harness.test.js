@@ -12,6 +12,8 @@
  *     proteins, and a micro note that names real fibre sources + vitamin-D/omega-3.
  *   - Meal balance: balanceMeals spreads protein AND calories across meals (every
  *     meal a real plate) without changing the day totals; honours the calorie split.
+ *   - Deterministic build: with NO engine, staplePlanLayout builds a real balanced
+ *     plan (the mobile / offline path) — diet-filtered, meal-structured, distinct.
  *
  * No browser, no WebGPU, no live model: a mock engine replays canned outputs.
  * Run with:  node test/harness.test.js
@@ -120,6 +122,32 @@ function ok(name, cond, extra) {
   var pm2 = planner.balanceMeals(dayGrams, macros, noPiece, mealsByCode, [0.2, 0.3, 0.5], 3, 0);
   var k2 = pm2.map(kcalOf);
   ok("balanceMeals honours the calorie split (dinner heaviest)", k2[2] > k2[0], k2.map(function (x) { return x.toFixed(0); }).join(","));
+})();
+
+// ---- 1e) staplePlanLayout: a real per-meal layout with NO model ----------
+(function () {
+  var cat = catalogOf([
+    ["c1", "Chicken breast", "B", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["q1", "Quark", "V", "fi", 100, "g", 0, 6, 0, 11],
+    ["o1", "Rolled oats", "E", "fi", 100, "g", 10, 60, 7, 13],
+    ["b1", "Blueberries", "R", "fi", 100, "g", 2.4, 12, 0.3, 0.7],
+    ["ch1", "Chia seeds", "R", "fi", 100, "g", 34, 8, 31, 17],
+    ["br1", "Broccoli", "P", "fi", 100, "g", 2.6, 4, 0.4, 2.8],
+    ["ri1", "Brown rice", "U", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+    ["oil1", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0],
+    ["le1", "Lentils", "R", "fi", 100, "g", 8, 20, 0.4, 9],
+    ["to1", "Tofu", "J", "fi", 100, "g", 1, 2, 5, 14]
+  ]);
+  var lay = planner.staplePlanLayout(cat, ["Breakfast", "Lunch", "Dinner"], "");
+  ok("staplePlanLayout builds a code list per meal", lay.mealCodes.length === 3 &&
+     lay.mealCodes.every(function (c) { return c.length >= 2; }), JSON.stringify(lay.mealCodes));
+  function mealNames(mi, l) { return (l || lay).mealCodes[mi].map(function (c) { return (l || lay).recsByCode[c].name; }).join("|").toLowerCase(); }
+  ok("breakfast uses breakfast staples (oats + quark), not chicken",
+     /oats/.test(mealNames(0)) && /quark/.test(mealNames(0)) && !/chicken/.test(mealNames(0)), mealNames(0));
+  var vlay = planner.staplePlanLayout(cat, ["Lunch"], "vegan");
+  var vnames = vlay.mealCodes[0].map(function (c) { return vlay.recsByCode[c].name; }).join("|").toLowerCase();
+  ok("vegan layout drops meat/fish/dairy/egg and keeps plant foods",
+     !/chicken|quark/.test(vnames) && /(lentils|tofu|broccoli|rice)/.test(vnames), vnames);
 })();
 
 // ---- 2) portion realism: pure snap helpers ------------------------------
@@ -579,8 +607,54 @@ function scenarioDayReview() {
   });
 }
 
+// ---- 9) deterministic build: a full plan with NO engine (mobile / offline) --
+// The model only names foods, so buildPlan with no engine must still produce a
+// real, balanced, meal-structured plan via the staple layout — this is what runs
+// on phones (a browser LLM OOM-crashes mobile Chrome) and fully offline.
+function scenarioDeterministic() {
+  var catalog = catalogOf([
+    ["p1", "Quark", "Valio", "fi", 100, "g", 0, 6, 0, 11],
+    ["p3", "Cottage cheese", "Arla", "fi", 100, "g", 0, 3, 4, 12],
+    ["o1", "Rolled oats", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["b1", "Blueberries", "Rainbow", "fi", 100, "g", 2.4, 12, 0.3, 0.7],
+    ["ba1", "Banana", "Chiquita", "fi", 120, "g", 2.6, 23, 0.3, 1.1],
+    ["ch1", "Chia seeds", "Rainbow", "fi", 100, "g", 34, 8, 31, 17],
+    ["c1", "Chicken breast", "Kariniemi", "fi", 100, "g", 0, 0, 2, 23],
+    ["tu1", "Tuna", "Pirkka", "fi", 100, "g", 0, 0, 1, 26],
+    ["br1", "Broccoli", "Pirkka", "fi", 100, "g", 2.6, 4, 0.4, 2.8],
+    ["ri1", "Brown rice", "Uncle", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+    ["po1", "Potato", "Pirkka", "fi", 100, "g", 1.5, 17, 0.1, 2],
+    ["oil1", "Olive oil", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["al1", "Almonds", "Rainbow", "fi", 100, "g", 12, 9, 49, 21],
+    ["pk1", "Pumpkin seeds", "Rainbow", "fi", 100, "g", 6, 4, 49, 30],
+    ["ca1", "Carrots", "Pirkka", "fi", 100, "g", 3, 7, 0, 1]
+  ]);
+  var products = {};
+  catalog.forEach(function (r) { products[r.code] = Object.assign(macro(r.kcalEst, r.protein, r.fat, r.carbs), { product_name: r.name }); });
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1800, protein: 140, fat: 60, carbs: 150, fiber: 35 }],
+    country: "Finland", prefs: "", mealsPerDay: 4, calorieSplit: "even",
+    io: { catalog: catalog, fetch: fetchOf(products) }  // NO engine → deterministic path
+  }).then(function (plan) {
+    var day = plan.days[0];
+    ok("deterministic (no-model) plan builds every requested meal", day.meals.length === 4, "meals=" + day.meals.length);
+    ok("deterministic plan: every meal is a real plate with items", day.meals.every(function (m) { return m.items.length >= 2; }));
+    ok("deterministic plan: every meal carries protein (balanced)",
+       day.meals.every(function (m) { return m.totals.protein >= 8; }), day.meals.map(function (m) { return m.totals.protein; }).join(","));
+    ok("deterministic plan roughly hits the day protein target", day.totals.protein >= 140 - 15, "got " + day.totals.protein);
+    ok("deterministic plan: meals are distinct (not identical plates)",
+       JSON.stringify(day.meals[0].items.map(function (i) { return i.food; })) !==
+       JSON.stringify(day.meals[1].items.map(function (i) { return i.food; })));
+    ok("deterministic plan: meal names carry a descriptor", day.meals.every(function (m) { return / — /.test(m.name); }),
+       day.meals.map(function (m) { return m.name; }).join(" | "));
+    ok("deterministic plan: real catalog foods (not AI-guessed placeholders)",
+       day.meals.every(function (m) { return m.items.every(function (it) { return /[a-z]/i.test(it.food); }); }));
+  });
+}
+
 scenarioVoting().then(scenarioPortions).then(scenarioReasoning)
-  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(scenarioDayReview).then(function () {
+  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(scenarioDayReview)
+  .then(scenarioDeterministic).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {
