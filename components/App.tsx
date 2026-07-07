@@ -12,6 +12,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { AppProvider, useApp } from "@/components/store";
 import ProjectionView from "@/components/ProjectionView";
 import MealView from "@/components/MealView";
+import { BuildProvider } from "@/components/BuildProvider";
 
 function Menu({ onClear }: { onClear: () => void }) {
   const [open, setOpen] = useState(false);
@@ -101,7 +102,9 @@ function Shell() {
 export default function App() {
   return (
     <AppProvider>
-      <Shell />
+      <BuildProvider>
+        <Shell />
+      </BuildProvider>
     </AppProvider>
   );
 }

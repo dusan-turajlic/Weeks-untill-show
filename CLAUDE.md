@@ -32,8 +32,25 @@ by default. That was wrong. The requirement is: **mobile supports the model.**
   - **Path B (copy-prompt):** export the prompt to a frontier LLM — the quality
     ceiling (real web-searched prices/micros). Docs: `docs/meal-plan-prompt.md`.
 - Mobile memory handling lives in `computeBudgetMB` / `selectModel` (planner.js)
-  and the build orchestration in `index.html` (`runBuild` / `attempt`).
+  and the build orchestration in `hooks/useOnDeviceBuild.ts` (`runBuild` /
+  `attempt` / `buildDeterministic`), driven from `components/BuildProvider.tsx`.
+
+## App shell (Next.js)
+
+The app is a Next.js app (App Router, TypeScript). The former single
+`index.html` was split into:
+- `core/*.js` — framework-agnostic shared logic (calorie/macro model, projection,
+  on/off-track, share codec, meal-plan (de)serialise, prompts, IndexedDB log).
+  **Imported by both the React app and the Node tests**, so there is one source
+  of truth. `test/energy.test.js` and `test/offtrack.test.js` now `require()`
+  these modules instead of scraping HTML.
+- `meal-plan/*.js` — unchanged on-device planner core. Imported into the app via
+  webpack; the planner's dynamic CDN `import()` of web-llm stays client-side, so
+  the build uses webpack (not Turbopack) to honor the `webpackIgnore` comment.
+- `components/`, `hooks/`, `app/` — the React UI. `app/globals.css` is the
+  original `<style>` block verbatim (pixel parity). The on-device button is
+  gated by `data-webgpu` on `<html>` (set in `BuildProvider`), matching the CSS.
 
 ## Tests
-Pure-Node, no browser/GPU. Run all before pushing:
+Pure-Node, no browser/GPU. Run all before pushing (or `npm test`):
 `for t in harness solver foodlookup planner energy offtrack webllm; do node test/$t.test.js; done`

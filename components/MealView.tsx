@@ -15,8 +15,10 @@ import React, { useMemo, useRef, useState } from "react";
 import * as MealCodec from "@/core/mealplan.js";
 import * as Plan from "@/core/plan.js";
 import * as Prompt from "@/core/prompt.js";
+import Planner from "@/meal-plan/planner.js";
 import { copyText } from "@/lib/clipboard";
 import { useApp } from "@/components/store";
+import { useBuild } from "@/components/BuildProvider";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -85,7 +87,8 @@ function MealItems({ m }: { m: Any }) {
 
 export default function MealView() {
   const app = useApp();
-  const { mealPlan, mealPlanPending, mealDay, mealEditor } = app;
+  const buildCtx = useBuild();
+  const { mealPlan, mealPlanPending, mealDay, mealEditor, lastWizAnswers } = app;
 
   const [importText, setImportText] = useState("");
   const [importOk, setImportOk] = useState<string | null>(null);
@@ -199,6 +202,25 @@ export default function MealView() {
             ) : null}
             {mealPlan.summary ? <p className="sub" style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{mealPlan.summary}</p> : null}
           </div>
+
+          {lastWizAnswers && Planner.buildCalorieSplitQuestion ? (() => {
+            const q = Planner.buildCalorieSplitQuestion();
+            const curSplit = (lastWizAnswers as Any).calorieSplit || "even";
+            return (
+              <div className="card">
+                <div className="cardtitle">{q.prompt}</div>
+                <p className="sub" style={{ marginTop: 4 }}>Pick one and your plan rebuilds to match.</p>
+                <div className="mpsplit">
+                  {q.options.map((o: Any) => (
+                    <button key={o.id} type="button" className={"splitbtn" + (o.id === curSplit ? " on" : "")}
+                      onClick={() => { if (curSplit !== o.id) buildCtx.applyAnswer("calorie-split", o.id); }}>
+                      <span className="l">{o.label}</span>{o.hint ? <span className="h">{o.hint}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })() : null}
 
           {days.length > 1 ? (
             <div className="tabs mealdaytabs" role="tablist">

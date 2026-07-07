@@ -2,8 +2,9 @@
 
 A small, installable web app (PWA) that counts the weeks until a target date and
 projects your weight over that time, assuming a fixed percentage of fat loss
-each week. Built as a single static `index.html` — no build step, no
-dependencies.
+each week. Built with **Next.js** (App Router, TypeScript); the calorie/macro
+model and the on-device meal-plan core are plain JavaScript modules shared
+between the app and the test suite.
 
 ## What it does
 
@@ -38,34 +39,40 @@ dependencies.
 
 ## Running it
 
-It's fully static. Any HTTP server works — for example:
+Install dependencies once, then run the dev server or a production build:
 
 ```bash
-# Python
-python3 -m http.server 8000
+npm install
+npm run dev      # http://localhost:3000 (development)
 
-# or Node
-npx serve .
+# or a production build
+npm run build
+npm run start    # http://localhost:3000
 ```
 
-Then open `http://localhost:8000`.
+Run the test suite (pure Node, no browser/GPU):
+
+```bash
+npm test
+```
 
 > Note: the service worker and "add to home screen" install only work over
-> `http://localhost` or HTTPS, not from a `file://` URL.
+> `http://localhost` or HTTPS.
 
-## Files
+## Layout
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `index.html` | The entire app — markup, styles, and logic |
-| `manifest.webmanifest` | PWA metadata (name, icons, theme, display mode) |
-| `sw.js` | Service worker — network-first for HTML, cache-first for assets |
+| `app/` | Next.js App Router entry — root layout, page, and `globals.css` (the original styles, verbatim) |
+| `components/` | React UI — the app shell, Projection view, Meal-plan view, and the on-device build wizard/timeline |
+| `hooks/useOnDeviceBuild.ts` | On-device (Path A) build orchestration — model walk, watchdog, deterministic fallback, build timeline |
+| `core/*.js` | Framework-agnostic shared logic (calorie/macro model, projection, on/off-track, share-link codec, meal-plan parse/render, prompts, IndexedDB log). Imported by both the app and the tests |
+| `public/` | PWA manifest, icons, and the service worker |
 | `meal-plan/food-lookup.js` | Catalog module — WebGPU gate, country catalog load/search, product fetch, deterministic `buildMealTotals`, WebLLM tool surface |
 | `meal-plan/solver.js` | Deterministic portion solver — sizes grams to hit macro targets, verifies, reports failing constraints for the repair loop |
 | `meal-plan/planner.js` | On-device (Path A) orchestration — catalog → solver → import JSON, plus the optional in-browser WebLLM engine |
 | `docs/meal-plan-prompt.md` | Canonical meal-plan prompt, import JSON shape, and verified catalog/product data contracts |
-| `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` | App icons |
-| `apple-touch-icon.png` | iOS home-screen icon |
+| `test/` | Pure-Node tests for the shared core and meal-plan modules |
 
 ## How the projection works
 

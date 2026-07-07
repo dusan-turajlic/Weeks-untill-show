@@ -20,6 +20,7 @@ import * as Prompt from "@/core/prompt.js";
 import * as Share from "@/core/share.js";
 import { copyText } from "@/lib/clipboard";
 import { useApp, SEX_LABEL } from "@/components/store";
+import { useBuild } from "@/components/BuildProvider";
 
 const { fmt, fmt0, prettyDate } = Format;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -523,6 +524,7 @@ function EatingPattern({ e, bm }: { e: Any; bm: Any }) {
 
 function MealPromptButtons() {
   const { app, plan } = useDerived();
+  const buildCtx = useBuild();
   const [label, setLabel] = useState("Copy meal-plan prompt for AI");
   const [done, setDone] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -543,7 +545,7 @@ function MealPromptButtons() {
         </svg>
         <span>{label}</span>
       </button>
-      <button type="button" id="mealLocalBtn" className="promptbtn" style={{ marginTop: 10 }} onClick={() => app.setTab("meal")}>
+      <button type="button" id="mealLocalBtn" className="promptbtn" style={{ marginTop: 10 }} onClick={() => buildCtx.openWizard()}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 2v4M12 18v4M2 12h4M18 12h4" /><rect x="7" y="7" width="10" height="10" rx="2" />
         </svg>
