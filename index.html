@@ -2377,6 +2377,7 @@
   // / wasm bundles, which escape normal promise chains) in the build UI.
   var buildActive=false;
   var lastBuiltWith=null;   // model id the most recent on-device plan was built with
+  var lastBuiltLite=false;  // true when the last plan was built deterministically (no model)
 
   // ---- build timeline -----------------------------------------------------
   // A short, human-readable timeline the build walks from setup to a plan that's
@@ -2684,6 +2685,39 @@
       }
     }, 5000);
 
+    // Deterministic build — NO on-device model. The model only ever NAMES foods;
+    // the solver, catalog and balancer do the real work, so we can build a real,
+    // balanced, meal-structured plan with zero model. This is what makes on-device
+    // work on phones: a browser LLM OOM-crashes mobile Chrome, but this never loads
+    // one. Used by default on mobile, and as the always-works fallback if the AI
+    // path can't get a model to run on desktop. `reason` (optional) explains the
+    // fallback in the saved-plan toast.
+    function buildDeterministic(reason){
+      setBuildProgress("choose","Building your plan…",null);
+      var io={ base:YdinFoodLookup.DEFAULT_BASE, cache:mpCache };
+      YdinPlanner.buildPlan({
+        dayTargets:dayTargets, cc:ans.cc, country:ans.country,
+        prefs:ans.prefs, breakfast:ans.breakfast, mealsPerDay:ans.mealsPerDay,
+        calorieSplit:ans.calorieSplit, io:io,
+        onProgress:function(stage,detail,frac){ bump(); setBuildProgress(stage,detail,frac==null?null:frac); }
+      }).then(function(plan){
+        stopWatch();
+        var norm=normalizeMealPlan(plan);
+        if(!norm){ showBuildError("The plan came back without any days. Tap Try again, or use the copy-prompt path."); return; }
+        buildActive=false; stopInitPhrases();
+        lastBuiltWith=null; lastBuiltLite=true;
+        if(buildTL.wasCached && buildTL.startMs) recordBuildTime(Date.now()-buildTL.startMs);
+        mealPlan=norm; mealDay=0; mealEditor=null; mealPlanPending=true;
+        renderMealPlan();
+        buildTL.cur="ready"; renderBuildTimeline(true);
+        $("buildModal").hidden=true; setView("meal");
+      }).catch(function(err){
+        stopWatch();
+        showBuildError((err && err.message) ? err.message :
+          "Couldn’t build the plan — the country catalog may be unreachable. The copy-prompt path always works.");
+      });
+    }
+
     function attempt(){
       var currentModel=null, engine;
       // Unload the model from GPU memory (frees weights + buffers). Bounded so a hung
@@ -2734,7 +2768,7 @@
           if(!norm){ showBuildError("The plan came back without any days. Tap Try again, or use the copy-prompt path."); return; }
           buildActive=false;
           stopInitPhrases();
-          lastBuiltWith=currentModel||null;
+          lastBuiltWith=currentModel||null; lastBuiltLite=false;
           // Learn the real wait: record how long a CACHED run took (a first run's
           // model download is too variable to base an estimate on), so later builds
           // can show a measured "usually about Ns".
@@ -2764,19 +2798,27 @@
               attempt();
               return;
             }
-            stopWatch(); showBuildError(aiErr);
+            // Exhausted the model candidates — don't dead-end. Build the plan
+            // deterministically (no model) so the user always gets a plan.
+            bump(); buildDeterministic("ai-exhausted");
+            return;
+          }
+          if(err && (err.aiFailure || /No on-device model fits/i.test(err.message||""))){
+            bump(); buildDeterministic("no-model"); // nothing could load → deterministic
             return;
           }
           stopWatch();
-          if(err && (err.aiFailure || /No on-device model fits/i.test(err.message||""))){
-            showBuildError(aiErr); // no model could even be selected/loaded
-            return;
-          }
           showBuildError((err && err.message) ? err.message :
             "Something went wrong building on-device. The country catalog may be unreachable — the copy-prompt path always works.");
         });
       });
     }
+
+    // Mobile is a first-class target for the on-device MODEL — see CLAUDE.md.
+    // Every device attempts the real WebLLM model first (planner keeps mobile
+    // memory in check via tight budgets + context window + the model walk). The
+    // deterministic build is only the fallback if no model can load, so the user
+    // still gets a plan — it never pre-empts the model on mobile.
     attempt();
   }
 
@@ -2805,7 +2847,8 @@
     // Keep a previewed plan: commit it now that the user is happy with it.
     if(e.target.closest("#mealKeepBtn")){
       mealPlanPending=false; persist(); renderMealPlan();
-      setImportOk("Plan saved to this device"+(lastBuiltWith?" — built on-device with "+lastBuiltWith+".":"."));
+      setImportOk("Plan saved to this device"+(lastBuiltWith?" — built on-device with "+lastBuiltWith+"."
+        :(lastBuiltLite?" — built on-device (no AI needed). For more variety and prices, use the copy-prompt path.":".")));
       return;
     }
     // Discard the preview: drop the unsaved plan and restore whatever was stored.

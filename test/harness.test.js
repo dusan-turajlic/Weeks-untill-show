@@ -6,6 +6,14 @@
  *     (Finnish) catalog — foods rescued to REAL products via translateFoods.
  *   - Portion realism: eggs/fruit/bread snap to whole/part UNITS and live in one
  *     meal; bulk foods snap to a gram step; no "7 g of egg" slivers.
+ *   - Whole-day review: the day is judged as a set (and can be corrected) BEFORE
+ *     the catalog is touched; sanitizeReviewedDay folds the fix back safely.
+ *   - Deterministic display polish: descriptive meal names, "raw" weights on raw
+ *     proteins, and a micro note that names real fibre sources + vitamin-D/omega-3.
+ *   - Meal balance: balanceMeals spreads protein AND calories across meals (every
+ *     meal a real plate) without changing the day totals; honours the calorie split.
+ *   - Deterministic build: with NO engine, staplePlanLayout builds a real balanced
+ *     plan (the mobile / offline path) — diet-filtered, meal-structured, distinct.
  *
  * No browser, no WebGPU, no live model: a mock engine replays canned outputs.
  * Run with:  node test/harness.test.js
@@ -34,6 +42,112 @@ function ok(name, cond, extra) {
   ok("vote backfills to `min` when consensus is thin", few.length === 2, few.join(","));
   var one = planner.voteFoods([["Tofu", "Rice"]]);
   ok("single run passes through", one.length === 2 && one[0] === "Tofu" && one[1] === "Rice", one.join(","));
+})();
+
+// ---- 1b) sanitizeReviewedDay: fold a whole-day review onto the design -----
+(function () {
+  var orig = [{ name: "Breakfast", foods: ["cake"] }, { name: "Lunch", foods: ["chicken", "rice"] }];
+  var r = planner.sanitizeReviewedDay([{ name: "breakfast", foods: ["oats", "whey"] }], orig);
+  ok("sanitizeReviewedDay swaps a meal's foods by name (case-insensitive)",
+     r && r[0].foods.join(",") === "oats,whey");
+  ok("sanitizeReviewedDay keeps meals the review didn't touch", r && r[1].foods.join(",") === "chicken,rice");
+  ok("sanitizeReviewedDay preserves the original meal count + order",
+     r && r.length === 2 && r[0].name === "Breakfast" && r[1].name === "Lunch");
+  var mixed = planner.sanitizeReviewedDay([{ name: "Breakfast", foods: ["oats"] }, { name: "Lunch", foods: [] }], orig);
+  ok("sanitizeReviewedDay keeps original foods for a meal that came back empty",
+     mixed && mixed[0].foods.join(",") === "oats" && mixed[1].foods.join(",") === "chicken,rice");
+  ok("sanitizeReviewedDay returns null when nothing usable comes back",
+     planner.sanitizeReviewedDay([{ name: "Breakfast", foods: [] }], orig) === null &&
+     planner.sanitizeReviewedDay(null, orig) === null && planner.sanitizeReviewedDay([], orig) === null &&
+     planner.sanitizeReviewedDay([{ foo: 1 }], orig) === null);
+  ok("sanitizeReviewedDay does not mutate the original design", orig[0].foods.join(",") === "cake");
+})();
+
+// ---- 1c) deterministic display polish (meal names, raw note, micro note) --
+(function () {
+  ok("shortFoodWord prefers an English gloss in parentheses",
+     planner.shortFoodWord("Rasvaton rahka (fat-free quark)") === "fat-free quark");
+  ok("shortFoodWord strips brand/size noise", planner.shortFoodWord("Kaurahiutaleet 1 kg") === "kaurahiutaleet");
+  var d = planner.mealDescriptor([
+    { food: "Kaurahiutaleet", kcal: 200 }, { food: "Rasvaton rahka (quark)", kcal: 120 }, { food: "Mustikka", kcal: 30 }]);
+  ok("mealDescriptor lists the biggest foods, joined with &", d === "kaurahiutaleet, quark & mustikka", d);
+  ok("mealDescriptor is empty when there are no items", planner.mealDescriptor([]) === "");
+
+  ok("bulkAmountNote marks raw proteins as raw",
+     planner.bulkAmountNote("Broilerin fileesuikale") === " raw" &&
+     planner.bulkAmountNote("Naudan jauheliha") === " raw" &&
+     planner.bulkAmountNote("Kananrinta") === " raw");
+  ok("bulkAmountNote leaves non-proteins alone",
+     planner.bulkAmountNote("Kaurahiutaleet") === "" && planner.bulkAmountNote("Rypsiöljy") === "");
+
+  var note = planner.microNote([{ fiber: 36 }], false, [], [], [],
+    { country: "Finland", fiberSources: [{ name: "Chia-siemenet", fiber: 7 }, { name: "Pellavarouhe (flax)", fiber: 6 }] });
+  ok("microNote names the plan's real fibre sources", /chia/i.test(note) && /~7 g/.test(note), note);
+  ok("microNote flags vitamin D at a northern latitude", /Vitamin D/.test(note) && /northern latitudes/.test(note));
+  ok("microNote flags omega-3 EPA/DHA and iron/vitamin-C pairing", /EPA\/DHA/.test(note) && /vitamin-C/.test(note));
+  var noteSouth = planner.microNote([{ fiber: 36 }], false, [], [], [], { country: "Spain", fiberSources: [] });
+  ok("microNote drops the latitude clause outside the north", !/northern latitudes/.test(noteSouth));
+})();
+
+// ---- 1d) balanceMeals: even plates without changing day totals -----------
+(function () {
+  // Worst case: the protein (chicken) is designed into ONE meal, the carb (oats)
+  // into another, the fat (oil) into a third. Naive placement → meal 0 is all
+  // protein, the others carry none, and calories are lopsided. balanceMeals must
+  // spread protein AND even the calories, WITHOUT changing any food's day grams.
+  var macros = {
+    chicken: { protein: 31, carbs: 0, fat: 4 },
+    oats:    { protein: 13, carbs: 60, fat: 7 },
+    oil:     { protein: 0,  carbs: 0,  fat: 100 }
+  };
+  var dayGrams = { chicken: 300, oats: 150, oil: 40 };
+  var mealsByCode = { chicken: [0], oats: [1], oil: [2] };
+  var noPiece = function () { return false; };
+  var perMeal = planner.balanceMeals(dayGrams, macros, noPiece, mealsByCode, [1 / 3, 1 / 3, 1 / 3], 3, 0);
+
+  function sumG(code) { return perMeal.reduce(function (s, m) { return s + (m[code] || 0); }, 0); }
+  ok("balanceMeals preserves every food's day grams (macros untouched)",
+     sumG("chicken") === 300 && sumG("oats") === 150 && sumG("oil") === 40,
+     JSON.stringify(perMeal));
+  function protOf(m) { return Object.keys(m).reduce(function (s, c) { return s + m[c] * macros[c].protein / 100; }, 0); }
+  function kcalOf(m) { return Object.keys(m).reduce(function (s, c) { var x = macros[c]; return s + m[c] * (4 * x.protein + 4 * x.carbs + 9 * x.fat) / 100; }, 0); }
+  var prot = perMeal.map(protOf), kc = perMeal.map(kcalOf);
+  ok("balanceMeals spreads protein so every meal carries a real share",
+     prot.every(function (p) { return p >= 12; }), prot.map(function (p) { return p.toFixed(0); }).join(","));
+  ok("balanceMeals evens calories across meals (no meal dwarfs another)",
+     (Math.max.apply(null, kc) - Math.min.apply(null, kc)) / Math.max.apply(null, kc) < 0.35,
+     kc.map(function (x) { return x.toFixed(0); }).join(","));
+
+  // Weighted: a dinner-heavy split must tilt calories to the last meal.
+  var pm2 = planner.balanceMeals(dayGrams, macros, noPiece, mealsByCode, [0.2, 0.3, 0.5], 3, 0);
+  var k2 = pm2.map(kcalOf);
+  ok("balanceMeals honours the calorie split (dinner heaviest)", k2[2] > k2[0], k2.map(function (x) { return x.toFixed(0); }).join(","));
+})();
+
+// ---- 1e) staplePlanLayout: a real per-meal layout with NO model ----------
+(function () {
+  var cat = catalogOf([
+    ["c1", "Chicken breast", "B", "fi", 100, "g", 0, 0, 3.6, 31],
+    ["q1", "Quark", "V", "fi", 100, "g", 0, 6, 0, 11],
+    ["o1", "Rolled oats", "E", "fi", 100, "g", 10, 60, 7, 13],
+    ["b1", "Blueberries", "R", "fi", 100, "g", 2.4, 12, 0.3, 0.7],
+    ["ch1", "Chia seeds", "R", "fi", 100, "g", 34, 8, 31, 17],
+    ["br1", "Broccoli", "P", "fi", 100, "g", 2.6, 4, 0.4, 2.8],
+    ["ri1", "Brown rice", "U", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+    ["oil1", "Olive oil", "B", "fi", 100, "ml", 0, 0, 100, 0],
+    ["le1", "Lentils", "R", "fi", 100, "g", 8, 20, 0.4, 9],
+    ["to1", "Tofu", "J", "fi", 100, "g", 1, 2, 5, 14]
+  ]);
+  var lay = planner.staplePlanLayout(cat, ["Breakfast", "Lunch", "Dinner"], "");
+  ok("staplePlanLayout builds a code list per meal", lay.mealCodes.length === 3 &&
+     lay.mealCodes.every(function (c) { return c.length >= 2; }), JSON.stringify(lay.mealCodes));
+  function mealNames(mi, l) { return (l || lay).mealCodes[mi].map(function (c) { return (l || lay).recsByCode[c].name; }).join("|").toLowerCase(); }
+  ok("breakfast uses breakfast staples (oats + quark), not chicken",
+     /oats/.test(mealNames(0)) && /quark/.test(mealNames(0)) && !/chicken/.test(mealNames(0)), mealNames(0));
+  var vlay = planner.staplePlanLayout(cat, ["Lunch"], "vegan");
+  var vnames = vlay.mealCodes[0].map(function (c) { return vlay.recsByCode[c].name; }).join("|").toLowerCase();
+  ok("vegan layout drops meat/fish/dairy/egg and keeps plant foods",
+     !/chicken|quark/.test(vnames) && /(lentils|tofu|broccoli|rice)/.test(vnames), vnames);
 })();
 
 // ---- 2) portion realism: pure snap helpers ------------------------------
@@ -246,6 +360,19 @@ function scenarioPortions() {
     ok("bulk grams are rounded to 5 g", gramItems.every(function (x) { return parseFloat(x.it.amount) % 5 === 0; }),
        gramItems.map(function (x) { return x.it.amount; }).join("|"));
 
+    ok("meal names carry a food descriptor (Breakfast — …)",
+       day.meals.every(function (m) { return / — /.test(m.name); }), day.meals.map(function (m) { return m.name; }).join(" | "));
+    var chicken = allItems.filter(function (x) { return /kananrinta/i.test(x.it.food); });
+    ok("a raw protein is shown as raw weight (120 g raw)",
+       chicken.length > 0 && chicken.every(function (x) { return / raw$/.test(x.it.amount); }),
+       chicken.map(function (x) { return x.it.amount; }).join("|"));
+
+    var mainKcal = day.meals.filter(function (m) { return !/snack/i.test(m.name); }).map(function (m) { return m.totals.kcal; });
+    ok("main meals are calorie-balanced (no meal dwarfs another)",
+       Math.max.apply(null, mainKcal) <= 1.8 * Math.min.apply(null, mainKcal), mainKcal.join(","));
+    ok("every meal carries protein (a balanced plate, not just balanced calories)",
+       day.meals.every(function (m) { return m.totals.protein >= 8; }), day.meals.map(function (m) { return m.totals.protein; }).join(","));
+
     ok("day-level solve still roughly hits protein", day.totals.protein >= 130 - 12, "got " + day.totals.protein);
     ok("meals are genuinely different (not identical plates)",
        JSON.stringify(day.meals[0].items.map(function (i) { return i.food; })) !==
@@ -370,7 +497,9 @@ function scenarioCalorie() {
   }).then(function (plan) {
     ok("calorie split tilts the per-meal DESIGN targets to the evening",
        targets.Dinner > targets.Breakfast, JSON.stringify(targets));
-    var kcal = {}; plan.days[0].meals.forEach(function (m) { kcal[m.name] = m.totals.kcal; });
+    // Meal names now carry a descriptor ("Dinner — chicken, rice & …"), so match
+    // by the slot prefix rather than an exact key.
+    var kcal = {}; plan.days[0].meals.forEach(function (m) { kcal[m.name.split(" — ")[0]] = m.totals.kcal; });
     ok("the assembled dinner carries more calories than breakfast",
        kcal.Dinner > kcal.Breakfast, JSON.stringify(kcal));
   });
@@ -423,8 +552,109 @@ function scenarioCritic() {
   });
 }
 
+// ---- 8) whole-day review: the day is judged as a set BEFORE catalog match --
+function scenarioDayReview() {
+  var catalog = catalogOf([
+    ["o1", "Rolled oats", "Elovena", "en", 100, "g", 10, 60, 7, 13],
+    ["w1", "Whey protein", "Star", "en", 100, "g", 0, 6, 4, 80],
+    ["c1", "Chicken breast", "Kotimaista", "en", 100, "g", 0, 0, 3.6, 31],
+    ["r1", "Rice", "Uncle", "en", 100, "g", 0.4, 28, 0.3, 2.7],
+    ["l1", "Olive oil", "Bertolli", "en", 100, "ml", 0, 0, 100, 0],
+    ["b1", "Blueberries", "Rainbow", "en", 100, "g", 2.4, 12, 0.3, 0.7]
+  ]);
+  var products = {
+    o1: Object.assign(macro(370, 13, 7, 60), { product_name: "Rolled oats" }),
+    w1: Object.assign(macro(390, 80, 6, 4), { product_name: "Whey protein" }),
+    c1: Object.assign(macro(165, 31, 3.6, 0), { product_name: "Chicken breast" }),
+    r1: Object.assign(macro(130, 2.7, 0.3, 28), { product_name: "Rice" }),
+    l1: Object.assign(macro(884, 0, 100, 0), { product_name: "Olive oil" }),
+    b1: Object.assign(macro(57, 0.7, 0.3, 12), { product_name: "Blueberries" })
+  };
+  // The model first designs a nonsense breakfast; the whole-day review catches it
+  // and hands back a corrected day (real breakfast staples) BEFORE any matching.
+  var byMeal = { Breakfast: ["chocolate cake"], Lunch: ["chicken breast", "rice", "olive oil"] };
+  var reviewSeen = null;
+  var engine = {
+    designMeal: function (ctx) { return Promise.resolve({ foods: byMeal[ctx.mealName] || ["rice"] }); },
+    reviewDay: function (ctx) {
+      reviewSeen = (ctx.meals || []).map(function (m) { return m.name + ":" + m.foods.join("+"); });
+      return Promise.resolve({
+        ok: false,
+        issues: ["breakfast was cake — swapped for oats, whey and blueberries"],
+        meals: [
+          { name: "Breakfast", foods: ["rolled oats", "whey protein", "blueberries"] },
+          { name: "Lunch", foods: ["chicken breast", "rice", "olive oil"] }
+        ]
+      });
+    }
+  };
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1800, protein: 140, fat: 60, carbs: 170, fiber: 25 }],
+    country: "Finland", currency: "EUR", weeklyBudget: 70, prefs: "none", mealsPerDay: 2,
+    io: { catalog: catalog, fetch: fetchOf(products) }, engine: engine, votes: 1
+  }).then(function (plan) {
+    ok("reviewDay saw the WHOLE day (every meal) before matching",
+       !!reviewSeen && reviewSeen.length === 2 && /chocolate cake/i.test(reviewSeen[0]), JSON.stringify(reviewSeen));
+    var bfast = plan.days[0].meals[0];
+    var names = bfast.items.map(function (i) { return i.food; }).join("|").toLowerCase();
+    ok("the reviewed breakfast replaced cake with real staples (oats + whey)",
+       /oats/.test(names) && /whey/.test(names) && !/cake/.test(names), names);
+    var mealFoods = plan.days[0].meals.reduce(function (a, m) { return a.concat(m.items.map(function (i) { return i.food.toLowerCase(); })); }, []);
+    ok("cake never reached the catalog / plate (review ran before matching)",
+       mealFoods.every(function (f) { return !/cake/.test(f); }), mealFoods.join("|"));
+    ok("the whole-day review note surfaces in the plan",
+       /Day check/.test(plan.micronutrients) && /cake/.test(plan.micronutrients), plan.micronutrients);
+  });
+}
+
+// ---- 9) deterministic build: a full plan with NO engine (mobile / offline) --
+// The model only names foods, so buildPlan with no engine must still produce a
+// real, balanced, meal-structured plan via the staple layout — this is what runs
+// on phones (a browser LLM OOM-crashes mobile Chrome) and fully offline.
+function scenarioDeterministic() {
+  var catalog = catalogOf([
+    ["p1", "Quark", "Valio", "fi", 100, "g", 0, 6, 0, 11],
+    ["p3", "Cottage cheese", "Arla", "fi", 100, "g", 0, 3, 4, 12],
+    ["o1", "Rolled oats", "Elovena", "fi", 100, "g", 10, 60, 7, 13],
+    ["b1", "Blueberries", "Rainbow", "fi", 100, "g", 2.4, 12, 0.3, 0.7],
+    ["ba1", "Banana", "Chiquita", "fi", 120, "g", 2.6, 23, 0.3, 1.1],
+    ["ch1", "Chia seeds", "Rainbow", "fi", 100, "g", 34, 8, 31, 17],
+    ["c1", "Chicken breast", "Kariniemi", "fi", 100, "g", 0, 0, 2, 23],
+    ["tu1", "Tuna", "Pirkka", "fi", 100, "g", 0, 0, 1, 26],
+    ["br1", "Broccoli", "Pirkka", "fi", 100, "g", 2.6, 4, 0.4, 2.8],
+    ["ri1", "Brown rice", "Uncle", "fi", 100, "g", 1.8, 23, 0.9, 2.6],
+    ["po1", "Potato", "Pirkka", "fi", 100, "g", 1.5, 17, 0.1, 2],
+    ["oil1", "Olive oil", "Bertolli", "fi", 100, "ml", 0, 0, 100, 0],
+    ["al1", "Almonds", "Rainbow", "fi", 100, "g", 12, 9, 49, 21],
+    ["pk1", "Pumpkin seeds", "Rainbow", "fi", 100, "g", 6, 4, 49, 30],
+    ["ca1", "Carrots", "Pirkka", "fi", 100, "g", 3, 7, 0, 1]
+  ]);
+  var products = {};
+  catalog.forEach(function (r) { products[r.code] = Object.assign(macro(r.kcalEst, r.protein, r.fat, r.carbs), { product_name: r.name }); });
+  return planner.buildPlan({
+    dayTargets: [{ label: "Every day", count: 7, kcal: 1800, protein: 140, fat: 60, carbs: 150, fiber: 35 }],
+    country: "Finland", prefs: "", mealsPerDay: 4, calorieSplit: "even",
+    io: { catalog: catalog, fetch: fetchOf(products) }  // NO engine → deterministic path
+  }).then(function (plan) {
+    var day = plan.days[0];
+    ok("deterministic (no-model) plan builds every requested meal", day.meals.length === 4, "meals=" + day.meals.length);
+    ok("deterministic plan: every meal is a real plate with items", day.meals.every(function (m) { return m.items.length >= 2; }));
+    ok("deterministic plan: every meal carries protein (balanced)",
+       day.meals.every(function (m) { return m.totals.protein >= 8; }), day.meals.map(function (m) { return m.totals.protein; }).join(","));
+    ok("deterministic plan roughly hits the day protein target", day.totals.protein >= 140 - 15, "got " + day.totals.protein);
+    ok("deterministic plan: meals are distinct (not identical plates)",
+       JSON.stringify(day.meals[0].items.map(function (i) { return i.food; })) !==
+       JSON.stringify(day.meals[1].items.map(function (i) { return i.food; })));
+    ok("deterministic plan: meal names carry a descriptor", day.meals.every(function (m) { return / — /.test(m.name); }),
+       day.meals.map(function (m) { return m.name; }).join(" | "));
+    ok("deterministic plan: real catalog foods (not AI-guessed placeholders)",
+       day.meals.every(function (m) { return m.items.every(function (it) { return /[a-z]/i.test(it.food); }); }));
+  });
+}
+
 scenarioVoting().then(scenarioPortions).then(scenarioReasoning)
-  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(function () {
+  .then(scenarioQuestions).then(scenarioCalorie).then(scenarioCritic).then(scenarioDayReview)
+  .then(scenarioDeterministic).then(function () {
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
 }).catch(function (err) {

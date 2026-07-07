@@ -9,8 +9,13 @@ The app offers two paths that share one deterministic core (wizard → targets �
 catalog → solver). The LLM (local or external) only **chooses foods and
 narrates**; it never does the arithmetic.
 
-- **Path A — On-device:** a small LLM runs in the browser via WebGPU/WebLLM and
-  builds the plan locally. Offered only when a WebGPU adapter is present.
+- **Path A — On-device:** builds the plan locally. A small LLM runs in the browser
+  via WebGPU/WebLLM and *names* the foods — on **both desktop and mobile** (mobile
+  is a first-class target for the model; the planner keeps it within phone memory
+  via tight budgets + context window + the smallest-that-fits model walk). When no
+  model can load on a device — or offline — a **deterministic staple planner**
+  takes over as the fallback: the model only names foods anyway, so the solver +
+  catalog + balancer produce the same balanced, meal-structured plan with no model.
 - **Path B — Copy-prompt:** export the prompt (below) and run it in any frontier
   LLM. Always available; also the quality ceiling.
 
@@ -151,11 +156,40 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     the source of "7 g of egg"). It then snaps foods to human portions: PIECE
     foods (eggs, fruit, bread, …) move in whole/part units (¼ egg, ½ banana) and
     are concentrated into ONE meal; BULK foods snap to a 5 g step, dropping
-    sub-10 g slivers (`snapPiece`/`snapBulk`/`distributeBulk`). Piece foods are
-    fixed, the day's bulk foods re-solve around them, and the final day totals are
-    re-`verify()`d so any drift from real portions is reported. Meals are
-    deliberately uneven — a day hits its macros, individual meals need not each
-    be a balanced plate.
+    sub-10 g slivers (`snapPiece`/`snapBulk`). Piece foods are fixed, the day's
+    bulk foods re-solve around them, and the final day totals are re-`verify()`d so
+    any drift from real portions is reported.
+  - **Deterministic staple planner (no model)** — because the model only *names*
+    foods, `staplePlanLayout(catalog, mealNames, prefs)` can name them from a
+    curated, diet-tagged staple table instead: it picks a protein/carb/veg/fat per
+    meal by role (breakfast staples for breakfast, etc.), diet-filtered via
+    `dietBans` and matched to the country catalog, and returns the SAME
+    `{ names, mealCodes }` shape the model path produces — so it feeds the identical
+    `assembleLayoutDay` pipeline (balance, human portions, descriptive names, micro
+    note). `buildPlan` uses it whenever there's no engine and no explicit `staples`
+    list. Mobile still **attempts the WebLLM model first** (a first-class target —
+    see `CLAUDE.md`); this deterministic path is the fallback when no model can load
+    on a device, and the offline path — never a dead-end to the copy-prompt path.
+  - **Meal balance** — once the day's grams are fixed, `balanceMeals` decides WHICH
+    meal each gram lands in. Since moving grams between meals can't change the day
+    totals, it rebalances freely: each meal is filled toward its share of the day
+    (the calorie-split weights, snacks lighter), and — crucially — PROTEIN is
+    spread too, not just calories. Protein-dominant foods (chicken, fish, quark,
+    beans) fill each meal toward its protein share first so no meal is left
+    protein-less, then energy foods fill the remaining calorie gap; piece foods
+    stay whole in the one meal that most needs them. The result is every meal a
+    real, balanced plate (protein + carbs/fat), instead of a 560 kcal breakfast
+    next to an 88 kcal evening. 5 g steps, no sub-10 g slivers, day totals intact.
+  - **Deterministic display polish** — the on-device plan is lifted toward a
+    hand-written one WITHOUT leaning on the small model, by reading the foods the
+    solver already chose: meal names get a descriptor from their biggest foods
+    (`mealDescriptor` → "Breakfast — oats, quark & blueberries"); raw proteins are
+    shown as raw weight (`bulkAmountNote` → "120 g raw"); meal names are count-aware
+    and read like a real day (`defaultMealNames` → Breakfast / Lunch / Snack /
+    Dinner / Evening, not "Second snack"); and the `micronutrients` note names the
+    plan's real top fibre sources (from the solved grams) and gives concrete,
+    universal cut watch-outs with fixes — vitamin D (D3 dose, latitude-aware),
+    omega-3 EPA/DHA (oily fish or a capsule), and iron × vitamin-C pairing.
   - **Portion reasoning** — how a food is portioned (whole "unit" you use whole /
     in simple fractions — egg in a shell, a can, a sausage — vs "bulk" you weigh
     from a package) is decided by `engine.classifyFoods({foods,country})`, a
@@ -168,8 +202,8 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     (`even` / `breakfast` / `lunch` / `dinner`). `calorieWeights(choice, mealNames)`
     turns that into a normalized per-meal weight (snacks always lighter) that
     drives BOTH the per-meal design targets (`buildPlan({calorieSplit})` → the
-    model designs a bigger dinner) and how shared bulk foods distribute
-    (`distributeBulk(total, meals, weights)` tilts toward the heavier meal). Piece
+    model designs a bigger dinner) and the per-meal shares `balanceMeals` fills to
+    (so the assembled day actually tilts toward the heavier meal). Piece
     foods stay meal-appropriate. It's a whole-diet decision: `index.html` offers it
     as an options-only "Adjust your day" card that **rebuilds** the plan, so the
     diet is reshaped before products are re-found.
@@ -181,6 +215,20 @@ minerals mg except selenium/iodine/chromium/molybdenum µg; amino acids g/100 g.
     ALWAYS offers the deterministic `buildCalorieSplitQuestion` so it works
     offline / on iOS. `answerToBuildOpts(id, optionId)` maps an answer to a
     `buildPlan` patch. Both engine calls are skipped on iOS.
+  - **Whole-day review** — `engine.reviewDay({meals,dayTarget,country,prefs,mealsPerDay})`
+    reads the WHOLE day as one plan — every meal's named foods together — **before
+    any catalog lookup**, and judges the day as a set: each meal suits its slot
+    (breakfast reads like breakfast — oats, eggs, whey protein, yoghurt, fruit),
+    protein is spread across the meals, every food is a **single-ingredient whole
+    food** that can be weighed to the day's macros (not a ready meal, sauce, or
+    multi-ingredient product), and there's variety with nothing missing. It may hand
+    back a CORRECTED day — adopted through `sanitizeReviewedDay`, which rebuilds
+    strictly from the original meals (same names, count, order) and only swaps a
+    meal's foods, so the model can fix a plate but never restructure the day — and/or
+    flag issues, folded into the `micronutrients` note (`Day check —`). This is the
+    "look at the overall plan and see if it makes sense, THEN find the products"
+    stage: design all meals → review the day → match to the catalog. Skipped on iOS.
+    Progress stage: `choose`.
   - **Meal-coherence critic** — `engine.critiqueMeal({mealName,items,country,prefs})`
     reads each finished meal and judges whether it hangs together as a real,
     cookable meal (not just individually-valid ingredients), catching incoherent
