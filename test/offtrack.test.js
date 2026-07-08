@@ -6,30 +6,12 @@
  * and runs it. Run with:  node test/offtrack.test.js
  */
 "use strict";
-var fs = require("fs");
-var path = require("path");
-
-var html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
-
-// Slice the two comment-delimited regions that hold the functions under test.
-function region(start, end) {
-  var i = html.indexOf(start), j = html.indexOf(end);
-  if (i < 0 || j < 0 || j <= i) throw new Error("Could not locate region: " + start);
-  return html.slice(i, j);
-}
-var progressSrc = region("// ---- actual progress from the daily log", "// ---- on/off-track indicator");
-var offTrackSrc = region("// ---- on/off-track indicator", "// ---- SVG chart of the *actual*");
-
-// Build the real functions in a scope where `state` and `logHistory` are ours.
-// They reference those by bare name plus DAY_MS, so we supply them as params.
-var DAY_MS = 24 * 60 * 60 * 1000;
+// The real progress()/offTrack() implementations now live in a shared module
+// (core/offtrack.js), imported by both the app and this test. `createProgress`
+// closes over the caller's state + logHistory, exactly like the old app scope.
+var offtrack = require("../core/offtrack.js");
 function load(state, logHistory) {
-  /* jshint evil:true */
-  var factory = new Function(
-    "DAY_MS", "state", "logHistory",
-    progressSrc + offTrackSrc + "return { progress: progress, offTrack: offTrack };"
-  );
-  return factory(DAY_MS, state, logHistory);
+  return offtrack.createProgress(state, logHistory);
 }
 
 // ---- fixture generator: N weeks of daily-ish history ending "today" --------

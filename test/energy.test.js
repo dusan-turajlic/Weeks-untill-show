@@ -1,35 +1,12 @@
 /*
  * Tests for the calorie / macro / step model.
  *
- * Like offtrack.test.js, this pulls the real formulas straight out of
- * index.html so the tests track the shipped code. Run with:
+ * The real formulas now live in a shared module (core/energy.js) imported by
+ * both the app and this test, so they stay a single source of truth. Run with:
  *   node test/energy.test.js
  */
 "use strict";
-var fs = require("fs");
-var path = require("path");
-
-var html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
-
-function region(start, end) {
-  var i = html.indexOf(start), j = html.indexOf(end);
-  if (i < 0 || j < 0 || j <= i) throw new Error("Could not locate region: " + start);
-  return html.slice(i, j);
-}
-// The block holds the constants and the pure formula functions used by
-// bodyMetrics()/energyPlan().
-var energySrc = region("// ---- energy / macro constants & formulas",
-                       "// ---- daily weight log: IndexedDB");
-
-/* jshint evil:true */
-var api = new Function(
-  energySrc +
-  "return { maintMultiplier:maintMultiplier, maintenanceCalories:maintenanceCalories, " +
-  "minProtein:minProtein, minFat:minFat, interp:interp, calcKcalPerStep:calcKcalPerStep, roundSteps:roundSteps, " +
-  "fatFloorG:fatFloorG, cyclePlan:cyclePlan, " +
-  "KCAL_PER_KG:KCAL_PER_KG, KG_TO_LB:KG_TO_LB, MAX_FOOD_DEFICIT:MAX_FOOD_DEFICIT, " +
-  "MIN_PHASE_STEPS:MIN_PHASE_STEPS, FIBER_MIN:FIBER_MIN };"
-)();
+var api = require("../core/energy.js");
 
 // ---- tiny assert harness ---------------------------------------------------
 var passed = 0, failed = 0;
