@@ -41,7 +41,10 @@ export function BuildProvider({ children }: { children: React.ReactNode }) {
   const build = useOnDeviceBuild();
 
   const [wizOpen, setWizOpen] = useState(false);
-  const [cc, setCc] = useState("");
+  // Default to the first country (matches the native <select>'s default-selected
+  // first <option> in the original app). A controlled <select value=""> would
+  // submit an empty cc, which builds catalog URL ".../catalogs//catalog…" → 404.
+  const [cc, setCc] = useState(WIZ_COUNTRIES[0][0]);
   const [prefs, setPrefs] = useState("");
   const [breakfast, setBreakfast] = useState("savory");
   const [meals, setMeals] = useState(3);
@@ -76,8 +79,10 @@ export function BuildProvider({ children }: { children: React.ReactNode }) {
   };
 
   const startBuild = () => {
-    const country = (WIZ_COUNTRIES.find((c) => c[0] === cc) || [cc, cc, ""])[1];
-    const answers = { cc, country, prefs: prefs.trim(), breakfast, mealsPerDay: meals };
+    // Never build with an empty country code (would 404 the catalog).
+    const chosenCc = cc || WIZ_COUNTRIES[0][0];
+    const country = (WIZ_COUNTRIES.find((c) => c[0] === chosenCc) || [chosenCc, chosenCc, ""])[1];
+    const answers = { cc: chosenCc, country, prefs: prefs.trim(), breakfast, mealsPerDay: meals };
     app.setMeal({ lastWizAnswers: answers }); // persist plan memory
     setWizOpen(false);
     build.runBuild(answers);
